@@ -39,16 +39,16 @@
 **一键（不用装 Go）：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sokebo/mavis-masterpiece/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/sokebo/vacuous/main/scripts/install.sh | sh
 ```
 
 **或者用 Go 装：**
 
 ```bash
-go install github.com/sokebo/mavis-masterpiece/cmd/vacuous@latest
+go install github.com/sokebo/vacuous/cmd/vacuous@latest
 ```
 
-**或者下载预编译二进制**：[Releases](https://github.com/sokebo/mavis-masterpiece/releases)
+**或者下载预编译二进制**：[Releases](https://github.com/sokebo/vacuous/releases)
 （`vacuous_<os>_<arch>.tar.gz`，含 SHA256 校验和）。
 
 需要本机有 `git`，以及项目自己的测试工具链（`go` / `pytest` / `node`）。
@@ -175,7 +175,7 @@ coupled 的占比因此会偏高 —— 一个频繁新增 API 的仓库，coupl
 ### GitHub Action
 
 ```yaml
-- uses: sokebo/mavis-masterpiece@v0.1.0
+- uses: sokebo/vacuous@v0.1.0
   with:
     mode: all
     fail-on: high
@@ -195,7 +195,7 @@ coupled 的占比因此会偏高 —— 一个频繁新增 API 的仓库，coupl
   with:
       go-version: '1.26'
 
-- run: go install github.com/sokebo/mavis-masterpiece/cmd/vacuous@latest
+- run: go install github.com/sokebo/vacuous/cmd/vacuous@latest
 - run: vacuous --mode all
 ```
 
@@ -242,8 +242,8 @@ coupled 的占比因此会偏高 —— 一个频繁新增 API 的仓库，coupl
 ## 开发
 
 ```bash
-git clone https://github.com/sokebo/mavis-masterpiece
-cd mavis-masterpiece
+git clone https://github.com/sokebo/vacuous
+cd vacuous
 go build ./...
 go test ./...
 ```

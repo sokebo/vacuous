@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // Python drives a pytest suite.

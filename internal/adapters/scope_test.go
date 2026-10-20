@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // writeFile writes a file into a directory, creating it if needed.

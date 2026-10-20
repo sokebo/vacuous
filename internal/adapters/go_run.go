@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // goEvent is one line of `go test -json` output.

@@ -15,7 +15,7 @@ package report
 import (
 	"strings"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // Layout constants. Everything drawn here is ASCII (rules, brackets) or

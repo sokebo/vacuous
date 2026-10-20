@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-REPO="sokebo/mavis-masterpiece"
+REPO="sokebo/vacuous"
 BINARY="vacuous"
 
 info() { printf '\033[0;36m==>\033[0m %s\n' "$1"; }

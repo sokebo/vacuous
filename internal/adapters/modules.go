@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // goModulesEnv is the environment variable that carries the list of module

@@ -15,7 +15,7 @@ package main
 import (
 	"os"
 
-	"github.com/sokebo/mavis-masterpiece/internal/cli"
+	"github.com/sokebo/vacuous/internal/cli"
 )
 
 func main() {

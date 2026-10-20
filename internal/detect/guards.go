@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // GuardLiveness finds guards that are not actually guarding.

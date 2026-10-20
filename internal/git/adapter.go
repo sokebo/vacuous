@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // runGitContext runs a git command with a context-aware timeout.

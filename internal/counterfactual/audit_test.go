@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sokebo/mavis-masterpiece/internal/adapters"
-	"github.com/sokebo/mavis-masterpiece/internal/core"
-	"github.com/sokebo/mavis-masterpiece/internal/git"
-	"github.com/sokebo/mavis-masterpiece/internal/testfixtures"
+	"github.com/sokebo/vacuous/internal/adapters"
+	"github.com/sokebo/vacuous/internal/core"
+	"github.com/sokebo/vacuous/internal/git"
+	"github.com/sokebo/vacuous/internal/testfixtures"
 )
 
 // newAuditor wires a real auditor against a fixture repository.

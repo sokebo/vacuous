@@ -17,7 +17,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // Detect returns the adapters that can drive the project at root, most

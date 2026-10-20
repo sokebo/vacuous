@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // The tests in this file build real git repositories with `git init` in a

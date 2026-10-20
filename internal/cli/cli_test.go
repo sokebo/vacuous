@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sokebo/mavis-masterpiece/internal/testfixtures"
+	"github.com/sokebo/vacuous/internal/testfixtures"
 )
 
 // The rule these tests protect: a repository with no test runner is not an

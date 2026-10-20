@@ -1,3 +1,3 @@
-module github.com/sokebo/mavis-masterpiece
+module github.com/sokebo/vacuous
 
 go 1.26.5

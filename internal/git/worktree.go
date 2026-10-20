@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // NewWorktree creates a disposable checkout of rev.

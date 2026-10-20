@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // The checks in this file are the precision control for the skipped-test

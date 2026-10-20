@@ -15,12 +15,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sokebo/mavis-masterpiece/internal/adapters"
-	"github.com/sokebo/mavis-masterpiece/internal/core"
-	"github.com/sokebo/mavis-masterpiece/internal/counterfactual"
-	"github.com/sokebo/mavis-masterpiece/internal/detect"
-	"github.com/sokebo/mavis-masterpiece/internal/git"
-	"github.com/sokebo/mavis-masterpiece/internal/report"
+	"github.com/sokebo/vacuous/internal/adapters"
+	"github.com/sokebo/vacuous/internal/core"
+	"github.com/sokebo/vacuous/internal/counterfactual"
+	"github.com/sokebo/vacuous/internal/detect"
+	"github.com/sokebo/vacuous/internal/git"
+	"github.com/sokebo/vacuous/internal/report"
 )
 
 // Version is stamped at build time with -ldflags.

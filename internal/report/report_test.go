@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ import (
 // evidence, a hint, and a file that has no line number.
 func sampleReport() *core.Report {
 	r := &core.Report{
-		Project:      "sokebo/mavis-masterpiece",
+		Project:      "sokebo/vacuous",
 		RepoRoot:     "/tmp/vacuous-sample",
 		Proven:       2,
 		Vacuous:      1,

@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 const (

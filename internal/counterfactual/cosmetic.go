@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // This file answers a question that keeps the tool honest: did this commit

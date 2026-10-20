@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sokebo/mavis-masterpiece/internal/core"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // RenderText writes the human-readable report to w.
