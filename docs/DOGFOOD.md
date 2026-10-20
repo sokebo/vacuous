@@ -207,9 +207,40 @@ vacuous —— 高危指控，说这个提交加的 21 个测试什么都没证�
 **这条不是 dogfood 揪出来的，是 CI 揪出来的** —— 工具审自己的时候，
 才会遇到「只有一个提交」这种自己造出来的边界情况。
 
----
+### 3.9 源码文件被塞给了测试运行器
 
-## 4. 关于 delta 的一个观察（不是问题）
+**现象**：在真实 Python 仓库（harness）上跑反事实审计时，命令是
+`pytest ... src/deepseek_harness/api.py tests/test_client.py` —— 源码文件
+也传给了 pytest。pytest 会把 `api.py` 当测试模块收集，于是报了一条
+`ImportError while importing test module api.py`。
+
+**根因**：Python 适配器把「本次改动的文件列表」原样交给了 pytest。
+而那份列表里同时有源码和测试。Go 适配器没有这个问题（它把文件映射成
+包模式），Python 和 Node 是直接传的。
+
+**修复**：测试运行器只应该拿到测试文件。优先级也统一成 Go 那样 ——
+包模式优先于文件列表；用文件列表时只取其中的测试文件。
+
+**后果**：修之前那条 ImportError 看起来像「测试和修复耦合」，结论碰巧是对的，
+但**证据是假的** —— 它来自工具自己传错了文件。一份靠错误理由得到正确结论的
+报告，比一份明确说「不知道」的报告更危险。
+
+### 3.10 交叉编译的二进制不能在本机执行
+
+**现象**：release 工作流第一次跑就红了：4 个平台里 3 个失败，日志是
+`./vacuous: cannot execute binary file: Exec format error`。
+
+**根因**：job 在 amd64 Linux runner 上交叉编译，然后试图**执行** darwin/arm64
+的二进制。二进制是好的，是检查方法错了。
+
+**修复**：改用 `go version -m` —— 它读的是二进制里的构建信息，跨平台都能读，
+能同时验证「这是个合法的 Go 可执行文件」和「它的 GOOS/GOARCH 确实是这个
+job 要的平台」。只有 linux/amd64 那个 job 才真跑一遍。
+
+**这条是唯一一个「不写代码、但用户装不上」的 bug**：它不在任何测试的覆盖
+范围内，只有真的打一次 tag 才会暴露。
+
+---
 
 `delta` 的工作树里有一份 gamma 源码的 untracked 副本
 （`cmd/`、`go.mod`、`internal/`，逐字节相同）。这是**正在进行中的开发工作**，
@@ -225,9 +256,33 @@ delta，于是「这个仓库零测试」这条发现消失了 —— 工具看�
 临时 worktree，以及在临时目录里建 worktree。实测跑一遍 `--mode all`，
 调用方仓库的文件集合和 mtime 逐字节未变。
 
+## 4. Python 适配器在真实仓库上的验证
+
+`harness`（本地唯一的 Python 仓，有 `pytest.ini` 和 6 个真测试文件）
+是 Python 反事实路径的第一个真实靶子。
+
+```bash
+cd /Users/dev/work/harness
+vacuous --mode audit --commit 6896fd1545
+```
+
+`6896fd1545 fix(python): report run finish reason` 同时改了
+`src/deepseek_harness/api.py` 和 `tests/test_client.py` —— 正是 fix+test 的形状。
+
+判定 **coupled**：撤掉修复后，测试文件 import 不到这次修复才引入的
+`RunResult`。这是方法本身的边界（见 README「这个方法做不到什么」），
+工具给的答案是诚实的。
+
+**Node 适配器仍然没有真实靶子** —— 本地四个 Node 仓
+（epsilon / zeta / kobo-mascot / mascot）都没有配测试运行器，
+`package.json` 里 `scripts` 是空的。所以 Node 的反事实路径**只有夹具测试
+覆盖，从未在真实仓库上跑通**。这是剩下的最大空白。
+
 ---
 
 ## 5. 验证链条
+
+---
 
 一次交付要同时过四道：
 
@@ -253,8 +308,9 @@ CI 里有两个 job：`build`（fmt / vet / build / test -race / 空缓存 test�
   这次修复才引入的符号」—— 撤掉修复后测试编译不过。这在源码层面无法拆开，
   是这个方法本身的边界，不是工具的缺陷。但工具目前只给一个笼统的 coupled，
   没有区分「测试用了新 API」和「别的原因编译不过」。
-- **Python / Node 适配器的真实仓库验证**：`epsilon` 和 `zeta` 都没有
-  配测试运行器，所以这两个适配器的反事实路径**在真实仓库上从未跑通**。
-  它们目前只有夹具测试覆盖。这是最大的已知空白。
+- **Python / Node 适配器的真实仓库验证**：Python 已经在 harness 上
+  跑通（见第 4 节）。**Node 仍然没有靶子** —— 本地四个 Node 仓都没配测试
+  运行器，所以 jest / vitest 的反事实路径只有夹具测试覆盖，从未在真实仓库上
+  跑通。这是最大的已知空白。
 - **多 module 场景**：gamma 有 7 个独立 module，工具能逐个发现并
   审计，但没有在「多个 module 中只有一个有测试」的仓库上验证过。

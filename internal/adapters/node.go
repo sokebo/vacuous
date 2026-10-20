@@ -82,8 +82,19 @@ func (n *Node) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, error
 		args = append(args, "--json")
 	}
 
-	if len(req.Target.Files) > 0 {
-		args = append(args, req.Target.Files...)
+	// A package pattern wins over a file list: a file list here holds the
+	// changed files, and the changed files include source files. Handing a
+	// source file to jest makes it collect that file as a test suite, and
+	// the failure that comes back says nothing about the test.
+	switch {
+	case req.Target.PkgPattern != "":
+		args = append(args, strings.Fields(req.Target.PkgPattern)...)
+	case len(req.Target.Files) > 0:
+		for _, f := range req.Target.Files {
+			if n.IsTestPath(f) {
+				args = append(args, f)
+			}
+		}
 	}
 
 	args = append(args, req.ExtraArgs...)

@@ -13,8 +13,9 @@ type TestTarget struct {
 	Files []string
 	// Patterns are additional name filters, interpreted by the adapter.
 	Patterns []string
-	// PkgPattern narrows to a package or module, e.g. "./internal/foo/...".
-	// Empty means "no package narrowing".
+	// PkgPattern narrows the run. Its meaning is the adapter's: for Go it
+	// is a package pattern such as "./internal/foo/...", for pytest it is a
+	// list of test files. Empty means "no narrowing".
 	PkgPattern string
 }
 

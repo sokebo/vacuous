@@ -74,10 +74,23 @@ func (p *Python) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, err
 	junit := junitPath()
 	args = append(args, "--junitxml="+junit)
 
-	if len(req.Target.Files) > 0 {
-		args = append(args, req.Target.Files...)
-	} else if req.Target.PkgPattern != "" {
+	// The scope of the run. A package pattern wins over a file list,
+	// because a file list here holds the changed files - and the changed
+	// files include SOURCE files, which pytest must never be handed.
+	//
+	// pytest collects whatever file it is given. Point it at api.py and it
+	// tries to import api.py as a test module, and the ImportError that
+	// comes back looks exactly like a broken test - it is not evidence of
+	// anything except that the tool asked the wrong question.
+	switch {
+	case req.Target.PkgPattern != "":
 		args = append(args, strings.Fields(req.Target.PkgPattern)...)
+	case len(req.Target.Files) > 0:
+		for _, f := range req.Target.Files {
+			if p.IsTestPath(f) {
+				args = append(args, f)
+			}
+		}
 	}
 
 	if len(req.Target.Patterns) > 0 {
