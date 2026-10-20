@@ -11,6 +11,14 @@
 - 复核方式：每一条高危发现都回到 git 原始提交、用**工具之外的手段**重新
   验证一遍
 
+**基线 commit**（定时校验任务靠这一行判断「有没有新东西」）：
+下一次复核前，这个 commit 应该和 `git log --oneline -1` 相同。变了才需要
+重跑；没变就什么都别做。
+
+```
+基线 commit: <待填>
+```
+
 ---
 
 ## 1. 静态体检（`--mode check`）
@@ -20,11 +28,24 @@
 | alpha | 3 个（高危 2） | 2 × `discards-error`，1 × `skipped-test` |
 | beta | 1 个（严重 1） | 1 × `guard-not-installed` |
 | gamma | 6 个（高危 2） | 2 × `skipped-test`（高危），4 × `skipped-test`（警告） |
-| delta | 2 个（高危 1） | 1 × `no-test-for-fix`，1 × `guard-not-installed`（警告） |
+| delta | 1 个（高危 0） | 1 × `skipped-test`（警告） |
 | epsilon | 1 个（高危 1） | 1 × `no-test-for-fix` |
 | zeta | 1 个（高危 1） | 1 × `no-test-for-fix` |
 
 **6 个仓库里 6 个都有发现。** 这不是巧合，是这类代码的真实状态。
+
+> **delta 这一行变了（2026-10-20 复核）。** 之前记的是
+> 「2 个（高危 1）：`no-test-for-fix` + `guard-not-installed`（警告）」，
+> 依据是「delta 有 1 个源文件（`scripts/measure_repo.py`）」。
+> **那个前提已经不成立了**：delta 现在是一个 Go 仓（21 个 `.go` 文件、
+> 3 个测试文件、CI 里跑 `go test -race`），不再是那个只有一段 Python 的仓。
+> 所以 `no-test-for-fix` 消失（它有测试了），`guard-not-installed` 也消失
+> （CI 真的有测试步骤）。剩下的 `skipped-test` 是
+> `internal/collect/collect_test.go:273` 的「建不了符号链接」——
+> 与 gamma 那条同源，是真的合法跳过。
+>
+> 这条记在这里不是为了好看，是因为**过期的记录比没有记录更危险**：照着旧表
+> 去核实会核实一个已经不存在的仓库形状。
 
 ### 逐条核实
 
@@ -372,6 +393,91 @@ go mod tidy
 **「反事实树应该按调用方那棵树的方式编译」** —— 这是同一条原则的两面：
 仓库之外的邻居要摆好，开发者手工加的本地设置也要继承。
 
+### 3.16 模块路径被截断 —— 写出一个从来没人写过的 go.mod
+
+**现象**：3.15 的继承机制把调用方 go.mod 里的 replace 指令抄进 worktree 的
+go.mod。抄的时候，**模块路径**（`=>` 左边那一半）被 `TrimPrefix(old, "replace")`
+无条件削掉了前缀。
+
+**根因**：`replace` 这个词有两种身份。
+
+1. **关键字**：`replace example.com/x => ../y` —— 开头那个 `replace` 是指令名，
+   该被削掉。
+2. **模块路径的一部分**：`replace.io/thing => ../thing` —— 一个合法的模块路径，
+   以同样的字母开头，**不该被削**。
+
+而在 **block 形式**里（`replace ( ... )`），每一行根本没有关键字：
+
+```
+replace (
+	replace.io/thing => ../thing      ← 这一行没有关键字
+	example.com/other => ../other
+)
+```
+
+削完变成 `.io/thing` —— 一个不存在的模块。抄进 worktree 的 go.mod 之后，
+那条 replace **指向一个没人发布过的模块**，于是替换**静默地不再生效**。
+更糟的是这个 go.mod 本身语法合法（`go mod edit -json` 照收不误），所以
+没有任何报错 —— 失败会推迟到很久以后，以「依赖解析不到」的形式出现，
+跟真正的病因隔了三层。
+
+**修复**：只有当 `replace` 后面跟的是空白时，它才是关键字：
+
+```go
+if rest, ok := strings.CutPrefix(old, "replace"); ok {
+	if rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+		old = strings.TrimSpace(rest)
+	}
+}
+```
+
+block 形式的那一行没有空格 → 不削；`replace example.com/x => ...` 有空格 →
+削。两条都对了。
+
+**负对照**：拿修好的测试去跑**没修的代码**，三条全红：
+
+- `replace.io/thing` 解析成 `""`（实际 map 里是 `.io/thing`）
+- worktree 的 go.mod 里出现 `replace .io/thing => ../thing`
+- 版本 pin 被继承（见 3.17）
+
+### 3.17 版本 pin 被继承 —— 反事实树用错了依赖版本
+
+**现象**：3.15 的继承机制把调用方 go.mod 里的 replace 指令**全部**抄进
+worktree 的 go.mod，包括这一种：
+
+```
+replace example.com/x => example.com/x v1.0.0
+```
+
+**根因**：继承的分界线画错了。3.15 想继承的是**本地环境设置** ——
+「我本地必须跑 `go mod edit -replace` 才能编译」—— 但版本 pin 不是环境设置，
+是**依赖决策**：它把某个模块钉死在某个版本上。
+
+被判定的那条提交，是**照着它自己当时的依赖版本写的**。继承 pin 等于让反事实
+树用**调用方那个版本**去编译它 —— 于是「撤掉修复后测试还绿不绿」这个问题，
+是在**错误的依赖版本**下回答的。
+
+**方向反了，而且反在最坏的方向**：版本一变，行为就可能变，而新版依赖通常
+**更宽容**（或者恰好绕过了那个 bug）。于是反事实跑绿 → 工具判「vacuous」
+→ 报一条**高危**的「这个测试什么都没测到」。
+
+**这个工具的全部意义就是抓这一类**。它自己在反事实里引入了一个会藏 bug 的
+变量。
+
+**修复**：只有**目录**目标被继承（`./x`、`../x`、绝对路径）。
+
+绝对路径**必须**继承 —— CI 注入的就是绝对路径：
+
+```
+go mod edit -replace github.com/example/shared-lib="$GITHUB_WORKSPACE/_shared"
+```
+
+这一条有专门的测试守着（「绝对目录目标仍然被继承」），防止修过头把真正要
+继承的东西一起扔掉。
+
+**负对照**：修之前那条测试是红的 —— worktree 的 go.mod 里出现了
+`replace example.com/shared => example.com/shared v1.0.0`。
+
 ---
 
 ## 4. 在 example 两个真实仓库上的验证
@@ -406,6 +512,47 @@ coupled 那 4 条也是真的：测试调用了这次修复改过签名的函数
 
 environment 那 3 条是 shared 库往前走了一步、父提交那份代码跟不上 ——
 工具说的「环境问题，不是测试的问题」是对的。
+
+### 4.1 独立复现：修 3.14/3.15 前后，同一个仓、同一批提交
+
+2026-10-20 复核这两个修复时，**没有**直接采信文档里的结论，而是把 CI 的
+做法原样搭出来做了一次 A/B。
+
+搭法（复刻 `admin-service` 的 `origin/develop`）：
+
+```bash
+# 1. admin 检出到 origin/develop —— 这一版提交在仓库里的 go.mod 没有 replace
+git clone --no-checkout <admin> /tmp/example/admin-service
+cd /tmp/example/admin-service
+git fetch origin '+refs/remotes/origin/*:refs/remotes/upstream/*'
+git checkout upstream/develop
+
+# 2. shared 检出到同一个 revision
+git clone --no-checkout <shared> /tmp/example/shared-lib
+cd /tmp/example/shared-lib
+git fetch origin '+refs/remotes/origin/*:refs/remotes/upstream/*'
+git checkout upstream/develop
+
+# 3. 照 CI 的做法注入 replace（CI 里是 go mod edit -replace 绝对路径）
+cd /tmp/example/admin-service
+go mod edit -replace github.com/example/shared-lib=/tmp/example/shared-lib
+```
+
+**A/B 结果**（同样 8 个提交）：
+
+| 二进制 | 结果 |
+|---|---|
+| 修之前（`ca4e831`） | `coupled 5` —— **全部**说成「测试和修复耦合」 |
+| 修之后 | `coupled 4 · environment 1` |
+
+差别正是 3.14 说的那件事：编译错误全在**非测试文件**里（`standardized.go`
+引用了 shared 新增的 API），父提交那份代码跟不上 shared 往前走了一步 ——
+这是**环境问题**，不是测试的问题。修之前工具把 5 条全判成 coupled，
+**等于把环境的错算到测试头上**。
+
+**为什么值得记这一段**：文档里的「修完之后判定从耦合变成环境问题」是一句
+结论，没有过程。上面这段是可以被别人重跑的命令 —— 它不依赖本项目的任何
+内部状态，只依赖两个公开仓库和 CI 里那三行命令。
 
 ---
 

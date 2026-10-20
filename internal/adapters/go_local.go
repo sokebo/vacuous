@@ -68,7 +68,15 @@ func (g *Go) PrepareWorktree(ctx context.Context, repoRoot, worktreePath string)
 	}
 
 	// Stage the siblings the checked-out go.mod points at.
-	for _, target := range parseLocalReplaces(worktreeMod) {
+	//
+	// Only a relative directory target needs staging. An absolute path
+	// resolves the same from anywhere, and a version target names no
+	// directory at all - trying to stage one would look for a directory
+	// called "example.com/x v1.0.0" next to the checkout.
+	for _, target := range parseReplaces(worktreeMod) {
+		if !isRelativeDirectoryTarget(target) {
+			continue
+		}
 		if err := stageSibling(repoRoot, worktreePath, target); err != nil {
 			// A sibling that cannot be staged is not fatal here. The build
 			// that follows will explain what was missing, and the engine
@@ -92,18 +100,28 @@ func (g *Go) PrepareWorktree(ctx context.Context, repoRoot, worktreePath string)
 // counterfactual checkout is built from the committed file, so without this
 // the worktree cannot build at all.
 //
+// Only DIRECTORY targets are inherited. A replace that points at another
+// version of a module ("example.com/x => example.com/x v1.0.0") pins a
+// dependency version, and the commit under review has to be judged against
+// the versions it was written against. Inheriting one would silently change
+// what the counterfactual builds - and it would change it in the direction
+// that hides bugs.
+//
 // The change is written to the worktree's go.mod, which is disposable. The
 // caller's file is never touched.
 func inheritLocalReplaces(callerMod, worktreeMod, repoRoot, worktreePath string) error {
-	caller := parseLocalReplaces(callerMod)
+	caller := parseReplaces(callerMod)
 	if len(caller) == 0 {
 		return nil
 	}
-	own := parseLocalReplaces(worktreeMod)
+	own := parseReplaces(worktreeMod)
 
 	var add []string
 	for old, target := range caller {
 		if _, ok := own[old]; ok {
+			continue
+		}
+		if !isDirectoryTarget(target) {
 			continue
 		}
 		add = append(add, old+" => "+target)
@@ -136,7 +154,10 @@ func inheritLocalReplaces(callerMod, worktreeMod, repoRoot, worktreePath string)
 	}
 
 	// And stage the targets those new directives point at.
-	for _, target := range parseLocalReplaces(worktreeMod) {
+	for _, target := range parseReplaces(worktreeMod) {
+		if !isRelativeDirectoryTarget(target) {
+			continue
+		}
 		_ = stageSibling(repoRoot, worktreePath, target)
 	}
 	return nil
@@ -207,16 +228,17 @@ type siblingError struct{ msg string }
 
 func (e *siblingError) Error() string { return e.msg }
 
-// parseLocalReplaces reads a go.mod and returns the local replace
-// directives it holds, keyed by the module path they replace.
+// parseReplaces reads a go.mod and returns the replace directives it
+// holds, keyed by the module path they replace.
 //
-// A local target is one that starts with "./" or "../". An absolute path
-// needs no staging - it resolves the same from anywhere - but it is still
-// a replace, and the worktree needs it.
+// The key is the left side of the "=>", minus the "replace" keyword. A
+// left side may carry a version ("example.com/x v1.2.3"), and that is part
+// of the key: two replaces of the same module at different versions are
+// different directives.
 //
 // The parser is deliberately simple. go.mod's format is stable and the
 // only thing this needs is the two sides of a "=>".
-func parseLocalReplaces(goModPath string) map[string]string {
+func parseReplaces(goModPath string) map[string]string {
 	out := map[string]string{}
 	f, err := os.Open(goModPath)
 	if err != nil {
@@ -236,8 +258,18 @@ func parseLocalReplaces(goModPath string) map[string]string {
 			continue
 		}
 		old := strings.TrimSpace(line[:arrow])
-		old = strings.TrimPrefix(old, "replace")
-		old = strings.TrimSpace(old)
+		// Strip the "replace" keyword only when it is a keyword - that
+		// is, when a space follows it. Inside a block form
+		// ("replace ( ... )") there is no keyword at all, and a module
+		// path may legitimately start with those letters
+		// ("replace.io/thing"). Trimming the prefix unconditionally
+		// turns the latter into ".io/thing" - a module that does not
+		// exist, so the replacement silently stops taking effect.
+		if rest, ok := strings.CutPrefix(old, "replace"); ok {
+			if rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+				old = strings.TrimSpace(rest)
+			}
+		}
 		if old == "" {
 			continue
 		}
@@ -249,4 +281,32 @@ func parseLocalReplaces(goModPath string) map[string]string {
 		out[old] = right
 	}
 	return out
+}
+
+// isDirectoryTarget reports whether a replace target names a directory on
+// disk rather than another version of a module.
+//
+//	replace example.com/x => ../shared          a directory
+//	replace example.com/x => /abs/path/shared   a directory
+//	replace example.com/x => example.com/x v1.0.0   a version
+//
+// The distinction decides two different things. A directory target has to
+// be staged next to the worktree - unless it is absolute, in which case it
+// resolves the same from anywhere and needs nothing. A version target has
+// no directory to stage, and it must not be inherited into the
+// counterfactual: it pins a dependency version, and the commit under
+// review is supposed to be judged against the versions it was written
+// against.
+func isDirectoryTarget(target string) bool {
+	if strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../") {
+		return true
+	}
+	return filepath.IsAbs(target)
+}
+
+// isRelativeDirectoryTarget reports whether the target is a directory
+// relative to the module root - the only kind that needs staging next to
+// the worktree.
+func isRelativeDirectoryTarget(target string) bool {
+	return strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../")
 }

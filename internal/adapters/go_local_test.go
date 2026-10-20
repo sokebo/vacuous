@@ -170,8 +170,8 @@ func TestPrepareWorktreeRefusesToEscapeItsOwnDirectory(t *testing.T) {
 	}
 }
 
-// TestParseLocalReplaces pins down the go.mod parsing.
-func TestParseLocalReplaces(t *testing.T) {
+// TestParseReplaces pins down the go.mod parsing.
+func TestParseReplaces(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "go.mod", `module example.com/app
 
@@ -191,12 +191,12 @@ replace (
 )
 `)
 
-	got := parseLocalReplaces(filepath.Join(dir, "go.mod"))
+	got := parseReplaces(filepath.Join(dir, "go.mod"))
 	// Four replaces: a local path, another local path, an absolute path,
 	// and a module replaced by a different version of itself. All four
 	// change what the build uses, so all four have to survive.
 	if len(got) != 4 {
-		t.Fatalf("parseLocalReplaces() = %v, want 4 entries", got)
+		t.Fatalf("parseReplaces() = %v, want 4 entries", got)
 	}
 	if got["example.com/shared"] != "../shared" {
 		t.Errorf("shared = %q, want ../shared", got["example.com/shared"])
@@ -209,6 +209,166 @@ replace (
 	}
 	if got["example.com/c"] != "example.com/c v1.0.0" {
 		t.Errorf("c = %q, want the version pin", got["example.com/c"])
+	}
+}
+
+// TestParseReplacesKeepsAModulePathThatStartsWithReplace is the negative
+// control for the parser.
+//
+// A module path may legitimately begin with the letters "replace". The
+// "replace" keyword is only a keyword when a space follows it - inside the
+// block form ("replace ( ... )") there is no keyword at all.
+//
+// Trimming the prefix unconditionally turns "replace.io/thing" into
+// ".io/thing". The replacement then names a module that does not exist, so
+// it stops taking effect, and the worktree's go.mod says something that was
+// never in the file.
+func TestParseReplacesKeepsAModulePathThatStartsWithReplace(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "go.mod", `module example.com/app
+
+go 1.26
+
+replace (
+	replace.io/thing => ../thing
+	example.com/other => ../other
+)
+`)
+
+	got := parseReplaces(filepath.Join(dir, "go.mod"))
+	if got["replace.io/thing"] != "../thing" {
+		t.Errorf("block form: 'replace.io/thing' = %q, want ../thing (got %v)",
+			got["replace.io/thing"], got)
+	}
+	if got["example.com/other"] != "../other" {
+		t.Errorf("block form: 'example.com/other' = %q, want ../other", got["example.com/other"])
+	}
+	if len(got) != 2 {
+		t.Errorf("parseReplaces() = %v, want 2 entries", got)
+	}
+}
+
+// TestPrepareWorktreeWritesTheModulePathUnchanged is the same rule at the
+// level that matters: the go.mod the worktree ends up with.
+//
+// A mangled module path produces a go.mod that no longer describes the
+// build - the replacement silently stops applying, and the failure shows up
+// much later as a dependency that cannot be resolved.
+func TestPrepareWorktreeWritesTheModulePathUnchanged(t *testing.T) {
+	base := t.TempDir()
+	repoRoot := filepath.Join(base, "app")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The caller's go.mod uses the block form.
+	writeFile(t, repoRoot, "go.mod", `module example.com/app
+
+go 1.26
+
+replace (
+	replace.io/thing => ../thing
+)
+`)
+
+	outer := t.TempDir()
+	worktree := filepath.Join(outer, "repo")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, worktree, "go.mod", "module example.com/app\n\ngo 1.26\n")
+
+	g := NewGo()
+	if err := g.PrepareWorktree(context.Background(), repoRoot, worktree); err != nil {
+		t.Fatalf("PrepareWorktree: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(worktree, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "replace replace.io/thing => ../thing") {
+		t.Errorf("the module path was mangled in the worktree's go.mod:\n%s", data)
+	}
+}
+
+// TestPrepareWorktreeDoesNotInheritAVersionPin is the negative control for
+// the inheritance rule.
+//
+// A replace that points at another VERSION of a module pins a dependency
+// version. The commit under review has to be judged against the versions it
+// was written against. Inheriting a version pin into the counterfactual
+// changes what gets built, and it changes it in the direction that hides
+// bugs - the very failure this tool exists to catch.
+func TestPrepareWorktreeDoesNotInheritAVersionPin(t *testing.T) {
+	base := t.TempDir()
+	repoRoot := filepath.Join(base, "app")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The caller's go.mod pins a version. That is a dependency decision,
+	// not a local environment setup.
+	writeFile(t, repoRoot, "go.mod", "module example.com/app\n\ngo 1.26\n\nreplace example.com/shared => example.com/shared v1.0.0\n")
+
+	outer := t.TempDir()
+	worktree := filepath.Join(outer, "repo")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, worktree, "go.mod", "module example.com/app\n\ngo 1.26\n")
+
+	g := NewGo()
+	if err := g.PrepareWorktree(context.Background(), repoRoot, worktree); err != nil {
+		t.Fatalf("PrepareWorktree: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(worktree, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "example.com/shared v1.0.0") {
+		t.Errorf("a version pin must not be inherited into the counterfactual:\n%s", data)
+	}
+}
+
+// TestPrepareWorktreeStillInheritsAnAbsoluteDirectoryTarget makes sure the
+// version-pin rule did not throw the baby out with the bathwater.
+//
+// CI injects an ABSOLUTE path in the case this whole feature exists for:
+//
+//	go mod edit -replace github.com/example/shared="$WORKSPACE/_shared"
+//
+// That is a directory, and it has to be inherited.
+func TestPrepareWorktreeStillInheritsAnAbsoluteDirectoryTarget(t *testing.T) {
+	base := t.TempDir()
+	repoRoot := filepath.Join(base, "app")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(base, "shared")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repoRoot, "go.mod",
+		"module example.com/app\n\ngo 1.26\n\nreplace example.com/shared => "+shared+"\n")
+
+	outer := t.TempDir()
+	worktree := filepath.Join(outer, "repo")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, worktree, "go.mod", "module example.com/app\n\ngo 1.26\n")
+
+	g := NewGo()
+	if err := g.PrepareWorktree(context.Background(), repoRoot, worktree); err != nil {
+		t.Fatalf("PrepareWorktree: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(worktree, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "replace example.com/shared =>") {
+		t.Errorf("an absolute directory target must still be inherited:\n%s", data)
 	}
 }
 
