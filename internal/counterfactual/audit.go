@@ -40,6 +40,10 @@ type Result struct {
 	TestCommand string
 	// FailureOutput is the tail of the test output when the run failed.
 	FailureOutput string
+	// SourceChange says how much the commit changed its source files.
+	//
+	// It decides how loudly to report that no test witnessed the change.
+	SourceChange sourceChange
 }
 
 // smallChangeLines is the number of changed lines below which a commit that
@@ -310,6 +314,16 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	res.FailureOutput = run.failureTail
 
 	res.Verdict = classify(run, a.isTest)
+
+	// How much the commit changed is what decides how loudly to report
+	// that no test witnessed it.
+	//
+	// An error here means "could not tell". That must not make the
+	// finding louder: an unanswered question is not evidence.
+	if change, err := a.sourceChange(ctx, sha, res.SourceFiles); err == nil {
+		res.SourceChange = change
+	}
+
 	res.Findings = append(res.Findings, verdictFindings(res, run)...)
 	return res, nil
 }
@@ -621,14 +635,40 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		out[len(out)-1].Kind = "proven-test"
 
 	case VerdictVacuous:
+		// How loudly to say this depends on how much changed.
+		//
+		// The rule is the same one the "no test at all" finding uses, and
+		// for the same reason. A commit that changed two lines and also
+		// touched a test file has produced a "no test witnessed it"
+		// result - but a change that small is usually a version string,
+		// a message or a rename, and there is nothing a test could say
+		// about it. Calling that a HIGH-severity accusation is a false
+		// alarm: the test file it points at may well be a good one.
+		//
+		// The asymmetry used to be the other way round: the same two
+		// lines were a warning when the commit shipped no test, and a
+		// high-severity finding when the commit happened to touch a test
+		// file.
+		severity := core.SevHigh
+		summary := "这个测试在撤掉修复后依然是绿的 —— 它没有测到修复修的那个行为"
+		detail := fmt.Sprintf(
+			"提交 %s 同时改了代码和测试。把修复撤掉、只留测试后，%d 个测试全部通过。\n"+
+				"这意味着这个测试在 bug 修复之前也会通过 —— 它从来没有看守过这个行为。",
+			res.Commit.Short, countPass(run))
+		if res.SourceChange.biggestFile <= smallChangeLines {
+			severity = core.SevWarn
+			summary = "改动很小，没有测试看着它 —— 多半不是问题"
+			detail = fmt.Sprintf(
+				"提交 %s 同时改了代码和测试，但代码那边只改了 %d 行。撤掉这几行、只留测试后，%d 个测试全部通过。\n"+
+					"改动这么小的时候，「没有测试守着它」多半不是问题 —— 版本号、消息文案、改个措辞都属于这一类。\n"+
+					"如果这几行真的改的是行为，那它需要测试。",
+				res.Commit.Short, res.SourceChange.biggestFile, countPass(run))
+		}
 		out = append(out, core.Finding{
 			Kind:     core.KindVacuousTest,
-			Severity: core.SevHigh,
-			Summary:  "这个测试在撤掉修复后依然是绿的 —— 它没有测到修复修的那个行为",
-			Detail: fmt.Sprintf(
-				"提交 %s 同时改了代码和测试。把修复撤掉、只留测试后，%d 个测试全部通过。\n"+
-					"这意味着这个测试在 bug 修复之前也会通过 —— 它从来没有看守过这个行为。",
-				res.Commit.Short, countPass(run)),
+			Severity: severity,
+			Summary:  summary,
+			Detail:   detail,
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Hint: "把断言落在可观察的行为上：断言具体的返回值、错误内容或状态，" +

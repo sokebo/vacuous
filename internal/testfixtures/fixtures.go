@@ -205,6 +205,39 @@ import (
 )
 ` + baseTestBody + skippedTestBody
 
+// TinyChangeFixture builds a repository whose commit changes one line of
+// code and touches a test file.
+//
+// It is the shape of a chore: a version string moves, a comment is
+// reworded, and the test file is edited for unrelated reasons (fixtures
+// renamed, a label changed). No test could witness any of that, and none
+// of it needs one.
+//
+// The commit still TOUCHED a test file, which is what puts it through the
+// counterfactual: remove the one changed line, keep the test file, and the
+// suite stays green. Reporting that as a high-severity "this test proves
+// nothing" accuses a test file that may be perfectly good, over a version
+// bump.
+func TinyChangeFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/tiny")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "version.go", versionConst)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Init(t)
+	// One line of code moves: the version.
+	m.Write(t, "version.go", `package fixture
+
+const Version = "1.1.0"
+`)
+	// The test file is touched for unrelated reasons.
+	m.Write(t, "greet_test.go", baseTest+`
+// A note that says nothing about the version.
+`)
+	m.Commit(t, "chore: set the version and note the release")
+	return m
+}
+
 // MultiModuleFixture builds a repository that holds a nested Go module next
 // to the code under review.
 //

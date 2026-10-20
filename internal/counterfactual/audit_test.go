@@ -72,6 +72,35 @@ func TestAuditNarrowsToTheModuleThatHoldsTheCode(t *testing.T) {
 	}
 }
 
+// TestAuditDoesNotAccuseATinyChange is the test for the false accusation.
+//
+// The commit changes one line (a version string) and touches a test file
+// for unrelated reasons. No test can witness a version bump, so the
+// counterfactual comes back green - and a tool that reads that as "your
+// test proves nothing" would file a high-severity finding against a test
+// file that is perfectly fine.
+//
+// The same rule the tool already applies to "a commit that shipped no test
+// at all" applies here: a change that small is a warning, not a finding.
+func TestAuditDoesNotAccuseATinyChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.TinyChangeFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	for _, f := range res.Findings {
+		if f.Kind == core.KindVacuousTest && f.Severity >= core.SevHigh {
+			t.Errorf("a one-line change must not be accused at high severity: %+v", f)
+		}
+	}
+}
+
 // TestAuditJudgesTheModuleThatHoldsTheFix is the test for a repository
 // that holds a nested Go module.
 //
