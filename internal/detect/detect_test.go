@@ -273,6 +273,49 @@ func TestGuardInstalledIsQuiet(t *testing.T) {
 	}
 }
 
+// TestWorkflowThatIsNotAPipelineIsQuiet is the precision control.
+//
+// A workflow that notifies a chat room, or checks a pull request
+// description, was never a test pipeline. Telling it to "add a test step"
+// is advice nobody asked for, and a checker that says it anyway is a
+// checker people switch off.
+func TestWorkflowThatIsNotAPipelineIsQuiet(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, ".github/workflows/notify.yml", `name: notify
+on: [push]
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Post to chat
+        run: curl -fsS -X POST "$WEBHOOK_URL" -d '{"text":"merged"}'
+`)
+	write(t, dir, ".github/workflows/pr-policy.yml", `name: pr-test-policy
+on: [pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            core.setFailed('missing test section');
+`)
+	commit(t, dir)
+
+	findings, err := GuardLiveness(dir)
+	if err != nil {
+		t.Fatalf("GuardLiveness: %v", err)
+	}
+	for _, f := range findings {
+		if strings.Contains(f.Summary, "测试步骤") {
+			t.Fatalf("a workflow that never was a test pipeline must not be reported: %+v", f)
+		}
+	}
+}
+
 // TestContinueOnErrorIsReported catches the CI job that runs the tests but
 // refuses to fail when they fail.
 //

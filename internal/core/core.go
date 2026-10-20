@@ -91,6 +91,16 @@ const (
 	// KindCoupled is inconclusive: the test could not be evaluated because
 	// it depends on the fix at compile time.
 	KindCoupled Kind = "coupled"
+	// KindEnvironment means the run could not produce evidence because the
+	// checkout was missing something the build needs - a generated
+	// artefact, a sibling repository, a submodule.
+	//
+	// It is a separate kind from KindCoupled because the two are
+	// opposites in meaning: one says "the test is welded to the fix", the
+	// other says "the environment was incomplete, so nobody knows".
+	// Filing them under one name makes the report say "the test is
+	// coupled" when the truth is "we could not run the test".
+	KindEnvironment Kind = "environment"
 	// KindBrokenChange is a change whose tests already fail without any
 	// surgery, which means the change itself is broken.
 	KindBrokenChange Kind = "broken-change"

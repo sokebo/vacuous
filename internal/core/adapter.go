@@ -84,3 +84,28 @@ type Adapter interface {
 	// Run executes the plan and parses the result into a RunResult.
 	Run(ctx context.Context, plan Plan) (RunResult, error)
 }
+
+// WorktreePreparer is an optional capability an adapter may implement.
+//
+// Some projects need things that live OUTSIDE the repository in order to
+// build. A Go module that replaces a dependency with a local path
+// ("replace ... => ../shared") is the common case: the sibling directory
+// has to be reachable from the checkout.
+//
+// A counterfactual worktree lives in a temporary directory, so those
+// neighbours are not there, and the build fails for a reason that has
+// nothing to do with the code under review. The audit would then report a
+// verdict about a build that never ran.
+//
+// An adapter that knows how to arrange for them does it here. The engine
+// asks; the adapter answers, because only the adapter knows the language.
+type WorktreePreparer interface {
+	// PrepareWorktree gives the worktree what it needs to build.
+	//
+	// repoRoot is the caller's repository, the one whose environment the
+	// worktree should mirror. worktreePath is the disposable checkout.
+	//
+	// A failure is not fatal: the build that follows will fail, and the
+	// engine reports that as an environment problem, which is honest.
+	PrepareWorktree(ctx context.Context, repoRoot, worktreePath string) error
+}

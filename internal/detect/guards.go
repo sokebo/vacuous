@@ -159,14 +159,29 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 		"pnpm test", "jest", "vitest", "cargo test", "mvn test", "gradle test",
 	}, opts.list(cfgTestCommands)...)
 
-	// Checks that are not tests but still catch a broken build: a syntax
-	// check, a type check, a linter. They are worth knowing about, because
-	// "CI has no tests" and "CI has nothing at all" are different
-	// situations, and only the second one means the workflow is blind.
+	// checkCommands are the commands that compile or lint the code.
+	//
+	// A workflow that runs one of them is a pipeline: it checks out the
+	// code and does something to it. A workflow that runs none of them is
+	// doing something else entirely - notifying a chat room, validating
+	// a pull request description, checking a release tag.
 	checkCommands := append([]string{
 		"py_compile", "compileall", "tsc", "eslint", "mypy", "ruff", "flake8",
 		"go vet", "golangci-lint", "staticcheck", "cargo check", "cargo clippy",
 	}, opts.list(cfgCheckCommands)...)
+
+	// pipelineCommands are the commands that mean "this workflow builds or
+	// checks the code".
+	//
+	// It is the yardstick for whether a workflow is EXPECTED to run tests.
+	// Demanding tests of a workflow that was never a test pipeline is
+	// noise, and noise is what teaches people to switch a checker off.
+	pipelineCommands := append([]string{
+		"go build", "go test", "go vet", "golangci-lint", "staticcheck", "make ",
+		"npm run build", "npm run lint", "npm test", "yarn build", "yarn test",
+		"pnpm build", "pnpm test", "tsc", "eslint", "cargo build", "mvn ", "gradle ",
+		"pytest", "tox", "prek", "ruff", "mypy", "py_compile", "compileall",
+	}, opts.list(cfgTestCommands)...)
 
 	var out []core.Finding
 	for _, e := range entries {
@@ -198,6 +213,15 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 					"找到: continue-on-error: true",
 					"去掉它，或者让它只作用在真正可选的步骤上"))
 			}
+			continue
+		}
+
+		// No test command in this workflow. Before saying anything, check
+		// that this workflow is one that was ever supposed to run tests.
+		// A notification workflow, a pull-request policy checker or a
+		// release-tag guard is not a test pipeline, and telling it to
+		// "add a test step" is advice nobody asked for.
+		if !runsAnyCommand(text, pipelineCommands) {
 			continue
 		}
 

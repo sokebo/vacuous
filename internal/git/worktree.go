@@ -17,24 +17,32 @@ import (
 // user's repository: a counterfactual run must not be able to touch the
 // tree the user is working in, not even by accident.
 //
+// The checkout sits one level down inside a directory of its own. That
+// extra level is not decoration: a project whose go.mod replaces a
+// dependency with a local path ("replace ... => ../shared") needs that
+// sibling directory to be reachable from the checkout, and "next to it"
+// has to be a place this run owns - not the shared temporary directory,
+// where two runs would fight over the same name.
+//
 // The caller owns the returned worktree and must Remove it. Removing twice
 // is not an error.
 func (r *Repo) NewWorktree(rev string) (core.Worktree, error) {
 	if strings.TrimSpace(rev) == "" {
 		return nil, errors.New("git: NewWorktree requires a revision")
 	}
-	dir, err := os.MkdirTemp("", "vacuous-worktree-")
+	outer, err := os.MkdirTemp("", "vacuous-worktree-")
 	if err != nil {
 		return nil, fmt.Errorf("git: create a temporary worktree directory: %w", err)
 	}
+	dir := filepath.Join(outer, "repo")
 	// git is happy to populate an existing empty directory, and refusing
 	// to hand it a directory we did not create would make the temporary
 	// path harder to reason about.
 	if _, err := r.run("worktree", "add", "--detach", dir, rev); err != nil {
-		_ = os.RemoveAll(dir)
+		_ = os.RemoveAll(outer)
 		return nil, fmt.Errorf("git: create a worktree at %q: %w", rev, err)
 	}
-	wt := &worktree{repo: r, path: dir}
+	wt := &worktree{repo: r, path: dir, outer: outer}
 	r.register(wt)
 	return wt, nil
 }
@@ -80,6 +88,9 @@ func (r *Repo) unregister(wt *worktree) {
 type worktree struct {
 	repo *Repo
 	path string
+	// outer is the directory this worktree owns. It holds the checkout
+	// and whatever the audit staged next to it.
+	outer string
 
 	// mu guards removed.
 	mu sync.Mutex
@@ -142,6 +153,14 @@ func (w *worktree) Remove() error {
 	}
 
 	rmErr := os.RemoveAll(w.path)
+	if w.outer != "" {
+		// The outer directory also holds whatever the audit staged
+		// next to the checkout. Leaving it behind would litter the
+		// temporary directory with sibling dependencies.
+		if err := os.RemoveAll(w.outer); err != nil && rmErr == nil {
+			rmErr = err
+		}
+	}
 	w.repo.unregister(w)
 
 	if gitFailed {

@@ -93,6 +93,11 @@ var environmentFailurePatterns = []string{
 	"cannot find package",
 	"no such file or directory",
 	"submodule",
+	// A go.mod that replaces a dependency with a local path, where the
+	// sibling directory is not reachable from the checkout. This is the
+	// developer's environment, not a coupling between the test and the
+	// fix, and saying otherwise blames the test for the environment.
+	"replacement directory",
 }
 
 // isEnvironmentFailure reports whether build errors point at an incomplete
@@ -402,6 +407,17 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 	// checkout. It is a copy: nothing is written back.
 	a.copyUntrackedBuildInputs(ctx, wt.Path())
 
+	// Some projects need neighbours that live outside the repository
+	// entirely - a Go module that replaces a dependency with a local
+	// path, for instance. The adapter knows the language, so it is the
+	// adapter that knows how to stage them.
+	if preparer, ok := a.adapter.(core.WorktreePreparer); ok {
+		// A failure here is not fatal. The build that follows explains
+		// what was missing, and the engine reports that as an environment
+		// problem rather than as a statement about the test.
+		_ = preparer.PrepareWorktree(ctx, a.repo.Root(), wt.Path())
+	}
+
 	// Apply only the test-side changes. The fix stays out.
 	testPaths := pathsOf(res.TestFiles)
 	patch, err := a.repo.Patch(ctx, sha, testPaths)
@@ -602,17 +618,19 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 
 	case VerdictEnvironment:
 		out = append(out, core.Finding{
-			Kind:     core.KindCoupled,
+			Kind:     core.KindEnvironment,
 			Severity: core.SevInfo,
 			Summary:  "这个提交没法判定：检查出的代码缺东西，跑不起来",
 			Detail: fmt.Sprintf(
 				"提交 %s 的测试跑不起来，但原因不是测试和修复耦合 —— "+
-					"是检查出的代码缺了构建需要的东西（通常是未入库的生成物）。\n"+
+					"是检查出的代码缺了构建需要的东西（通常是未入库的生成物，"+
+					"或者一个用 replace 指向本地目录的依赖在检出的环境里找不到）。\n"+
 					"这跟测试好不好无关，所以不下结论。",
 				res.Commit.Short),
 			File:     testFile,
 			Evidence: evidenceFor(run),
-			Hint:     "让生成物入库，或者在跑审计前先构建一次",
+			Hint: "看证据里的编译错误：缺什么就补什么。" +
+				"本地依赖的，检查一下该目录在不在；生成物的，先构建一次再审",
 		})
 
 	case VerdictBroken:

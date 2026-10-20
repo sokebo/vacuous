@@ -256,6 +256,68 @@ delta，于是「这个仓库零测试」这条发现消失了 —— 工具看�
 临时 worktree，以及在临时目录里建 worktree。实测跑一遍 `--mode all`，
 调用方仓库的文件集合和 mtime 逐字节未变。
 
+### 3.11 本地 replace 依赖被判成「测试和修复耦合」
+
+**现象**：在 example 的两个真实 Go 仓上跑审计，全部提交都判成
+`coupled（无法判定：测试和修复耦合在一起，拆不开）`。
+
+**根因**：那两个仓的 `go.mod` 里有
+`replace github.com/example/shared-lib => ../shared` —— 依赖一个**同级
+目录**。开发者的机器上有这个目录（软链到 `../shared-lib`），CI 里
+也是 checkout 出来再 `ln -sfn` 建链。
+
+而反事实 worktree 建在临时目录下，旁边没有 `../shared` → 编译失败 →
+`replacement directory ../shared does not exist`。
+
+工具把这条当成了耦合。**这是最坏的一种错**：把环境的错算到测试头上，
+正是本项目存在的意义所反对的事。
+
+**修复**（三处）：
+1. 适配器新增一个**可选能力** `PrepareWorktree`：让语言适配器负责把
+   「仓库之外的邻居」摆到 worktree 旁边。Go 适配器解析 `go.mod` 的 replace
+   指令，把本地路径的依赖用软链摆到 checkout 旁边 —— 和 CI 干的
+   `ln -sfn "$GITHUB_WORKSPACE/_shared" "$GITHUB_WORKSPACE/../shared"`
+   是同一件事。
+2. worktree 改成住在**自己的私有目录**里（`<tmp>/vacuous-XXX/repo`），
+   邻居才有地方摆，而且两个并发运行不会抢同一个名字。
+3. `replacement directory` 加进环境问题的特征表；环境判定改用**独立的
+   kind**（`environment`），不再混在 `coupled` 里 —— 分类行说「coupled 2」
+   而实际是 2 条环境问题，那是在骗人。
+
+**验证**：修完之后，同样两个仓的判定从「耦合」变成「环境：检查出的代码缺
+东西，跑不起来」，指向的是真实原因。
+
+### 3.12 不是流水线的 workflow 被要求加测试
+
+**现象**：两个仓各报了 4 条「CI workflow 里没有任何测试步骤」。逐条核实，
+其中 3 条是**误报**：
+
+- `pr-test-policy.yml` —— 读 PR 描述、查文件列表的**策略校验器**，它本来
+  就不该跑测试
+- `wechat-merge-notify.yml` —— 发微信通知的
+- `release-tag-guard.yml` —— 检查发布 tag 的
+
+**根因**：工具假设**每个 workflow 都应该跑测试**。
+
+**修复**：只有「看起来是代码流水线」的 workflow 才该被期待跑测试 ——
+判据是它有没有出现构建 / lint / 编译类命令。通知类、策略类、守卫类
+workflow 一律不报。
+
+**留下的那条是真的**：`prek.yml` 会 checkout 代码、跑 golangci-lint，但
+没有任何测试命令 —— 它挡得住语法和类型错误，挡不住「测试是空的」。
+
+### 3.13 环境判定混用了 coupled 这个 kind
+
+**现象**：分类行写 `coupled 2`，实际那两条是环境问题。
+
+**根因**：环境判定复用了 `KindCoupled`。
+
+**修复**：独立的 `environment` kind。这两件事在含义上是相反的：一个是
+「测试和修复焊死了」，一个是「环境不全，谁也不知道」。混在一起，报告就会
+在「测试有问题」和「我们没跑成」之间乱指。
+
+---
+
 ## 4. Python 适配器在真实仓库上的验证
 
 `harness`（本地唯一的 Python 仓，有 `pytest.ini` 和 6 个真测试文件）
