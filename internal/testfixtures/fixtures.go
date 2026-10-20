@@ -205,6 +205,76 @@ import (
 )
 ` + baseTestBody + skippedTestBody
 
+// MultiModuleFixture builds a repository that holds a nested Go module next
+// to the code under review.
+//
+// The nested module is a passing test suite of its own. The point of the
+// fixture is the SHAPE of the repository, not the behaviour of the nested
+// code: a repository like this must be judged by the module that holds the
+// fix and its test.
+//
+// It is an ordinary shape - fixtures, examples and vendored helpers are all
+// their own module - and it is the shape this repository itself has.
+func MultiModuleFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/multimodule")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest)
+	// A nested module with its own suite, which passes on its own.
+	m.Write(t, "nested/go.mod", "module example.com/nested\n\ngo 1.26\n")
+	m.Write(t, "nested/nested.go", "package nested\n\n// Ping returns a greeting.\nfunc Ping() string { return \"pong\" }\n")
+	m.Write(t, "nested/nested_test.go", `package nested
+
+import "testing"
+
+func TestPing(t *testing.T) {
+	if Ping() != "pong" {
+		t.Fatal("ping must answer pong")
+	}
+}
+`)
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest+witnessTestBody)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
+
+// MultiModuleScopedFixture builds a repository with a nested Go module next
+// to a package that lives in a subdirectory of the root module.
+//
+// It differs from MultiModuleFixture in one deliberate way: the code under
+// review sits in "app/", so the audit narrows the run to "./app/...". That
+// pattern is relative to the root module and names nothing in the nested
+// one.
+//
+// Running it in the nested module anyway makes go fail with "lstat ...: no
+// such file or directory" - an error the tool caused itself, which it would
+// then read as "the checkout was incomplete" and report as "cannot tell".
+func MultiModuleScopedFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/scoped")
+	m.Write(t, "app/greet.go", buggySource)
+	m.Write(t, "app/greet_test.go", baseTest)
+	m.Write(t, "nested/go.mod", "module example.com/nested\n\ngo 1.26\n")
+	m.Write(t, "nested/nested.go", "package nested\n\n// Ping returns a greeting.\nfunc Ping() string { return \"pong\" }\n")
+	m.Write(t, "nested/nested_test.go", `package nested
+
+import "testing"
+
+func TestPing(t *testing.T) {
+	if Ping() != "pong" {
+		t.Fatal("ping must answer pong")
+	}
+}
+`)
+	m.Init(t)
+	m.Write(t, "app/greet.go", fixedSource)
+	m.Write(t, "app/greet_test.go", baseTest+witnessTestBody)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
+
 // VacuousFixture builds a repository whose fix ships with a test that does
 // not actually depend on the fix.
 //

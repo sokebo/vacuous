@@ -43,6 +43,70 @@ func newAuditor(t *testing.T, dir string) *Auditor {
 	return a
 }
 
+// TestAuditNarrowsToTheModuleThatHoldsTheCode is the test for a repository
+// with a nested module AND code in a subdirectory.
+//
+// The audit narrows the run to the package that holds the fix. That
+// pattern is relative to the root module, and it names nothing in the
+// nested one. Running it there anyway makes go fail with "lstat ...: no
+// such file or directory" - an error the tool caused itself - and the tool
+// would report "cannot tell" instead of the verdict it actually has.
+//
+// "Cannot tell" is a safe answer, but it is a useless one: it is what the
+// tool says when it has nothing, and here it had an answer in hand.
+func TestAuditNarrowsToTheModuleThatHoldsTheCode(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.MultiModuleScopedFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictProven {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictProven, res.Verdict, res.Findings)
+	}
+}
+
+// TestAuditJudgesTheModuleThatHoldsTheFix is the test for a repository
+// that holds a nested Go module.
+//
+// The witness test lives in the root module; the nested module has a
+// passing suite of its own. The verdict must be "proven" - removing the
+// fix turns the witness test red.
+//
+// The failure mode this pins down is the worst one for this tool: if the
+// root module is not run, the only suite that runs is the nested one, it
+// passes, and the tool reports a high-severity "this test proves nothing"
+// about a test that does exactly the opposite. A false accusation is worse
+// than no answer: it teaches people to ignore the tool.
+func TestAuditJudgesTheModuleThatHoldsTheFix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.MultiModuleFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictProven {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictProven, res.Verdict, res.Findings)
+	}
+	for _, f := range res.Findings {
+		if f.Kind == "vacuous-test" {
+			t.Errorf("the root module's suite did not run, so the tool accused a real witness: %+v", f)
+		}
+	}
+}
+
 // TestAuditDetectsVacuousTest is the decisive test of this tool.
 //
 // It builds a repository whose fix ships with a test that does not depend on

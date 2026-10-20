@@ -1,8 +1,10 @@
 package adapters
 
 import (
+	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -56,11 +58,35 @@ func (g *Go) runInModules(ctx context.Context, plan core.Plan) (core.RunResult, 
 	}
 
 	merged := core.RunResult{Command: plan.Command()}
+
+	// The root module is the one the plan was written for: its pattern is
+	// relative to it. It runs first, and its result is the one that decides
+	// the verdict.
+	//
+	// It used to be skipped whenever the repository held a nested module -
+	// the walk below started at the nested ones. A repository that keeps
+	// fixtures in a nested module (this one does) then got judged by its
+	// testdata: the real suite never ran, and the verdict was invented out
+	// of a run that never happened.
+	root, err := g.runSingle(ctx, plan)
+	if err != nil {
+		return merged, err
+	}
+	mergeRunResult(&merged, root)
+
 	for _, dir := range moduleDirs(plan.Dir, modules) {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
 			// The module is not there in this checkout. Skip it rather
 			// than failing: a counterfactual tree may not have every
 			// module.
+			continue
+		}
+		// A pattern that names packages in the root module says nothing
+		// about the others. Running it there produces "matched no
+		// packages" - an error this tool caused itself, which would then
+		// be read as "the checkout was incomplete" and drown out the
+		// verdict the root module did produce.
+		if !g.moduleHasScope(ctx, dir, plan.PkgPattern) {
 			continue
 		}
 		sub := plan
@@ -69,12 +95,49 @@ func (g *Go) runInModules(ctx context.Context, plan core.Plan) (core.RunResult, 
 		if err != nil {
 			return merged, err
 		}
-		merged.Outcomes = append(merged.Outcomes, res.Outcomes...)
-		merged.BuildErrors = append(merged.BuildErrors, res.BuildErrors...)
-		if res.ExitCode != 0 {
-			merged.ExitCode = res.ExitCode
-		}
-		merged.DurationMS += res.DurationMS
+		mergeRunResult(&merged, res)
 	}
 	return merged, nil
+}
+
+// moduleHasScope reports whether the module at dir holds any of the
+// packages the pattern names.
+//
+// The pattern is relative to the module it was computed for. In a module
+// that holds none of those packages, go fails with "lstat ...: no such file
+// or directory" - which says nothing about the code under review, only
+// that the pattern does not apply here.
+//
+// Any other failure is left alone: a module whose own go.mod is broken is
+// a real problem, and the run that follows will say so.
+func (g *Go) moduleHasScope(ctx context.Context, dir, pattern string) bool {
+	fields := strings.Fields(pattern)
+	if len(fields) == 0 {
+		// No narrowing: every module runs the whole suite.
+		return true
+	}
+	args := append([]string{"list"}, fields...)
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := stderr.String()
+		if strings.Contains(msg, "no such file or directory") ||
+			strings.Contains(msg, "matched no packages") {
+			return false
+		}
+		return true
+	}
+	return true
+}
+
+// mergeRunResult folds one module's result into the merged one.
+func mergeRunResult(merged *core.RunResult, res core.RunResult) {
+	merged.Outcomes = append(merged.Outcomes, res.Outcomes...)
+	merged.BuildErrors = append(merged.BuildErrors, res.BuildErrors...)
+	if res.ExitCode != 0 {
+		merged.ExitCode = res.ExitCode
+	}
+	merged.DurationMS += res.DurationMS
 }

@@ -523,6 +523,67 @@ go mod edit -replace github.com/example/shared-lib="$GITHUB_WORKSPACE/_shared"
 
 ---
 
+### 3.19 有嵌套 module 的仓库，根 module 根本没跑 —— 判决是凭空来的
+
+**现象**：2026-10-20 21:xx 用工具审它自己那个提交（`f7113e9`，加闸门那笔），
+出来的结论是「environment：检查出的代码缺东西，跑不起来」，INFO 级。
+
+不合理的地方有三层，一层比一层严重：
+
+1. 这笔提交在**根 module** 里，根 module 的测试完全能跑；
+2. 手工复现（父提交建树 → 只打测试补丁 → `go test ./internal/gate/...`）拿到的
+   是**编译错误**（`undefined: Fingerprint`）—— 那是「耦合」，不是「环境」；
+3. 拿另外三笔提交重审，全是「environment」。
+
+**根因**：`runInModules` 只在**嵌套 module** 里跑计划，**根 module 被跳过了**
+—— `findModuleRoots` 只返回嵌套的那些（`rel == "."` 直接跳过）。
+
+于是：
+
+- 根 module 的测试**一次都没跑过**。跑的是 `internal/adapters/testdata/` 底下
+  那些夹具 module。
+- 判决是拿夹具 module 的结果推出来的。这个仓的夹具里有一个
+  `goproj-broken`（故意编译不过），于是一笔提交只要碰了根 module 的代码，
+  工具就可能报一条**高危**的「这个测试什么都没测到」—— 而被审的那份测试
+  恰恰**测到了**。
+- 范围（`./internal/gate/...`）是**相对根 module** 算的。拿到嵌套 module 里
+  一跑，go 报 `lstat ./internal/gate/: no such file or directory` —— 这是工具
+  自己造出来的错，`isEnvironmentFailure` 认得这个串，于是判成「环境问题」，
+  把根 module 本来能给出的结论冲掉了。
+
+**这个工具的全部意义是「判决必须来自真的执行」。这里判决来自一次根本没发生
+的执行。**
+
+**为什么一直没人发现**：6 个被审仓里 alpha / beta / epsilon / zeta 都是
+单 module，gamma 有 7 个 module 但只跑过 `--mode check`。而**这个仓
+自己**有 4 个嵌套 module（testdata 夹具）—— 也就是说，CI 里那个
+`vacuous --mode audit --fail-on critical` 的 self-check job，**从第一天起就
+是装饰品**：它审的每一笔提交都是 environment，INFO 级，`--fail-on critical`
+永远不可能触发。
+
+**修复**（`internal/adapters/modules.go`）：
+
+1. **根 module 先跑**，它的结果才是判决的依据。嵌套 module 排在后面。
+2. **范围之外的 module 直接跳过**。范围是相对根 module 算的，在别的 module
+   里本来就什么都不指向；在那儿跑只会造出「lstat: no such file」这种自造的
+   错。判断方式是先用 `go list <范围>` 问那个 module 有没有这些包；只有
+   「找不到」这一种失败算跳过，别的失败照旧暴露（fail closed）。
+
+**负对照**：两个夹具，两个拆法。
+
+| 夹具 | 形状 | 拆掉修复后 |
+|---|---|---|
+| `MultiModuleFixture` | 代码在仓库根，嵌套 module 有自己的绿测试 | 根 module 不跑 → 只剩嵌套 module 的绿测试 → **判成「vacuous」**（高危误伤） |
+| `MultiModuleScopedFixture` | 代码在 `app/` 子目录（范围是 `./app/...`） | 范围照跑所有 module → 嵌套 module 报 `lstat ./app/: no such file` → **判成「environment」**（有结论却不说） |
+
+两个拆法分别变红、互不干扰，说明两个测试盯的是两半，不是同一个现象。
+
+**修完之后**，同样三笔提交的结果从「environment」变成了真结论：
+`f7113e9` / `36741f3` / `979bb52` → **coupled**（撤掉修复后测试编译不过），
+`3ad45de` → **proven**（测试真的守住了那个行为）。
+
+---
+
 ### 3.18 闸门把自己弄失效了 —— 每轮都误报「有变化」
 
 **现象**：定时校验任务的变更检测闸门，每一轮都报「有变化」。
@@ -696,6 +757,17 @@ vacuous --mode audit --commit 6896fd1545
 
 CI 里有两个 job：`build`（fmt / vet / build / test -race / 空缓存 test）和
 `self-check`（用 vacuous 审 vacuous 自己）。
+
+> **2026-10-20 21:xx 补一句**：修 3.19 之前，`self-check` 这个 job **是个
+> 装饰品**。这个仓有 4 个嵌套 module（testdata 夹具），于是根 module 的测试
+> 一次都没跑过，审每一笔提交都得出「environment」，INFO 级 ——
+> `--fail-on critical` 永远不会触发。修完之后它才真的在审东西：现在这个仓
+> 自己的结论是 `proven 3 · vacuous 0 · 无测试 2 · 无法判定 5`。
+>
+> 剩下的 1 条 environment 是 `a5b4e3b`（仓库改名、模块路径跟着换的那笔）。
+> 它的反事实树是「旧模块路径 + 新 import」，两半凑不到一起，于是测试跑不起来
+> 又说不出原因。判成「判不出来」是对的 —— 这个方法对「改模块路径」这类提交
+> 本来就笨，诚实地说不出来，好过硬给一个结论。
 
 ---
 

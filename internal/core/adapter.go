@@ -41,6 +41,13 @@ type Plan struct {
 	Env []string
 	// Description is a human-readable one-liner for the report.
 	Description string
+	// PkgPattern is the package pattern the plan narrows to, if any.
+	//
+	// It is relative to Dir. A runner that walks several modules has to
+	// know which packages this plan is about: a pattern that names
+	// packages in one module says nothing about the others, and running
+	// it there anyway produces an error the runner caused itself.
+	PkgPattern string
 }
 
 // Command renders the plan as a copy-pasteable shell string.

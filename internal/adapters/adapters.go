@@ -142,13 +142,16 @@ func (g *Go) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, error) 
 	args := []string{"go", "test", "-json", "-count=1"}
 
 	// A package pattern narrows the run. Otherwise the whole module runs.
+	pattern := ""
 	switch {
 	case req.Target.PkgPattern != "":
+		pattern = req.Target.PkgPattern
 		args = append(args, strings.Fields(req.Target.PkgPattern)...)
 	case len(req.Target.Files) > 0:
 		// Go selects by package, not by file, so file targets have to be
 		// mapped onto the packages that contain them.
 		if pkgs := g.packagesForFiles(req.Root, req.Target.Files); len(pkgs) > 0 {
+			pattern = strings.Join(pkgs, " ")
 			args = append(args, pkgs...)
 		} else {
 			args = append(args, "./...")
@@ -184,6 +187,7 @@ func (g *Go) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, error) 
 		Dir:         req.Root,
 		Env:         env,
 		Description: "go test -json -count=1",
+		PkgPattern:  pattern,
 	}, nil
 }
 
