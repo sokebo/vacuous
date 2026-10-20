@@ -1,0 +1,445 @@
+// Package testfixtures provides the repository fixtures that the end-to-end
+// tests of vacuous run against.
+//
+// Every fixture here is a real, throwaway git repository built from scratch.
+// The tests never clone an existing repository: a test that depends on the
+// host's repository layout is a test that breaks the moment the host
+// changes, and the whole point of this tool is to be trustworthy about
+// exactly that kind of thing.
+//
+// The fixtures mirror failures that actually occur in the wild:
+//
+//   - vacuous:  the test passes with or without the fix
+//   - proven:   the test goes red when the fix is removed
+//   - notest:   the fix landed with no test at all
+//   - skipped:  the test is present but never executes
+package testfixtures
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// Repo is a throwaway git repository with no language attached.
+//
+// It is the right fixture for questions about what vacuous does in a
+// repository that has no test runner at all: no go.mod means the Go adapter
+// does not claim it, which is the situation under test.
+type Repo struct {
+	// Dir is the absolute path of the repository root.
+	Dir string
+}
+
+// NewRepo creates an empty repository in a temp directory.
+func NewRepo(t *testing.T) *Repo {
+	t.Helper()
+	return &Repo{Dir: t.TempDir()}
+}
+
+// Write writes a file into the repository, creating parent directories.
+func (r *Repo) Write(t *testing.T, path, content string) {
+	t.Helper()
+	r.write(t, path, content)
+}
+
+// WriteExecutable writes a file with the executable bit set.
+//
+// Git hooks are only recognised when they are executable, and a guard that
+// is not executable is not a guard. Fixtures that need one have to say so.
+func (r *Repo) WriteExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	full := filepath.Join(r.Dir, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(full), err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o755); err != nil {
+		t.Fatalf("write %s: %v", full, err)
+	}
+}
+
+func (r *Repo) write(t *testing.T, path, content string) {
+	t.Helper()
+	full := filepath.Join(r.Dir, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(full), err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", full, err)
+	}
+}
+
+// Git runs a git command in the repository and fails the test on error.
+func (r *Repo) Git(t *testing.T, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = r.Dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=fixture",
+		"GIT_AUTHOR_EMAIL=fixture@example.com",
+		"GIT_COMMITTER_NAME=fixture",
+		"GIT_COMMITTER_EMAIL=fixture@example.com",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+// Init makes the directory a git repository with one initial commit.
+func (r *Repo) Init(t *testing.T) {
+	t.Helper()
+	r.Git(t, "init", "-q", "-b", "main")
+	r.Git(t, "add", "-A")
+	r.Git(t, "commit", "-q", "-m", "initial commit")
+}
+
+// Commit stages everything and commits it.
+func (r *Repo) Commit(t *testing.T, message string) string {
+	t.Helper()
+	r.Git(t, "add", "-A")
+	r.Git(t, "commit", "-q", "-m", message)
+	return strings.TrimSpace(r.Git(t, "rev-parse", "HEAD"))
+}
+
+// Head returns the current HEAD sha.
+func (r *Repo) Head(t *testing.T) string {
+	t.Helper()
+	return strings.TrimSpace(r.Git(t, "rev-parse", "HEAD"))
+}
+
+// GoModule is a minimal but real Go module used as a fixture project.
+type GoModule struct {
+	*Repo
+}
+
+// NewGoModule creates a Go module in a temp directory and returns it.
+func NewGoModule(t *testing.T, name string) *GoModule {
+	t.Helper()
+	r := NewRepo(t)
+	r.write(t, "go.mod", "module "+name+"\n\ngo 1.26\n")
+	return &GoModule{Repo: r}
+}
+
+// The bug the fixtures share.
+//
+// Before the fix, Greet returns the wrong thing for an empty name. After the
+// fix it returns the right thing. A test that asserts on Greet's result is a
+// real witness; a test that asserts something unrelated is vacuous.
+
+const buggySource = `package fixture
+
+// Greet returns a greeting.
+func Greet(name string) string {
+	return "hello, " + name
+}
+`
+
+const fixedSource = `package fixture
+
+// Greet returns a greeting.
+func Greet(name string) string {
+	if name == "" {
+		return "hello, stranger"
+	}
+	return "hello, " + name
+}
+`
+
+// witnessTestBody asserts on the behaviour the fix changes.
+//
+// Removing the fix turns this test red, so it witnesses the fix.
+const witnessTestBody = `
+func TestGreetEmptyName(t *testing.T) {
+	got := Greet("")
+	if got != "hello, stranger" {
+		t.Fatalf("Greet(\"\") = %q, want %q", got, "hello, stranger")
+	}
+}
+`
+
+// unrelatedTestBody asserts on something the fix never touches.
+//
+// It passes with or without the fix, so it witnesses nothing.
+const unrelatedTestBody = `
+func TestVersionIsNotEmpty(t *testing.T) {
+	if Version == "" {
+		t.Fatal("version must not be empty")
+	}
+}
+`
+
+// versionConst is a constant the unrelated test asserts on. It lives in
+// its own file so that the test file can change without touching it.
+const versionConst = `package fixture
+
+const Version = "1.0.0"
+`
+
+// baseTest is the test file the repositories start with: one test that
+// passes and has nothing to do with the fix.
+//
+// The import block lists exactly what baseTestBody uses. An extra import
+// would not be a style problem: Go rejects an unused import as a build
+// failure, and a build failure inside the counterfactual worktree makes the
+// audit engine answer "coupled" instead of "proven" or "vacuous" - the
+// fixture would be lying about what it is testing.
+const baseTest = `package fixture
+
+import (
+	"testing"
+)
+` + baseTestBody
+
+// corpusTest is the test file for the skipped fixture: the base test plus a
+// corpus-driven test that needs os and strings.
+const corpusTest = `package fixture
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+` + baseTestBody + skippedTestBody
+
+// VacuousFixture builds a repository whose fix ships with a test that does
+// not actually depend on the fix.
+//
+// This is the shape that coverage metrics reward and reality punishes: the
+// test file is touched by the commit, the test passes, the coverage counter
+// goes up, and the bug is still unguarded.
+//
+// The test file is modified by the fix commit on purpose. A test file that
+// git does not record as changed never appears in the commit's diff, and a
+// commit whose test file is untouched is not the shape this tool is about.
+func VacuousFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/vacuous")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "version.go", versionConst)
+	m.Write(t, "greet_test.go", baseTest+unrelatedTestBody)
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest+unrelatedTestBody+`
+func TestVersionIsSet(t *testing.T) {
+	if Version == "" {
+		t.Fatal("version must not be empty")
+	}
+}
+`)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
+
+// ProvenFixture builds a repository whose fix ships with a test that really
+// does depend on the fix. Removing the fix turns the test red.
+//
+// The witness test is ADDED by the fix commit, which is the ordinary shape:
+// a bug is found, the fix is written, and a test that pins the behaviour
+// comes with it. Removing the fix and keeping the test leaves a test that
+// fails, because the behaviour it pins is the behaviour the fix introduced.
+func ProvenFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/proven")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest+witnessTestBody)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
+
+// NoTestFixture builds a repository whose fix ships with no test at all.
+func NoTestFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/notest")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
+
+// CoupledFixture builds a repository where the fix and its test cannot be
+// separated, and where ANOTHER package in the same repository compiles and
+// passes.
+//
+// The second package is the point of this fixture. Without it, a package
+// that fails to build is the only thing in the run, and "the suite did not
+// run" is obvious. With it, the run contains passing tests AND a build
+// failure, and a tool that counts tests globally will happily report
+// "everything passed, so the test is vacuous" - a verdict invented out of a
+// run that never happened.
+//
+// This is the exact shape that made vacuous report a real commit in a real
+// repository as "vacuous" when its package had not compiled at all.
+func CoupledFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/coupled")
+
+	m.Write(t, "stable/stable.go", `package stable
+
+// Stable always works.
+func Stable() int { return 1 }
+`)
+	m.Write(t, "stable/stable_test.go", `package stable
+
+import "testing"
+
+func TestStable(t *testing.T) {
+	if Stable() != 1 {
+		t.Fatal("bad")
+	}
+}
+`)
+	m.Write(t, "coupled/coupled.go", `package coupled
+
+// Matcher finds things.
+func Matcher(s string) string { return s }
+`)
+	m.Init(t)
+
+	// The fix introduces the constant, and the test that witnesses it
+	// arrives with the fix. Remove the fix and the test no longer
+	// compiles: the two are welded together.
+	m.Write(t, "stable/stable.go", `package stable
+
+// Stable always works.
+func Stable() int { return 1 }
+
+// Extra is added by the fix commit.
+func Extra() int { return 2 }
+`)
+	m.Write(t, "coupled/coupled.go", `package coupled
+
+// refPat is introduced by the fix commit.
+const refPat = "pattern"
+
+// Matcher finds things.
+func Matcher(s string) string { return s }
+`)
+	m.Write(t, "coupled/coupled_test.go", `package coupled
+
+import "testing"
+
+func TestMatcher(t *testing.T) {
+	if Matcher(refPat) == "" {
+		t.Fatal("bad")
+	}
+}
+`)
+	m.Commit(t, "fix: add a matcher pattern, with a test")
+	return m
+}
+
+// TestOnlyFixture builds a repository whose commit adds tests and changes
+// no code.
+//
+// Such a commit has no fix to take away, so the counterfactual question
+// has no answer. It is not vacuous: the tests it added may be perfectly
+// good tests of behaviour that an earlier commit introduced.
+func TestOnlyFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/testonly")
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Init(t)
+	m.Write(t, "greet_test.go", baseTest+witnessTestBody)
+	m.Commit(t, "test: cover the empty-name greeting")
+	return m
+}
+
+// CosmeticFixture builds a repository whose commit changes a source file
+// without changing what it does: a comment is added and the indentation
+// moves.
+//
+// A commit like that does not need a test, and a tool that demands one
+// teaches its users to ignore it.
+func CosmeticFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/cosmetic")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Init(t)
+	m.Write(t, "greet.go", `package fixture
+
+// Greet returns a greeting.
+//
+// The empty name is handled by the caller.
+func Greet(name string) string {
+	return "hello, " + name
+}
+`)
+	m.Commit(t, "docs: explain the empty-name case")
+	return m
+}
+
+// baseTestBody is the body of the starting test file.
+const baseTestBody = `
+func TestGreetNormalName(t *testing.T) {
+	if Greet("bob") != "hello, bob" {
+		t.Fatal("unexpected greeting")
+	}
+}
+`
+
+// skippedTestBody reads a corpus that is not in the repository.
+//
+// On the developer's machine the corpus exists, so the test runs and passes.
+// In a clean checkout it does not exist, so the test skips - and a skip is
+// invisible in the output. This is the single most expensive failure mode in
+// the wild, and it looks exactly like success.
+const skippedTestBody = `
+func loadCorpus(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile("testdata/corpus.jsonl")
+	if err != nil {
+		t.Skipf("corpus unavailable: %v", err)
+	}
+	return splitLines(string(data))
+}
+
+func splitLines(s string) []string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func TestGreetAgainstCorpus(t *testing.T) {
+	corpus := loadCorpus(t)
+	if len(corpus) == 0 {
+		t.Fatal("corpus must not be empty")
+	}
+	for _, name := range corpus {
+		if Greet(name) == "" {
+			t.Fatalf("greeting for %q must not be empty", name)
+		}
+	}
+}
+`
+
+// SkippedFixture builds a repository whose test is present but never runs,
+// because the corpus it needs is not in the repository.
+//
+// The test file is modified by the fix commit so that it appears in the
+// commit's diff, the way a real change would.
+func SkippedFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/skipped")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", corpusTest)
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", corpusTest+witnessTestBody)
+	m.Commit(t, "fix: greet an empty name, with a corpus-driven test")
+	return m
+}

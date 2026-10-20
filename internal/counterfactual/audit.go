@@ -1,0 +1,667 @@
+// Package counterfactual runs the decisive experiment: take a commit that
+// claims to fix something, remove the fix, keep the test, and see whether the
+// test still passes.
+//
+// The direction matters and is not negotiable. A test that goes red when the
+// fix is removed is evidence. A test that stays green is a decoration: it
+// would have passed before the bug was fixed, so it never guarded anything.
+// Checking the opposite direction ("remove the test, expect green") proves
+// nothing — of course the suite is green without a test. This package only
+// ever asks the first question.
+package counterfactual
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/sokebo/mavis-masterpiece/internal/core"
+)
+
+// Result describes what happened for one commit under examination.
+type Result struct {
+	// Commit is the commit that was examined.
+	Commit core.CommitInfo
+	// Changed lists the files the commit touched.
+	Changed []core.FileChange
+	// TestFiles are the test files among them.
+	TestFiles []core.FileChange
+	// SourceFiles are the code files among them.
+	SourceFiles []core.FileChange
+	// OtherFiles are the files that are neither code nor tests:
+	// documentation, configuration, assets.
+	OtherFiles []core.FileChange
+	// Verdict is the conclusion.
+	Verdict Verdict
+	// Findings are the observations that produced it.
+	Findings []core.Finding
+	// TestCommand is the command that was run, for the report.
+	TestCommand string
+	// FailureOutput is the tail of the test output when the run failed.
+	FailureOutput string
+}
+
+// smallChangeLines is the number of changed lines below which a commit that
+// shipped no test is reported as a warning rather than a finding.
+//
+// Two lines is not a lot of code. A change that small is often a rename, a
+// message string or a threshold, and a tool that shouts about those at the
+// same volume it uses for a 300-line feature stops being read.
+const smallChangeLines = 2
+
+// Verdict is the conclusion of one counterfactual experiment.
+type Verdict string
+
+const (
+	// VerdictProven means the test went red when the fix was removed.
+	// The test genuinely guards the behaviour the fix changed.
+	VerdictProven Verdict = "proven"
+	// VerdictVacuous means the test stayed green when the fix was removed.
+	// It proves nothing about the fix.
+	VerdictVacuous Verdict = "vacuous"
+	// VerdictNoTest means the commit changed behaviour and shipped no test.
+	VerdictNoTest Verdict = "no-test"
+	// VerdictCoupled means the test could not run without the fix, so the
+	// question could not be answered either way.
+	VerdictCoupled Verdict = "coupled"
+	// VerdictSkipped means the tests did not execute at all, so they
+	// witnessed nothing.
+	VerdictSkipped Verdict = "skipped"
+	// VerdictBroken means the tests failed even with the fix in place.
+	// The commit itself is broken, which is a different problem.
+	VerdictBroken Verdict = "broken"
+	// VerdictEnvironment means the run could not produce evidence because
+	// the checkout was missing something the build needs — a generated
+	// artefact, a submodule, a vendored directory. It says nothing about
+	// the test, and blaming the test for it would be wrong.
+	VerdictEnvironment Verdict = "environment"
+	// VerdictNotApplicable means there was nothing to judge, e.g. a commit
+	// that only touched docs.
+	VerdictNotApplicable Verdict = "n/a"
+)
+
+// environmentFailurePatterns are build errors that mean "the checkout was
+// incomplete", not "the test is coupled to the fix".
+//
+// Each of these is a message a build tool emits when a file it expects
+// does not exist. The distinction is the difference between "your test
+// cannot be judged" and "your test is fine but we could not run it".
+var environmentFailurePatterns = []string{
+	"no matching files found",
+	"pattern all:",
+	"cannot find package",
+	"no such file or directory",
+	"submodule",
+}
+
+// isEnvironmentFailure reports whether build errors point at an incomplete
+// checkout rather than at a coupling between test and fix.
+func isEnvironmentFailure(buildErrors []string) bool {
+	for _, e := range buildErrors {
+		for _, pat := range environmentFailurePatterns {
+			if strings.Contains(e, pat) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Auditor performs counterfactual audits over a repository.
+type Auditor struct {
+	repo     core.Repo
+	adapter  core.Adapter
+	worktree core.WorktreeFactory
+	// scope narrows the test run. An empty value means "run everything the
+	// adapter would normally run".
+	scope []string
+	// runTimeout bounds a single test run.
+	runTimeout func() context.Context
+}
+
+// Options configures an Auditor.
+type Options struct {
+	// Repo is the repository view. Required.
+	Repo core.Repo
+	// Adapter drives the project's test suite. Required.
+	Adapter core.Adapter
+	// Worktree creates disposable checkouts. Required.
+	Worktree core.WorktreeFactory
+	// Scope narrows the test run.
+	Scope []string
+}
+
+// New builds an Auditor.
+func New(opts Options) (*Auditor, error) {
+	if opts.Repo == nil {
+		return nil, fmt.Errorf("counterfactual: repo is required")
+	}
+	if opts.Adapter == nil {
+		return nil, fmt.Errorf("counterfactual: adapter is required")
+	}
+	if opts.Worktree == nil {
+		return nil, fmt.Errorf("counterfactual: worktree factory is required")
+	}
+	return &Auditor{
+		repo:     opts.Repo,
+		adapter:  opts.Adapter,
+		worktree: opts.Worktree,
+		scope:    opts.Scope,
+	}, nil
+}
+
+// AuditCommit examines one commit.
+//
+// The procedure:
+//
+//  1. Find the commit's parent.
+//  2. Classify the changed files into tests and sources.
+//  3. If there are no tests, the commit shipped no test: that is a finding.
+//  4. Otherwise build a worktree at the parent, apply only the test-side
+//     changes, and run the suite.
+//  5. The test going red proves the test guards the fix. The test staying
+//     green means the test is vacuous.
+//
+// Step 4 is the whole point. Everything else is bookkeeping.
+func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) {
+	info, err := a.commitInfo(ctx, sha)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := a.repo.DiffFiles(ctx, parentOf(sha), sha)
+	if err != nil {
+		return nil, fmt.Errorf("diff %s: %w", sha, err)
+	}
+
+	res := &Result{Commit: info, Changed: changed}
+	for _, f := range changed {
+		switch {
+		case a.isTest(f.Path):
+			res.TestFiles = append(res.TestFiles, f)
+		case a.isSource(f.Path):
+			res.SourceFiles = append(res.SourceFiles, f)
+		default:
+			// Not code and not a test: documentation, configuration,
+			// assets, notes. A commit that only changes these has no
+			// test to write, and reporting it as an untested fix would
+			// be noise.
+			res.OtherFiles = append(res.OtherFiles, f)
+		}
+	}
+
+	// A commit that touches no test and no source is not this tool's
+	// business: docs, CI config, changelogs.
+	if len(res.TestFiles) == 0 {
+		if len(res.SourceFiles) == 0 {
+			res.Verdict = VerdictNotApplicable
+			return res, nil
+		}
+
+		// The source change might be cosmetic: a rename, a reindent, a
+		// comment. A commit like that does not need a new test, and
+		// demanding one is the kind of noise that teaches people to
+		// ignore the tool.
+		change, err := a.sourceChange(ctx, sha, res.SourceFiles)
+		if err == nil && change.cosmetic {
+			res.Verdict = VerdictNotApplicable
+			res.Findings = append(res.Findings, core.Finding{
+				Kind:     core.KindNoTestForFix,
+				Severity: core.SevInfo,
+				Summary:  "这个改动没有改变代码的行为 —— 不需要新的测试",
+				Detail: fmt.Sprintf(
+					"提交 %s 改了 %d 个源文件，但改动只有注释和空白。\n"+
+						"它没有改变任何行为，所以没有测试需要跟着来。",
+					info.Short, len(res.SourceFiles)),
+				File:     firstPath(res.SourceFiles),
+				Evidence: "逐行比对：去掉注释和空白之后，改动前后完全一样",
+				Hint:     "如果这个提交其实改变了行为，那它需要测试",
+			})
+			return res, nil
+		}
+
+		// How loudly to say this depends on how much changed.
+		//
+		// A one-line change is often a rename, a message string, a
+		// threshold nobody thinks to test. Demanding a test for those at
+		// the same volume as a 300-line feature is how a tool teaches
+		// people to ignore it. A small change gets a warning; a real one
+		// gets a finding that can fail a build.
+		severity := core.SevHigh
+		if change.biggestFile <= smallChangeLines {
+			severity = core.SevWarn
+		}
+
+		res.Verdict = VerdictNoTest
+		res.Findings = append(res.Findings, core.Finding{
+			Kind:     core.KindNoTestForFix,
+			Severity: severity,
+			Summary:  "这个改动改了代码，但没有任何测试跟着来",
+			Detail: fmt.Sprintf(
+				"提交 %s 改了 %d 个非测试文件（最大的一个改了 %d 行），没有加任何测试。\n"+
+					"如果这个改动影响了行为，那它现在是没有测试看守的。",
+				info.Short, len(res.SourceFiles), change.biggestFile),
+			File:     firstPath(res.SourceFiles),
+			Hint:     "补一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
+			Evidence: strings.Join(pathsOf(res.SourceFiles), "\n"),
+		})
+		return res, nil
+	}
+
+	// A commit that only touches test files has no fix to take away.
+	//
+	// The experiment is "remove the fix, keep the test". A commit that
+	// changed no code has no fix, so the question has no answer here. The
+	// tempting alternative is to call it vacuous - the new tests do pass
+	// against the parent - but that accuses a commit that did nothing but
+	// add good tests of behaviour that already existed. Whether those
+	// tests are any good is a different question, and the honest answer to
+	// it is mutation testing, not this tool.
+	if len(res.SourceFiles) == 0 {
+		res.Verdict = VerdictNotApplicable
+		res.Findings = append(res.Findings, core.Finding{
+			Kind:     core.KindNoTestForFix,
+			Severity: core.SevInfo,
+			Summary:  "这个提交只加了测试，没有改代码 —— 没有可以撤掉的修复",
+			Detail: fmt.Sprintf(
+				"提交 %s 改了 %d 个测试文件，没有改任何代码。\n"+
+					"「撤掉修复，测试会不会红」这个问题在这里没有答案 —— "+
+					"因为这个提交没有引入需要被看守的行为。",
+				info.Short, len(res.TestFiles)),
+			File: firstPath(res.TestFiles),
+			Hint: "想知道这些测试本身有没有效，用变异测试（mutation testing）",
+		})
+		return res, nil
+	}
+
+	// The experiment. Build the counterfactual tree: parent + tests, no fix.
+	run, err := a.runCounterfactual(ctx, sha, res)
+	if err != nil {
+		return nil, err
+	}
+	res.TestCommand = run.command
+	res.FailureOutput = run.failureTail
+
+	res.Verdict = classify(run)
+	res.Findings = append(res.Findings, verdictFindings(res, run)...)
+	return res, nil
+}
+
+// isTest asks the adapter whether a path is a test file.
+func (a *Auditor) isTest(path string) bool {
+	type tester interface{ IsTestPath(string) bool }
+	if t, ok := a.adapter.(tester); ok {
+		return t.IsTestPath(path)
+	}
+	return false
+}
+
+// sourceExtensions are the file extensions that hold code.
+//
+// The list exists to separate "this commit changed behaviour" from "this
+// commit changed a document". A commit that only edits a changelog has no
+// test to write, and calling it an untested fix would be a false positive.
+var sourceExtensions = map[string]bool{
+	".go": true, ".py": true, ".js": true, ".jsx": true, ".ts": true,
+	".tsx": true, ".mjs": true, ".cjs": true, ".rs": true, ".java": true,
+	".kt": true, ".rb": true, ".php": true, ".c": true, ".h": true,
+	".cc": true, ".cpp": true, ".hpp": true, ".cs": true, ".swift": true,
+	".scala": true, ".ex": true, ".exs": true, ".m": true, ".mm": true,
+	".sh": true, ".bash": true, ".zsh": true, ".sql": true,
+}
+
+// isSource reports whether a path holds code.
+//
+// An adapter may know better — a Go module's .go files are code, but a
+// .go file under a documentation directory may not be. The adapter's
+// opinion wins when it has one.
+func (a *Auditor) isSource(path string) bool {
+	type classifier interface{ IsSourcePath(string) bool }
+	if c, ok := a.adapter.(classifier); ok {
+		return c.IsSourcePath(path)
+	}
+	ext := strings.ToLower(pathExt(path))
+	return sourceExtensions[ext]
+}
+
+// pathExt returns the extension of a path, including the dot.
+func pathExt(path string) string {
+	base := path
+	if i := strings.LastIndexAny(base, "/\\"); i >= 0 {
+		base = base[i+1:]
+	}
+	if i := strings.LastIndex(base, "."); i > 0 {
+		return base[i:]
+	}
+	return ""
+}
+
+// runOutcome is everything one counterfactual run produced.
+type runOutcome struct {
+	// command is the test command that was run.
+	command string
+	// result is the parsed run.
+	result core.RunResult
+	// failureTail is the tail of the output when something failed.
+	failureTail string
+}
+
+// runCounterfactual builds the "fix removed, test kept" tree and runs the
+// suite on it.
+func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result) (*runOutcome, error) {
+	wt, err := a.worktree.Create(ctx, parentOf(sha))
+	if err != nil {
+		return nil, fmt.Errorf("create worktree at %s: %w", parentOf(sha), err)
+	}
+	defer wt.Remove()
+
+	// A checkout of the parent commit is complete as far as git is
+	// concerned, but it is often not complete as far as the build is
+	// concerned: generated assets (a built frontend, a vendored
+	// directory) live outside version control. Without them the suite
+	// cannot even compile, and the audit would have nothing to say.
+	//
+	// Copying the caller's untracked, ignored files into the worktree
+	// makes the counterfactual tree as close as possible to a working
+	// checkout. It is a copy: nothing is written back.
+	a.copyUntrackedBuildInputs(ctx, wt.Path())
+
+	// Apply only the test-side changes. The fix stays out.
+	testPaths := pathsOf(res.TestFiles)
+	patch, err := a.repo.Patch(ctx, sha, testPaths)
+	if err != nil {
+		return nil, fmt.Errorf("build test patch for %s: %w", sha, err)
+	}
+	if strings.TrimSpace(patch) != "" {
+		if err := applyPatch(ctx, wt.Path(), patch); err != nil {
+			// A test patch that will not apply means the test depends on
+			// the fix at the source level. That is a real, reportable
+			// state: the question cannot be answered.
+			return &runOutcome{command: "", result: core.RunResult{
+				BuildErrors: []string{fmt.Sprintf("测试补丁无法应用到父提交: %v", err)},
+			}}, nil
+		}
+	}
+
+	// Narrow the run to the packages this commit touched.
+	//
+	// The whole module is not a safe default. A package that fails to build
+	// sits right next to packages that pass, and a global count then reads
+	// "everything is green" when in fact the package under examination never
+	// ran at all. That is the worst possible answer for this tool: it turns
+	// "I could not tell" into "your test proves nothing".
+	//
+	// Both sides of the commit go into the scope: the source files, where
+	// the fix lives, and the test files, where the witness lives. A test
+	// can sit in a different directory from the code it exercises, and
+	// leaving it out of the scope would hide exactly the failure this tool
+	// exists to find.
+	changed := pathsOf(append(append([]core.FileChange{}, res.SourceFiles...), res.TestFiles...))
+
+	target := core.TestTarget{}
+	target.Files = changed
+	if len(a.scope) > 0 {
+		target.PkgPattern = strings.Join(a.scope, " ")
+	} else if scoper, ok := a.adapter.(interface {
+		ScopeFor([]string) []string
+	}); ok {
+		if narrowed := scoper.ScopeFor(changed); len(narrowed) > 0 {
+			target.PkgPattern = strings.Join(narrowed, " ")
+		}
+	}
+
+	plan, err := a.adapter.Plan(ctx, core.PlanRequest{Root: wt.Path(), Target: target})
+	if err != nil {
+		return nil, fmt.Errorf("plan test run: %w", err)
+	}
+	plan.Dir = wt.Path()
+
+	runCtx := ctx
+	if a.runTimeout != nil {
+		runCtx = a.runTimeout()
+	}
+	result, err := a.adapter.Run(runCtx, plan)
+	if err != nil {
+		return nil, fmt.Errorf("run tests: %w", err)
+	}
+	result.Command = plan.Command()
+
+	return &runOutcome{
+		command:     plan.Command(),
+		result:      result,
+		failureTail: tailOf(result, 40),
+	}, nil
+}
+
+// classify turns a run into a verdict.
+func classify(run *runOutcome) Verdict {
+	if run == nil {
+		return VerdictNotApplicable
+	}
+	r := run.result
+	// A suite that could not even build cannot witness anything. It is
+	// inconclusive, not a pass and not a failure.
+	//
+	// The build error matters even when other packages did run and passed.
+	// A package that fails to compile sits next to packages that compile
+	// fine, and the passing ones would otherwise drown the failure out:
+	// the count says "all green" while the package under examination never
+	// executed a single test. Reading that as "the test still passes
+	// without the fix" would be inventing a verdict out of a run that
+	// never happened. Fail closed instead.
+	//
+	// But the reason matters. A build that fails because a generated
+	// artefact is missing from the checkout is an ENVIRONMENT problem,
+	// not a statement about the test. Reporting it as "coupled" would
+	// blame the test for the environment, and the report would be wrong
+	// in a way that is expensive to notice.
+	if len(r.BuildErrors) > 0 {
+		if isEnvironmentFailure(r.BuildErrors) {
+			return VerdictEnvironment
+		}
+		return VerdictCoupled
+	}
+
+	pass, fail, skip, _ := r.Counts()
+
+	// Nothing executed. The test was present but did not run, so it
+	// witnessed nothing. This is the silent-skip case and it is the most
+	// dangerous one, because the suite still reported success.
+	if pass == 0 && fail == 0 && skip > 0 {
+		return VerdictSkipped
+	}
+	if pass == 0 && fail == 0 && skip == 0 {
+		return VerdictSkipped
+	}
+
+	// Tests failed with the fix removed: the test catches the bug. This is
+	// the only positive result.
+	if fail > 0 {
+		return VerdictProven
+	}
+
+	// Everything passed with the fix removed: the test never depended on
+	// the fix, so it was not guarding it.
+	return VerdictVacuous
+}
+
+// verdictFindings converts a verdict into reportable findings.
+func verdictFindings(res *Result, run *runOutcome) []core.Finding {
+	var out []core.Finding
+	testFile := firstPath(res.TestFiles)
+
+	switch res.Verdict {
+	case VerdictProven:
+		out = append(out, core.Finding{
+			Kind:     core.KindVacuousTest, // placeholder replaced below
+			Severity: core.SevInfo,
+			Summary:  "测试确实能抓住这个修复",
+			Detail: fmt.Sprintf("撤掉修复后 %d 个测试变红 —— 它们真的在看守这个行为。",
+				countFail(run)),
+			File:     testFile,
+			Evidence: run.command,
+		})
+		// A proven test is not a finding at all. Mark it and let the
+		// caller filter it out; the report layer counts it as proven.
+		out[len(out)-1].Kind = "proven-test"
+
+	case VerdictVacuous:
+		out = append(out, core.Finding{
+			Kind:     core.KindVacuousTest,
+			Severity: core.SevHigh,
+			Summary:  "这个测试在撤掉修复后依然是绿的 —— 它没有测到修复修的那个行为",
+			Detail: fmt.Sprintf(
+				"提交 %s 同时改了代码和测试。把修复撤掉、只留测试后，%d 个测试全部通过。\n"+
+					"这意味着这个测试在 bug 修复之前也会通过 —— 它从来没有看守过这个行为。",
+				res.Commit.Short, countPass(run)),
+			File:     testFile,
+			Evidence: evidenceFor(run),
+			Hint: "把断言落在可观察的行为上：断言具体的返回值、错误内容或状态，" +
+				"而不是实现细节或者「没有 panic」",
+		})
+
+	case VerdictSkipped:
+		out = append(out, core.Finding{
+			Kind:     core.KindSkippedTest,
+			Severity: core.SevCritical,
+			Summary:  "测试没有执行 —— 它一次都没跑过，所以什么都没证明",
+			Detail: fmt.Sprintf(
+				"撤掉修复后跑测试，%d 个测试全部被跳过，0 个真正执行。\n"+
+					"在 bug 修复之前它们同样不会执行 —— 覆盖率数字再高也是空的。",
+				countSkip(run)),
+			File:     testFile,
+			Evidence: evidenceFor(run),
+			Hint: "查跳过条件：如果它依赖一个没入库的文件，干净 clone 和 CI 里都会跳。\n" +
+				"让测试语料入库，或者让语料缺失时直接失败而不是跳过",
+		})
+
+	case VerdictCoupled:
+		// Two different things end up here, and they deserve different
+		// sentences: the test patch could not be applied at all, or it
+		// applied but the package no longer compiles. The second one is
+		// the common shape - the test asserts on a symbol the fix
+		// introduced - and it is still a real, reportable state.
+		detail := fmt.Sprintf(
+			"提交 %s 的测试改动无法单独应用到父提交上 —— 测试依赖了这次修复引入的东西。\n"+
+				"因此「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
+			res.Commit.Short)
+		if run != nil && run.command != "" {
+			detail = fmt.Sprintf(
+				"提交 %s 的测试补丁能打上，但撤掉修复之后整个包编译不过 —— "+
+					"测试引用了这次修复才引入的东西。\n"+
+					"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案："+
+					"测试和修复是缠在一起的。",
+				res.Commit.Short)
+		}
+		out = append(out, core.Finding{
+			Kind:     core.KindCoupled,
+			Severity: core.SevWarn,
+			Summary:  "无法判定：测试和修复耦合在一起，拆不开",
+			Detail:   detail,
+			File:     testFile,
+			Evidence: evidenceFor(run),
+			Hint: "这不是错误，是提示：耦合的测试很难单独证明自己。\n" +
+				"可以加一个更靠近行为的测试来覆盖同一个场景",
+		})
+
+	case VerdictEnvironment:
+		out = append(out, core.Finding{
+			Kind:     core.KindCoupled,
+			Severity: core.SevInfo,
+			Summary:  "这个提交没法判定：检查出的代码缺东西，跑不起来",
+			Detail: fmt.Sprintf(
+				"提交 %s 的测试跑不起来，但原因不是测试和修复耦合 —— "+
+					"是检查出的代码缺了构建需要的东西（通常是未入库的生成物）。\n"+
+					"这跟测试好不好无关，所以不下结论。",
+				res.Commit.Short),
+			File:     testFile,
+			Evidence: evidenceFor(run),
+			Hint:     "让生成物入库，或者在跑审计前先构建一次",
+		})
+
+	case VerdictBroken:
+		out = append(out, core.Finding{
+			Kind:     core.KindBrokenChange,
+			Severity: core.SevCritical,
+			Summary:  "这个提交自己的测试就是红的 —— 修复本身坏了",
+			Detail: fmt.Sprintf("提交 %s 在带着修复的情况下测试就已经失败了。",
+				res.Commit.Short),
+			File:     testFile,
+			Evidence: evidenceFor(run),
+			Hint:     "先修好这个提交，再谈它有没有被测试覆盖",
+		})
+	}
+	return out
+}
+
+// evidenceFor renders the proof that goes into a finding.
+func evidenceFor(run *runOutcome) string {
+	if run == nil {
+		return ""
+	}
+	var b strings.Builder
+	if run.command != "" {
+		b.WriteString("命令: " + run.command + "\n")
+	}
+	if run.failureTail != "" {
+		b.WriteString(run.failureTail)
+	} else {
+		pass, fail, skip, _ := run.result.Counts()
+		b.WriteString(fmt.Sprintf("结果: %d 通过 · %d 失败 · %d 跳过", pass, fail, skip))
+	}
+	return b.String()
+}
+
+func countPass(run *runOutcome) int {
+	if run == nil {
+		return 0
+	}
+	p, _, _, _ := run.result.Counts()
+	return p
+}
+
+func countFail(run *runOutcome) int {
+	if run == nil {
+		return 0
+	}
+	_, f, _, _ := run.result.Counts()
+	return f
+}
+
+func countSkip(run *runOutcome) int {
+	if run == nil {
+		return 0
+	}
+	_, _, s, _ := run.result.Counts()
+	return s
+}
+
+// tailOf returns the tail of a run's output, for evidence.
+func tailOf(r core.RunResult, lines int) string {
+	if len(r.BuildErrors) > 0 {
+		return strings.Join(r.BuildErrors, "\n")
+	}
+	return ""
+}
+
+// firstPath returns the first path in a list, or "".
+func firstPath(fs []core.FileChange) string {
+	if len(fs) == 0 {
+		return ""
+	}
+	return fs[0].Path
+}
+
+// pathsOf extracts the paths of a file list.
+func pathsOf(fs []core.FileChange) []string {
+	out := make([]string, 0, len(fs))
+	for _, f := range fs {
+		out = append(out, f.Path)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// parentOf returns the first parent of a commit. The commit list from
+// git log always starts with HEAD, so this is the "commit^" spelling.
+func parentOf(sha string) string { return sha + "^" }

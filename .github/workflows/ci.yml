@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The audit needs real history: a shallow clone has no parent
+          # commit to compare against, and the counterfactual would silently
+          # have nothing to run.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Test with a clean module cache
+        # The development machine is the friendliest place a broken build can
+        # hide: it already has everything cached. A CI job with an empty
+        # cache is where packaging mistakes surface.
+        run: go test -count=1 ./...
+
+  self-check:
+    # The tool that audits other people's tests has to survive being audited.
+    # This job runs vacuous on vacuous.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build
+        run: go build ./cmd/vacuous
+
+      - name: Audit this repository's own tests
+        run: ./vacuous --mode audit --fail-on critical
