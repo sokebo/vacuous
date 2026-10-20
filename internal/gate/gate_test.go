@@ -231,6 +231,87 @@ func TestCheckFailsClosedWhenTargetIsGone(t *testing.T) {
 	}
 }
 
+// TestValidateRecordTargetsRefusesEmptyList 守的是「静默失明」这个洞。
+//
+// 一次不带 -target 的 record 会写出一个没有仓库名单的状态：从那以后
+// 闸门只看工具代码的指纹，被审仓库往前走了几步它也看不见，报的还是
+// 「没变化」。这种失明没有任何症状，只能在写入的那一刻挡住。
+func TestValidateRecordTargetsRefusesEmptyList(t *testing.T) {
+	old := []Target{{Path: "/tmp/watch-a", Head: "aaaaaaa"}}
+
+	if _, err := ValidateRecordTargets(old, nil, false); err == nil {
+		t.Error("一个被审仓都不记必须被拒绝 —— 状态里没有名单，闸门从此不再看任何被审仓库")
+	}
+	if _, err := ValidateRecordTargets(old, []string{}, false); err == nil {
+		t.Error("空的 -target 列表必须被拒绝")
+	}
+	// 显式放弃是允许的，但必须是有意为之。
+	if _, err := ValidateRecordTargets(old, nil, true); err != nil {
+		t.Errorf("显式 --force 应该放行: %v", err)
+	}
+}
+
+// TestValidateRecordTargetsRefusesSilentDrop 守的是「少写一个也没人发现」。
+func TestValidateRecordTargetsRefusesSilentDrop(t *testing.T) {
+	old := []Target{
+		{Path: "/tmp/watch-a", Head: "aaaaaaa"},
+		{Path: "/tmp/watch-b", Head: "bbbbbbb"},
+	}
+
+	dropped, err := ValidateRecordTargets(old, []string{"/tmp/watch-a"}, false)
+	if err == nil {
+		t.Fatalf("少写一个被审仓必须被拒绝 —— 它会悄悄从名单里消失：dropped=%v", dropped)
+	}
+	if !strings.Contains(err.Error(), "/tmp/watch-b") {
+		t.Errorf("报错里要点名丢掉的是哪个仓: %v", err)
+	}
+	if len(dropped) != 1 || dropped[0] != "/tmp/watch-b" {
+		t.Errorf("dropped 应该是 [/tmp/watch-b]，实际 %v", dropped)
+	}
+	if _, err := ValidateRecordTargets(old, []string{"/tmp/watch-a"}, true); err != nil {
+		t.Errorf("显式 --force 应该放行: %v", err)
+	}
+}
+
+// TestValidateRecordTargetsAllowsSameOrMore 守的是「宁可漏报不可误伤」：
+// 正常用法（名单不变或变多）不能被拦住。
+func TestValidateRecordTargetsAllowsSameOrMore(t *testing.T) {
+	old := []Target{{Path: "/tmp/watch-a", Head: "aaaaaaa"}}
+
+	if _, err := ValidateRecordTargets(old, []string{"/tmp/watch-a"}, false); err != nil {
+		t.Errorf("同样的名单必须放行: %v", err)
+	}
+	if _, err := ValidateRecordTargets(old, []string{"/tmp/watch-a", "/tmp/watch-b"}, false); err != nil {
+		t.Errorf("多盯一个仓必须放行: %v", err)
+	}
+	// 第一次记录（没有旧状态）不受「丢仓」规则影响。
+	if _, err := ValidateRecordTargets(nil, []string{"/tmp/watch-a"}, false); err != nil {
+		t.Errorf("第一次记录必须放行: %v", err)
+	}
+}
+
+// TestExitCodeDistinguishesUnknownFromChange 守的是退出码的契约：
+// 「判不出来」（2）必须和「确实变了」（1）分得开。分不开的话，调用方
+// 看不出这一轮的结果能不能当准。
+func TestExitCodeDistinguishesUnknownFromChange(t *testing.T) {
+	cases := []struct {
+		name    string
+		changes []Change
+		want    int
+	}{
+		{"什么都没变", nil, 0},
+		{"代码变了", []Change{{Kind: "code"}}, 1},
+		{"被审仓动了", []Change{{Kind: "target"}}, 1},
+		{"判不出来", []Change{{Kind: "unknown"}}, 2},
+		{"又变了又判不出来", []Change{{Kind: "code"}, {Kind: "unknown"}}, 2},
+	}
+	for _, tc := range cases {
+		if got := ExitCode(tc.changes); got != tc.want {
+			t.Errorf("%s：退出码应该是 %d，实际 %d", tc.name, tc.want, got)
+		}
+	}
+}
+
 func TestLoadStateFailsWhenMissingOrCorrupt(t *testing.T) {
 	dir := seedRepo(t)
 

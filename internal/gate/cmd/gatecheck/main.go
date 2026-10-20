@@ -41,6 +41,7 @@ func main() {
 	repo := fs.String("repo", ".", "仓库目录")
 	var targets stringList
 	yes := fs.Bool("yes", false, "确认写入状态（record 用）")
+	force := fs.Bool("force", false, "明确允许丢掉正在盯的被审仓（record 用）")
 
 	switch cmd {
 	case "check":
@@ -59,7 +60,7 @@ func main() {
 	case "check":
 		os.Exit(runCheck(*repo, targets))
 	case "record":
-		os.Exit(runRecord(*repo, targets, *yes))
+		os.Exit(runRecord(*repo, targets, *yes, *force))
 	}
 }
 
@@ -106,14 +107,31 @@ func runCheck(repo string, extraTargets stringList) int {
 	for _, c := range changes {
 		fmt.Printf("  - [%s] %s\n", c.Kind, c.Detail)
 	}
-	return 1
+	return gate.ExitCode(changes)
 }
 
-func runRecord(repo string, targets stringList, yes bool) int {
+func runRecord(repo string, targets stringList, yes bool, force bool) int {
 	dir, err := filepath.Abs(repo)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "路径 %s 解析失败: %v\n", repo, err)
 		return 2
+	}
+
+	// 先问「这次记录会不会悄悄丢掉正在盯的仓库」，再动手。
+	// 名单被抹掉之后，闸门就再也看不见任何被审仓库的动静，而且报的是
+	// 「没变化」—— 这种失明没有任何症状，只能在这里挡住。
+	old, loadErr := gate.LoadState(dir)
+	if loadErr != nil {
+		fmt.Printf("（读不出上次的状态，按第一次记录处理：%v）\n", loadErr)
+		old = gate.State{}
+	}
+	dropped, err := gate.ValidateRecordTargets(old.Targets, targets, force)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "拒绝记录：%v\n", err)
+		return 2
+	}
+	if len(dropped) > 0 {
+		fmt.Printf("警告：不再盯这些被审仓了 —— %v\n", dropped)
 	}
 
 	st, err := gate.CurrentState(dir, targets)
@@ -162,6 +180,9 @@ func usage() {
   gatecheck check [-repo DIR]              判断有没有需要重跑的东西
   gatecheck record -yes -target DIR ...    记录此刻的状态（核验完成之后）
 
-退出码: check 0=没变 1=变了 2=判不出来; record 0=记好了 3=没确认
+退出码: check 0=没变 1=变了 2=判不出来; record 0=记好了 2=拒绝 3=没确认
+
+record 不会悄悄丢掉正在盯的被审仓：不带 -target、或比上次少几个，都会被拒绝。
+确实要放弃盯某个仓，加 --force。
 `)
 }

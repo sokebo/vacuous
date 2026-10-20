@@ -192,6 +192,85 @@ func CurrentState(repoDir string, targets []string) (State, error) {
 	return st, nil
 }
 
+// ValidateRecordTargets 保证一次「记录」不会悄悄丢掉正在盯的仓库。
+//
+// 状态里的 targets 就是闸门在盯的仓库名单。名单一旦被清空或者变短，
+// 闸门就只剩「工具代码变没变」这一只眼睛 —— 被审仓库往前走了几步它也
+// 看不见，报的还是「没变化」，没有任何症状。
+//
+// 实测过这个洞：一次不带 -target 的 record 就能把 6 个被审仓从状态里
+// 抹掉（写出来的是 targets: null），之后每一轮 check 都是 NO CHANGE ——
+// 闸门从此不再看任何一个被审仓库，而它的输出看不出任何异常。
+//
+// 所以这里两条都不给过：
+//   - 一个都不记：这种状态毫无意义，且正是「静默失明」的入口。
+//   - 比上次少了：少掉的那个必须是被明确放弃的，不是被漏掉的。
+//
+// force 是明确的放弃许可 —— 调用方知道自己在做什么，才让它过。
+//
+// 返回的 dropped 是这次会丢掉（或已经丢掉）的仓库路径，调用方拿它来
+// 把话说清楚：不是「少写了一个」，是「不再盯这个仓了」。
+func ValidateRecordTargets(old []Target, newPaths []string, force bool) ([]string, error) {
+	abs := make([]string, 0, len(newPaths))
+	for _, p := range newPaths {
+		a, err := filepath.Abs(p)
+		if err != nil {
+			return nil, fmt.Errorf("路径 %s 解析失败: %w", p, err)
+		}
+		abs = append(abs, a)
+	}
+
+	newSet := make(map[string]bool, len(abs))
+	for _, a := range abs {
+		newSet[a] = true
+	}
+
+	var dropped []string
+	for _, t := range old {
+		if !newSet[t.Path] {
+			dropped = append(dropped, t.Path)
+		}
+	}
+
+	if len(abs) == 0 {
+		if force {
+			return dropped, nil
+		}
+		return dropped, fmt.Errorf(
+			"不能一个被审仓都不记：状态里没有仓库名单，闸门就再也看不见任何被审仓库的动静（确实只想盯代码，就加 --force）")
+	}
+
+	if len(dropped) > 0 && !force {
+		return dropped, fmt.Errorf(
+			"这次记录会丢掉 %d 个正在盯的被审仓：%s —— 不写进去的话，闸门会悄悄不再盯它们（确实要放弃盯，就加 --force）",
+			len(dropped), strings.Join(dropped, "、"))
+	}
+
+	return dropped, nil
+}
+
+// ExitCode 把「变了什么」翻译成退出码。
+//
+//	0 = 什么都没变
+//	1 = 有东西变了（判得出来）
+//	2 = 判不出来
+//
+// 「判不出来」是独立的退出码，不是「变了」的一种：调用方读到 2 就知道
+// 这一轮的结果不能当准，得再跑一次。之前 unknown 变更一律走 1，
+// 于是「判不出来」和「确实变了」在退出码上分不开 —— 而这两个的处理
+// 方式恰好是相反的：前者要重跑，后者要重跑并修。
+func ExitCode(changes []Change) int {
+	if len(changes) == 0 {
+		return 0
+	}
+	for _, c := range changes {
+		if c.Kind == "unknown" {
+			return 2
+		}
+	}
+	return 1
+}
+
 // Check 比较此刻和记录的状态，返回所有「变了」的地方。
 //
 // 返回空切片 = 什么都没变，可以直接结束。

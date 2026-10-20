@@ -523,6 +523,84 @@ go mod edit -replace github.com/example/shared-lib="$GITHUB_WORKSPACE/_shared"
 
 ---
 
+### 3.21 闸门可以悄悄瞎掉 —— record 把被审仓名单写空了
+
+**这一轮闸门报的是「无变化」，CI 也是绿的。按流程本来该收工。我没收工** ——
+因为闸门本身就是「判有没有新东西」的那把尺子，一把自己会坏的尺子，报什么都不算数。
+
+复核闸门本身的负对照时（不是复核工具），撞上一个**假阴性**：闸门再也不看任何
+一个被审仓库了，而它的输出是 `NO CHANGE`、退出码 0 —— 跟「一切正常」长得
+一模一样。
+
+**根因**：`record` 接受 `-target`，但不校验它。
+
+```
+scripts/gate.sh record -yes            # 少写了 -target
+```
+
+写入的状态是 `targets: null`。`Check` 只遍历 `st.Targets` —— 空名单 = 一只眼睛
+都没了，剩下「工具代码变没变」那一只。**被审仓库往前走了几步，闸门看不见。**
+
+少写一两个也一样：名单从 6 个变成 5 个，那一个仓就悄悄从视野里消失了。
+
+危险的地方在于**没有任何症状**：退出码 0、输出 `NO CHANGE`、CI 绿、闸门自己不
+报错。唯一能看出问题的时刻，是「该跑的那一轮没跑」—— 而那已经过去很久了。
+
+这跟 3.18 是同一个病根的两面：3.18 是基线每次都自己失效（一直喊「有变化」），
+3.21 是名单被写空之后一直喊「没变化」。**一个吵死人的闸门和一个瞎掉的闸门，
+坏起来是同一个形状 —— 都是信号跟现实脱钩了。**
+
+**修复**：在写入的那一刻挡住。
+
+`gate.ValidateRecordTargets(old, new, force)`：
+
+- 一个都不记 → 拒绝（退出码 2，状态文件不写）
+- 比上次少了 → 拒绝，并**点名是哪个仓**（退出码 2，状态文件不写）
+- 确实要放弃盯某个仓 → `--force`，而且要把丢掉的名字打印出来
+
+**负对照**：
+
+| 拆掉的修复 | 变红的用例 | 保持绿 |
+|---|---|---|
+| record 的名单校验（命令层） | `TestRunRecordRefusesToWriteAStateWithoutTargets`、`TestRunRecordRefusesToDropAWatchedTarget` | `TestValidateRecordTargetsAllowsSameOrMore`（正常用法不被拦） |
+| 策略函数本身 | `TestValidateRecordTargetsRefusesEmptyList`、`TestValidateRecordTargetsRefusesSilentDrop` | 同上 |
+| 校验逻辑整个抽掉 | 上述 4 条一起红 | — |
+
+真实场景演练（在隔离克隆里做的，没碰真状态）：
+
+| 动作 | 结果 |
+|---|---|
+| `record -yes`（不带 `-target`） | 拒绝，退出码 2，状态文件一个字节没动，名单还是 6 个 |
+| `record -yes` 只写 5 个 | 拒绝，退出码 2，点名 `zeta` |
+| `record -yes` 写全 6 个 | 成功，退出码 0 |
+| `record -yes --force` 只写 1 个 | 允许，并把丢掉的 5 个名字打出来 |
+
+---
+
+### 3.22 「判不出来」的退出码和文档对不上
+
+**现象**：文档里写着 `check` 的退出码是 `0=没变 / 1=变了 / 2=判不出来`，
+但 `runCheck` 里所有非空变更一律 `return 1` —— `Change{Kind:"unknown"}`
+（「判不出来」）也走 1。
+
+**根因**：退出码是手写的 `return 1`，没把「判不出来」这一类单独分出来。
+只有状态文件读不出来的时候才返回 2。
+
+**为什么值得修**：1 和 2 在调用方那里的处理方式**不一样** —— 1 是「变了，去查」，
+2 是「判不出来，这轮结果不能当准，得再跑一次」。分不开的时候，
+「被审仓临时读不到」（目录被挪了、权限掉了）会被报成「变了」，
+人和定时任务都会把它当成一次真实的变化 —— 而它其实什么也没说。
+
+**修复**：`gate.ExitCode(changes)` —— 有任何一条 `unknown` 就返回 2，否则 1，空则 0。
+
+**负对照**：
+
+| 拆掉的修复 | 变红的用例 |
+|---|---|
+| ExitCode 区分 unknown | `TestExitCodeDistinguishesUnknownFromChange`、`TestRunCheckExitCodes` |
+
+---
+
 ### 3.20 一行改动也能被判成「高危：这个测试什么都没测到」
 
 **现象**：修完 3.19 之后，gamma（7 个 module，一直没被审过）第一次能审了，
