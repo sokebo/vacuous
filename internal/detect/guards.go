@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/sokebo/mavis-masterpiece/internal/core"
@@ -147,43 +148,47 @@ func absoluteHookInstall(repoRoot, dir string, opts Options) string {
 	return ""
 }
 
+// workflow is one CI workflow file.
+type workflow struct {
+	name string
+	text string
+}
+
 // workflowFindings checks the CI workflows of a repository.
+//
+// The question is about the REPOSITORY, not about one workflow. A repository
+// whose CI runs its tests somewhere - in any of its workflows - has test
+// coverage in CI, and telling it that one particular workflow does not run
+// them is noise that reads like an accusation.
+//
+// So: if no workflow runs a test, that is one finding about the repository,
+// and it says what the repository does have. If some workflow does run
+// tests, there is nothing to say about the others - a lint workflow and a
+// release workflow are not supposed to run tests.
+//
+// The one per-workflow finding that survives is continue-on-error: a job
+// that DOES run the tests and then ignores the failures.
 func workflowFindings(repoRoot string, opts Options) []core.Finding {
 	wfDir := filepath.Join(repoRoot, ".github", "workflows")
 	entries, err := os.ReadDir(wfDir)
 	if err != nil {
 		return nil
 	}
+
 	commands := append([]string{
 		"go test", "pytest", "npm test", "npm run test", "yarn test",
 		"pnpm test", "jest", "vitest", "cargo test", "mvn test", "gradle test",
 	}, opts.list(cfgTestCommands)...)
 
-	// checkCommands are the commands that compile or lint the code.
-	//
-	// A workflow that runs one of them is a pipeline: it checks out the
-	// code and does something to it. A workflow that runs none of them is
-	// doing something else entirely - notifying a chat room, validating
-	// a pull request description, checking a release tag.
+	// checkCommands are the commands that compile or lint the code. They
+	// are what a repository has instead of tests, and saying so is part of
+	// the finding.
 	checkCommands := append([]string{
 		"py_compile", "compileall", "tsc", "eslint", "mypy", "ruff", "flake8",
 		"go vet", "golangci-lint", "staticcheck", "cargo check", "cargo clippy",
 	}, opts.list(cfgCheckCommands)...)
 
-	// pipelineCommands are the commands that mean "this workflow builds or
-	// checks the code".
-	//
-	// It is the yardstick for whether a workflow is EXPECTED to run tests.
-	// Demanding tests of a workflow that was never a test pipeline is
-	// noise, and noise is what teaches people to switch a checker off.
-	pipelineCommands := append([]string{
-		"go build", "go test", "go vet", "golangci-lint", "staticcheck", "make ",
-		"npm run build", "npm run lint", "npm test", "yarn build", "yarn test",
-		"pnpm build", "pnpm test", "tsc", "eslint", "cargo build", "mvn ", "gradle ",
-		"pytest", "tox", "prek", "ruff", "mypy", "py_compile", "compileall",
-	}, opts.list(cfgTestCommands)...)
-
-	var out []core.Finding
+	var workflows []workflow
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -196,59 +201,84 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 		if err != nil {
 			continue
 		}
-		text := string(data)
-		if runsAnyCommand(text, commands) {
-			// The workflow runs tests. But do a failing test stop the
-			// merge? "continue-on-error: true" says no, and that is a
-			// guard that does not guard.
-			if hasContinueOnError(text) {
-				out = append(out, finding(core.KindGuardNotInstalled, core.SevWarn,
-					".github/workflows/"+name, 0,
-					"CI 里的测试失败不会阻断合并",
-					fmt.Sprintf(
-						".github/workflows/%s 里有 `continue-on-error: true`，"+
-							"而且这个 workflow 确实在跑测试。\n"+
-							"测试失败的时候，CI 照样是绿的，合并照样能过 —— "+
-							"这个 workflow 存在，但它不拦住任何东西。", name),
-					"找到: continue-on-error: true",
-					"去掉它，或者让它只作用在真正可选的步骤上"))
-			}
-			continue
-		}
+		workflows = append(workflows, workflow{name: name, text: string(data)})
+	}
 
-		// No test command in this workflow. Before saying anything, check
-		// that this workflow is one that was ever supposed to run tests.
-		// A notification workflow, a pull-request policy checker or a
-		// release-tag guard is not a test pipeline, and telling it to
-		// "add a test step" is advice nobody asked for.
-		if !runsAnyCommand(text, pipelineCommands) {
-			continue
-		}
+	var out []core.Finding
 
-		checks := matchedCommands(text, checkCommands)
-		summary := "CI workflow 里没有任何测试步骤"
+	// Does any workflow run the tests?
+	var withTests []string
+	var checks []string
+	for _, w := range workflows {
+		if runsAnyCommand(w.text, commands) {
+			withTests = append(withTests, w.name)
+		}
+		checks = append(checks, matchedCommands(w.text, checkCommands)...)
+	}
+
+	if len(withTests) == 0 {
 		detail := fmt.Sprintf(
-			".github/workflows/%s 里没有出现任何测试命令。\n"+
-				"这个 workflow 会在代码坏了的时候照样变绿。", name)
-		evidence := "扫描到的命令: 无"
-
+			".github/workflows/ 下有 %d 个 workflow，没有一个跑测试。\n"+
+				"这个仓库的 CI 从来不执行测试套件 —— 代码坏了，CI 照样是绿的。",
+			len(workflows))
+		evidence := "扫描到的 workflow: " + strings.Join(workflowNames(workflows), ", ")
 		if len(checks) > 0 {
-			summary = "CI workflow 里没有测试步骤 —— 只有静态检查"
-			detail = fmt.Sprintf(
-				".github/workflows/%s 里没有出现任何测试命令。\n"+
-					"它有这些检查：%s —— 它们能挡住语法错误和类型错误，"+
-					"但挡不住「测试是空的」或者「逻辑写错了但类型没错」。\n"+
-					"所以这个 workflow 依然会在行为坏掉的时候变绿。",
-				name, strings.Join(checks, ", "))
-			evidence = "找到的检查: " + strings.Join(checks, ", ")
+			detail += fmt.Sprintf(
+				"\n它有这些检查：%s —— 它们能挡住语法错误和类型错误，"+
+					"但挡不住「测试是空的」或者「逻辑写错了但类型没错」。",
+				strings.Join(dedupe(checks), ", "))
+			evidence += "\n找到的检查: " + strings.Join(dedupe(checks), ", ")
 		}
-
 		out = append(out, finding(core.KindGuardNotInstalled, core.SevWarn,
-			".github/workflows/"+name, 0,
-			summary,
-			detail,
-			evidence,
+			".github/workflows", 0,
+			"这个仓库的 CI 不跑任何测试",
+			detail, evidence,
 			"加一个跑测试的步骤，并让它失败时阻断合并"))
+	}
+
+	// A workflow that runs the tests and then ignores the failures.
+	for _, w := range workflows {
+		if !runsAnyCommand(w.text, commands) {
+			continue
+		}
+		if !hasContinueOnError(w.text) {
+			continue
+		}
+		out = append(out, finding(core.KindGuardNotInstalled, core.SevWarn,
+			".github/workflows/"+w.name, 0,
+			"CI 里的测试失败不会阻断合并",
+			fmt.Sprintf(
+				".github/workflows/%s 里有 `continue-on-error: true`，"+
+					"而且这个 workflow 确实在跑测试。\n"+
+					"测试失败的时候，CI 照样是绿的，合并照样能过 —— "+
+					"这个 workflow 存在，但它不拦住任何东西。", w.name),
+			"找到: continue-on-error: true",
+			"去掉它，或者让它只作用在真正可选的步骤上"))
+	}
+
+	return out
+}
+
+// workflowNames lists the workflow file names.
+func workflowNames(workflows []workflow) []string {
+	out := make([]string, 0, len(workflows))
+	for _, w := range workflows {
+		out = append(out, w.name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// dedupe removes repeats from a list, keeping the first occurrence.
+func dedupe(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
 	}
 	return out
 }
