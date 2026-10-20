@@ -1,0 +1,167 @@
+// Command gatecheck 判断「有没有需要重跑的东西」。
+//
+// 它是给定时校验任务用的闸门，也是这次修复的落点：
+// 早先的闸门拿「上次核验时的 commit」当基线，于是每一轮核验自己产生的
+// 文档提交就把基线弄失效 —— 闸门每轮都报「有变化」，完整的六仓 dogfood
+// 一轮接一轮地跑，发现什么新东西都没有。
+//
+// 退出码：
+//
+//	0  什么都没变 —— 可以直接结束
+//	1  有东西变了 —— 走完整流程
+//	2  判不出来 —— 也走完整流程（判不出来不等于没变化）
+//	3  record 没拿到确认 —— 状态没写
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/sokebo/vacuous/internal/gate"
+)
+
+type stringList []string
+
+func (s *stringList) String() string { return fmt.Sprint(*s) }
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
+	}
+
+	cmd := os.Args[1]
+	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+	repo := fs.String("repo", ".", "仓库目录")
+	var targets stringList
+	yes := fs.Bool("yes", false, "确认写入状态（record 用）")
+
+	switch cmd {
+	case "check":
+		fs.Var(&targets, "target", "额外要盯的仓库（可重复）")
+	case "record":
+		fs.Var(&targets, "target", "被审仓库路径（可重复）")
+	default:
+		usage()
+		os.Exit(2)
+	}
+	if err := fs.Parse(os.Args[2:]); err != nil {
+		os.Exit(2)
+	}
+
+	switch cmd {
+	case "check":
+		os.Exit(runCheck(*repo, targets))
+	case "record":
+		os.Exit(runRecord(*repo, targets, *yes))
+	}
+}
+
+func runCheck(repo string, extraTargets stringList) int {
+	dir, err := filepath.Abs(repo)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "路径 %s 解析失败: %v\n", repo, err)
+		return 2
+	}
+
+	st, err := gate.LoadState(dir)
+	if err != nil {
+		// 判不出来就说判不出来。返回一份空状态在这里等于报「没变化」。
+		fmt.Printf("CHANGED: 状态读不出来 —— %v\n", err)
+		fmt.Println("  判不出来不等于没变化，按「有变化」处理。")
+		return 2
+	}
+
+	changes := gate.Check(dir, st)
+	if len(extraTargets) > 0 {
+		// 额外的目标不在记录里：只能现场看一眼 HEAD，没有基线可比，
+		// 所以一律按 unknown 报出来，不假装它没变。
+		for _, t := range extraTargets {
+			abs, err := filepath.Abs(t)
+			if err != nil {
+				changes = append(changes, gate.Change{Kind: "unknown", Detail: fmt.Sprintf("路径 %s 解析失败: %v", t, err)})
+				continue
+			}
+			head, err := gate.Head(abs)
+			if err != nil {
+				changes = append(changes, gate.Change{Kind: "unknown", Detail: fmt.Sprintf("额外目标 %s 读不到 HEAD: %v", abs, err)})
+				continue
+			}
+			changes = append(changes, gate.Change{Kind: "unknown", Detail: fmt.Sprintf("额外目标 %s 当前 HEAD %s（不在记录里，没有基线）", abs, head[:7])})
+		}
+	}
+
+	if len(changes) == 0 {
+		fmt.Println("NO CHANGE")
+		return 0
+	}
+
+	fmt.Println("CHANGED:")
+	for _, c := range changes {
+		fmt.Printf("  - [%s] %s\n", c.Kind, c.Detail)
+	}
+	return 1
+}
+
+func runRecord(repo string, targets stringList, yes bool) int {
+	dir, err := filepath.Abs(repo)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "路径 %s 解析失败: %v\n", repo, err)
+		return 2
+	}
+
+	st, err := gate.CurrentState(dir, targets)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "采集状态失败: %v\n", err)
+		return 2
+	}
+
+	if !yes {
+		fmt.Println("将要记录的状态（加 --yes 才真的写）：")
+		fmt.Printf("  commit      %s\n", st.Commit)
+		fmt.Printf("  fingerprint %s\n", st.Fingerprint)
+		for _, t := range st.Targets {
+			fmt.Printf("  target      %s  %s\n", t.Head[:7], t.Path)
+		}
+		if old, err := gate.LoadState(dir); err == nil {
+			fmt.Println("相对上次记录的变化：")
+			changes := gate.Check(dir, old)
+			if len(changes) == 0 {
+				fmt.Println("  （没有变化）")
+			}
+			for _, c := range changes {
+				fmt.Printf("  - [%s] %s\n", c.Kind, c.Detail)
+			}
+		} else {
+			fmt.Println("（这是第一次记录，没有上次的基线）")
+		}
+		return 3
+	}
+
+	if err := gate.SaveState(dir, st); err != nil {
+		fmt.Fprintf(os.Stderr, "写状态失败: %v\n", err)
+		return 2
+	}
+	fmt.Println("状态已记录：")
+	fmt.Printf("  commit      %s\n", st.Commit)
+	fmt.Printf("  fingerprint %s\n", st.Fingerprint)
+	for _, t := range st.Targets {
+		fmt.Printf("  target      %s  %s\n", t.Head[:7], t.Path)
+	}
+	return 0
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `用法:
+  gatecheck check [-repo DIR]              判断有没有需要重跑的东西
+  gatecheck record -yes -target DIR ...    记录此刻的状态（核验完成之后）
+
+退出码: check 0=没变 1=变了 2=判不出来; record 0=记好了 3=没确认
+`)
+}
