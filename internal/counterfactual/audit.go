@@ -309,7 +309,7 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	res.TestCommand = run.command
 	res.FailureOutput = run.failureTail
 
-	res.Verdict = classify(run)
+	res.Verdict = classify(run, a.isTest)
 	res.Findings = append(res.Findings, verdictFindings(res, run)...)
 	return res, nil
 }
@@ -326,6 +326,46 @@ func (a *Auditor) hasParent(ctx context.Context, sha string) (bool, error) {
 	}
 	// The line is "<sha> <parent>...". A root commit has only the sha.
 	return len(strings.Fields(out)) >= 2, nil
+}
+
+// buildErrorFiles extracts the source files named in a build error.
+//
+// A compiler error reads "path/to/file.go:12:5: undefined: X". The line
+// NUMBER is what identifies it: a package-level message has no digits
+// after its first colon.
+//
+// The file is what matters here: an error in a test file and an error in a
+// source file mean opposite things.
+func buildErrorFiles(buildErrors []string) []string {
+	var out []string
+	for _, e := range buildErrors {
+		for _, line := range strings.Split(e, "\n") {
+			line = strings.TrimSpace(line)
+			colon := strings.Index(line, ":")
+			if colon <= 0 {
+				continue
+			}
+			// A compiler error has a line number right after the colon.
+			rest := line[colon+1:]
+			digits := 0
+			for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+				digits++
+			}
+			if digits == 0 {
+				continue
+			}
+			file := line[:colon]
+			if strings.ContainsAny(file, " \t") {
+				continue
+			}
+			// A path with an extension is a file; "example.com/pkg" is not.
+			if !strings.Contains(file, ".") {
+				continue
+			}
+			out = append(out, file)
+		}
+	}
+	return out
 }
 
 // isTest asks the adapter whether a path is a test file.
@@ -486,7 +526,20 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 }
 
 // classify turns a run into a verdict.
-func classify(run *runOutcome) Verdict {
+//
+// isTest tells whether a path is a test file. It is what separates the two
+// reasons a build can fail, and they are opposites:
+//
+//	A compile error IN A TEST FILE means the test depends on something the
+//	fix introduced. Removing the fix removes that something, and the test
+//	cannot even be built. That is a coupling.
+//
+//	A compile error ELSEWHERE means the code at the parent commit no
+//	longer fits the dependencies it is built against - a shared library
+//	moved on, and every commit that touches it now fails to build. That
+//	is an environment problem, and blaming the test for it is exactly
+//	wrong.
+func classify(run *runOutcome, isTest func(string) bool) Verdict {
 	if run == nil {
 		return VerdictNotApplicable
 	}
@@ -511,7 +564,17 @@ func classify(run *runOutcome) Verdict {
 		if isEnvironmentFailure(r.BuildErrors) {
 			return VerdictEnvironment
 		}
-		return VerdictCoupled
+		if isTest == nil {
+			return VerdictCoupled
+		}
+		for _, file := range buildErrorFiles(r.BuildErrors) {
+			if isTest(file) {
+				return VerdictCoupled
+			}
+		}
+		// The build broke somewhere that is not a test: the dependencies
+		// moved on and the code at the parent no longer fits them.
+		return VerdictEnvironment
 	}
 
 	pass, fail, skip, _ := r.Counts()

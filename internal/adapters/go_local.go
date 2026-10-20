@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -34,9 +35,26 @@ import (
 // it as symlinks. Nothing is copied: the shared directory is a whole
 // repository, and copying it for every audited commit would be absurd.
 
-// PrepareWorktree stages the repository's local replace targets next to the
-// worktree, so a project that builds against a sibling directory builds in
-// the counterfactual too.
+// PrepareWorktree gives the worktree what it needs to build.
+//
+// Two things are needed, and they are different:
+//
+//  1. The siblings the committed go.mod points at. A project that says
+//     "replace ... => ../shared" expects a "../shared" next to the
+//     checkout.
+//
+//  2. The local setup the developer added by hand and never committed.
+//     This is the common case in a repository whose CI injects the
+//     replace itself:
+//
+//     go mod edit -replace github.com/example/shared=$WORKSPACE/_shared
+//
+//     The committed go.mod has no replace at all, so the counterfactual
+//     checkout - which is built from the committed file - cannot build,
+//     even though the developer's checkout can.
+//
+// Both are the same idea: the counterfactual tree should build the way the
+// caller's tree builds.
 func (g *Go) PrepareWorktree(ctx context.Context, repoRoot, worktreePath string) error {
 	if repoRoot == "" || worktreePath == "" {
 		return nil
@@ -44,12 +62,13 @@ func (g *Go) PrepareWorktree(ctx context.Context, repoRoot, worktreePath string)
 
 	// The go.mod of the checkout being tested is the one that matters: the
 	// replace directives can differ from one commit to the next.
-	goMod := filepath.Join(worktreePath, "go.mod")
-	if _, err := os.Stat(goMod); err != nil {
-		goMod = filepath.Join(repoRoot, "go.mod")
+	worktreeMod := filepath.Join(worktreePath, "go.mod")
+	if _, err := os.Stat(worktreeMod); err != nil {
+		worktreeMod = filepath.Join(repoRoot, "go.mod")
 	}
 
-	for _, target := range localReplaceTargets(goMod) {
+	// Stage the siblings the checked-out go.mod points at.
+	for _, target := range parseLocalReplaces(worktreeMod) {
 		if err := stageSibling(repoRoot, worktreePath, target); err != nil {
 			// A sibling that cannot be staged is not fatal here. The build
 			// that follows will explain what was missing, and the engine
@@ -57,7 +76,83 @@ func (g *Go) PrepareWorktree(ctx context.Context, repoRoot, worktreePath string)
 			continue
 		}
 	}
+
+	// Carry over the caller's local setup.
+	if err := inheritLocalReplaces(filepath.Join(repoRoot, "go.mod"), worktreeMod, repoRoot, worktreePath); err != nil {
+		return err
+	}
 	return nil
+}
+
+// inheritLocalReplaces copies the caller's hand-made replace directives into
+// the worktree's go.mod.
+//
+// A developer who has to run "go mod edit -replace ..." to make the project
+// build has done it in their working tree, not in the repository. The
+// counterfactual checkout is built from the committed file, so without this
+// the worktree cannot build at all.
+//
+// The change is written to the worktree's go.mod, which is disposable. The
+// caller's file is never touched.
+func inheritLocalReplaces(callerMod, worktreeMod, repoRoot, worktreePath string) error {
+	caller := parseLocalReplaces(callerMod)
+	if len(caller) == 0 {
+		return nil
+	}
+	own := parseLocalReplaces(worktreeMod)
+
+	var add []string
+	for old, target := range caller {
+		if _, ok := own[old]; ok {
+			continue
+		}
+		add = append(add, old+" => "+target)
+	}
+	if len(add) == 0 {
+		return nil
+	}
+	sort.Strings(add)
+
+	// The worktree's go.mod may be the caller's file, if the worktree has
+	// none of its own. Never write to the caller's file.
+	if sameFile(worktreeMod, callerMod) {
+		return nil
+	}
+
+	data, err := os.ReadFile(worktreeMod)
+	if err != nil {
+		return err
+	}
+	var b strings.Builder
+	b.Write(data)
+	if len(data) > 0 && !strings.HasSuffix(string(data), "\n") {
+		b.WriteString("\n")
+	}
+	for _, line := range add {
+		b.WriteString("\nreplace " + line + "\n")
+	}
+	if err := os.WriteFile(worktreeMod, []byte(b.String()), 0o644); err != nil {
+		return err
+	}
+
+	// And stage the targets those new directives point at.
+	for _, target := range parseLocalReplaces(worktreeMod) {
+		_ = stageSibling(repoRoot, worktreePath, target)
+	}
+	return nil
+}
+
+// sameFile reports whether two paths are the same file.
+func sameFile(a, b string) bool {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ai, bi)
 }
 
 // stageSibling makes a relative replace target reachable from the worktree.
@@ -112,23 +207,23 @@ type siblingError struct{ msg string }
 
 func (e *siblingError) Error() string { return e.msg }
 
-// localReplaceTargets reads a go.mod and returns the local paths its
-// replace directives point at.
+// parseLocalReplaces reads a go.mod and returns the local replace
+// directives it holds, keyed by the module path they replace.
 //
 // A local target is one that starts with "./" or "../". An absolute path
-// needs no staging - it resolves the same from anywhere.
+// needs no staging - it resolves the same from anywhere - but it is still
+// a replace, and the worktree needs it.
 //
 // The parser is deliberately simple. go.mod's format is stable and the
-// only thing this needs is the right-hand side of a "=>" that names a
-// directory on disk.
-func localReplaceTargets(goModPath string) []string {
+// only thing this needs is the two sides of a "=>".
+func parseLocalReplaces(goModPath string) map[string]string {
+	out := map[string]string{}
 	f, err := os.Open(goModPath)
 	if err != nil {
-		return nil
+		return out
 	}
 	defer f.Close()
 
-	var out []string
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
@@ -140,15 +235,18 @@ func localReplaceTargets(goModPath string) []string {
 		if arrow < 0 {
 			continue
 		}
+		old := strings.TrimSpace(line[:arrow])
+		old = strings.TrimPrefix(old, "replace")
+		old = strings.TrimSpace(old)
+		if old == "" {
+			continue
+		}
 		right := strings.TrimSpace(line[arrow+2:])
 		right = strings.Trim(right, "\"")
 		if right == "" {
 			continue
 		}
-		if !strings.HasPrefix(right, "./") && !strings.HasPrefix(right, "../") {
-			continue
-		}
-		out = append(out, right)
+		out[old] = right
 	}
 	return out
 }

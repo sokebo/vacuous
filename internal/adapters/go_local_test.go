@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -169,8 +170,8 @@ func TestPrepareWorktreeRefusesToEscapeItsOwnDirectory(t *testing.T) {
 	}
 }
 
-// TestLocalReplaceTargets pins down the go.mod parsing.
-func TestLocalReplaceTargets(t *testing.T) {
+// TestParseLocalReplaces pins down the go.mod parsing.
+func TestParseLocalReplaces(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "go.mod", `module example.com/app
 
@@ -190,14 +191,73 @@ replace (
 )
 `)
 
-	got := localReplaceTargets(filepath.Join(dir, "go.mod"))
-	want := map[string]bool{"../shared": true, "../a": true}
-	if len(got) != len(want) {
-		t.Fatalf("localReplaceTargets() = %v, want %v", got, want)
+	got := parseLocalReplaces(filepath.Join(dir, "go.mod"))
+	// Four replaces: a local path, another local path, an absolute path,
+	// and a module replaced by a different version of itself. All four
+	// change what the build uses, so all four have to survive.
+	if len(got) != 4 {
+		t.Fatalf("parseLocalReplaces() = %v, want 4 entries", got)
 	}
-	for _, g := range got {
-		if !want[g] {
-			t.Errorf("unexpected target %q", g)
-		}
+	if got["example.com/shared"] != "../shared" {
+		t.Errorf("shared = %q, want ../shared", got["example.com/shared"])
+	}
+	if got["example.com/a"] != "../a" {
+		t.Errorf("a = %q, want ../a", got["example.com/a"])
+	}
+	if got["example.com/b"] != "/abs/path/b" {
+		t.Errorf("b = %q, want /abs/path/b", got["example.com/b"])
+	}
+	if got["example.com/c"] != "example.com/c v1.0.0" {
+		t.Errorf("c = %q, want the version pin", got["example.com/c"])
+	}
+}
+
+// TestPrepareWorktreeInheritsTheCallersLocalReplace covers the case that
+// matters in a repository whose CI injects the replace itself.
+//
+// The committed go.mod has no replace. The developer's working tree has
+// one, added by hand. Without inheriting it, the counterfactual checkout
+// cannot build at all.
+func TestPrepareWorktreeInheritsTheCallersLocalReplace(t *testing.T) {
+	projects := t.TempDir()
+	repoRoot := filepath.Join(projects, "app")
+	shared := filepath.Join(projects, "shared")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The caller's working tree: a hand-made replace, exactly what CI
+	// injects with "go mod edit -replace".
+	writeFile(t, repoRoot, "go.mod", "module example.com/app\n\nrequire example.com/shared v1.0.0\n\nreplace example.com/shared => "+shared+"\n")
+
+	outer := t.TempDir()
+	worktree := filepath.Join(outer, "repo")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The committed go.mod: no replace at all.
+	writeFile(t, worktree, "go.mod", "module example.com/app\n\nrequire example.com/shared v1.0.0\n")
+
+	g := NewGo()
+	if err := g.PrepareWorktree(context.Background(), repoRoot, worktree); err != nil {
+		t.Fatalf("PrepareWorktree: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(worktree, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "replace example.com/shared =>") {
+		t.Errorf("the worktree's go.mod did not inherit the replace:\n%s", data)
+	}
+	// And the caller's own file must not have been touched.
+	caller, err := os.ReadFile(filepath.Join(repoRoot, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(caller), "replace example.com/shared =>") {
+		t.Errorf("the caller's go.mod was modified:\n%s", caller)
 	}
 }

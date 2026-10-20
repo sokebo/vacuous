@@ -332,7 +332,84 @@ delta，于是「这个仓库零测试」这条发现消失了 —— 工具看�
 
 ---
 
-## 4. Python 适配器在真实仓库上的验证
+### 3.14 编译错误在测试文件里 vs 在源码文件里，含义是相反的
+
+**现象**：在 admin-service 上审一个提交，编译错误全在**非测试文件**里
+（`standardized.go` 引用了 shared 新增的 Seedance API），工具却判成
+「测试和修复耦合」。
+
+**根因**：`classify` 只看「有没有编译错误」，不看错误**在哪**。
+
+**修复**：编译器错误读作 `path/file.go:12:5: message`，文件路径就在冒号前 ——
+于是可以问适配器「这是不是测试文件」：
+
+- 错误在**测试文件**里 → 测试依赖了这次修复引入的东西 → **coupled**
+- 错误在**源码文件**里 → 父提交那份代码跟当前的依赖对不上了
+  （shared 往前走了一步）→ **environment**
+
+这是两件相反的事：一个是「测试和修复焊死了」，一个是「依赖动了，我们没跑成」。
+以前只有一个 `coupled`，报告就会在两者之间乱指。
+
+### 3.15 反事实 worktree 不会继承开发者本地的 go.mod 改动
+
+**现象**：CI 的做法是
+
+```
+go mod edit -replace github.com/example/shared-lib="$GITHUB_WORKSPACE/_shared"
+go mod tidy
+```
+
+—— **CI 自己注入 replace**。提交在仓库里的 go.mod 根本没有 replace 指令。
+
+所以：开发者的检出能编译（他手动跑过 `go mod edit`），反事实 worktree
+（从提交的文件建出来的）**编译不过** → 每一条提交都判成环境问题，工具等于
+没法用。
+
+**修复**：`PrepareWorktree` 再多做一件事 —— 把**调用方 go.mod 里的 replace
+指令继承到 worktree 的 go.mod 里**，并把它指向的目录摆好。调用方的文件
+一个字都不动；改的是那个一次性的 worktree。
+
+**「反事实树应该按调用方那棵树的方式编译」** —— 这是同一条原则的两面：
+仓库之外的邻居要摆好，开发者手工加的本地设置也要继承。
+
+---
+
+## 4. 在 example 两个真实仓库上的验证
+
+`admin-service`（685+ 提交，22 个测试文件）和 `relay-service`
+（785+ 提交，78 个测试文件）—— 都是 Go 仓，都用 `replace` 指向一个同级目录。
+
+**静态体检**（修完 3.12 之后）：
+
+| 仓 | 结果 |
+|---|---|
+| admin-service | **0 条发现** —— 它的 `ci.yml` 确实跑 `go test` |
+| relay-service | 1 条警告 —— `internal/search/google_test.go` 的 Google API 集成测试在没 key 时跳过（合法） |
+
+**反事实审计**（12 个提交，12.7 秒）：
+
+```
+统计: proven 0 · vacuous 0 · 无测试 1 · 无法判定 7
+按类别: coupled 4 · environment 3 · no-test-for-fix 1
+```
+
+**唯一那条高危发现是真的**，已人工核实：
+
+> 提交 `74ad83c6`（2026-10-19）改了 `internal/channelops/standardized.go` 的
+> 进度逻辑（`progress == 0 && status == completed → 100`）和一个函数签名，
+> **没有带任何测试**。commit message 写的是
+> 「update logic for seedance **manual test**」——
+> 靠手动验证代替测试。
+
+coupled 那 4 条也是真的：测试调用了这次修复改过签名的函数，撤掉修复就
+编译不过 —— 测试和修复在源码层面确实是缠在一起的。
+
+environment 那 3 条是 shared 库往前走了一步、父提交那份代码跟不上 ——
+工具说的「环境问题，不是测试的问题」是对的。
+
+---
+
+## 5. Python 适配器在真实仓库上的验证
 
 `harness`（本地唯一的 Python 仓，有 `pytest.ini` 和 6 个真测试文件）
 是 Python 反事实路径的第一个真实靶子。
@@ -356,7 +433,7 @@ vacuous --mode audit --commit 6896fd1545
 
 ---
 
-## 5. 验证链条
+## 6. 验证链条
 
 ---
 
@@ -374,7 +451,7 @@ CI 里有两个 job：`build`（fmt / vet / build / test -race / 空缓存 test�
 
 ---
 
-## 6. 这份文档没有覆盖的东西
+## 7. 这份文档没有覆盖的东西
 
 - **n = 1 的仓**：6 个仓库、约 120 次运行。所有「真阳性」的结论都是人工
   逐条核实的，但样本量摆在这里，说不上统计显著。
