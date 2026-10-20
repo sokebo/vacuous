@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -24,6 +25,29 @@ import (
 
 // Version is stamped at build time with -ldflags.
 var Version = "dev"
+
+// init fills in the version for binaries that were installed with
+// "go install", which applies no ldflags of its own.
+//
+// The release tarballs carry a stamped version; a "go install" build does
+// not, but the module version is still recorded in the binary's build info.
+// Reading it costs nothing and keeps the two installation paths from
+// reporting different things.
+func init() {
+	if Version != "dev" {
+		return
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	switch v := info.Main.Version; {
+	case v == "" || v == "(devel)":
+		return
+	default:
+		Version = v
+	}
+}
 
 // Exit codes. These are part of the tool's contract: CI depends on them.
 const (
