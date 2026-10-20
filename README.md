@@ -36,11 +36,20 @@
 
 ## 安装
 
+**一键（不用装 Go）：**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sokebo/mavis-masterpiece/main/scripts/install.sh | sh
+```
+
+**或者用 Go 装：**
+
 ```bash
 go install github.com/sokebo/mavis-masterpiece/cmd/vacuous@latest
 ```
 
-或者从 [Releases](https://github.com/sokebo/mavis-masterpiece/releases) 下载预编译二进制。
+**或者下载预编译二进制**：[Releases](https://github.com/sokebo/mavis-masterpiece/releases)
+（`vacuous_<os>_<arch>.tar.gz`，含 SHA256 校验和）。
 
 需要本机有 `git`，以及项目自己的测试工具链（`go` / `pytest` / `node`）。
 

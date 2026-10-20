@@ -209,23 +209,21 @@ vacuous —— 高危指控，说这个提交加的 21 个测试什么都没证�
 
 ---
 
-## 4. 跑 dogfood 时发现的环境问题（不属于本项目）
+## 4. 关于 delta 的一个观察（不是问题）
 
-**delta 的工作树里有一份 gamma 源码的副本。**
-`cmd/`、`go.mod`、`internal/` 以 untracked 文件的形式躺在公开仓的克隆里，
-内容与私有研究仓逐字节相同，创建时间同为 18:15:13。
+`delta` 的工作树里有一份 gamma 源码的 untracked 副本
+（`cmd/`、`go.mod`、`internal/`，逐字节相同）。这是**正在进行中的开发工作**，
+不是数据泄漏。
 
-这件事不是 vacuous 干的 —— 工具的全部写操作只有两处：把生成物目录
-（dist/build/out/vendor/node_modules/static/public）复制进临时 worktree，
-以及在临时目录里建 worktree。实测跑一遍 `--mode all`，调用方仓库的文件集合
-和 mtime 逐字节未变。
+它对 dogfood 数据有一个实际影响：那份多出来的 `go.mod` 让 Go 适配器认领了
+delta，于是「这个仓库零测试」这条发现消失了 —— 工具看的是磁盘上真实存在
+的东西，它没有说错，是仓库的状态变了。上面的 delta 数据取自一份
+**干净 clone**（commit 33ffb44），以免正在进行的开发影响基线。
 
-但它有实际影响：那份多出来的 `go.mod` 让 Go 适配器认领了 delta，
-于是「这个仓库零测试」这条发现消失了 —— 工具看的是磁盘上真实存在的东西，
-它没有说错，是仓库的状态变了。上面的 delta 数据取自一份**干净 clone**。
-
-**要处置的是仓库状态，不是工具。** 公开仓的克隆里放着私有研究仓的源码，
-这件事本身值得看一眼。
+顺带验证了一件事：**工具不会往调用方仓库里写任何东西**。它的全部写操作只有
+两处 —— 把生成物目录（dist/build/out/vendor/node_modules/static/public）复制进
+临时 worktree，以及在临时目录里建 worktree。实测跑一遍 `--mode all`，
+调用方仓库的文件集合和 mtime 逐字节未变。
 
 ---
 

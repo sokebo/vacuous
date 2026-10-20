@@ -114,6 +114,11 @@ func parse(args []string, stderr io.Writer) (*Options, error) {
 	}
 	fs := flag.NewFlagSet("vacuous", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "vacuous %s —— 找出那些「撤掉修复也照样绿」的测试\n\n", Version)
+		fmt.Fprintf(stderr, "用法: vacuous [flags] [目录]\n\n")
+		fs.PrintDefaults()
+	}
 	fs.StringVar(&opts.Mode, "mode", opts.Mode, "analysis mode: audit | check | all")
 	fs.StringVar(&opts.Base, "base", "", "revision to compare against (default: merge-base with default branch)")
 	fs.StringVar(&opts.Commit, "commit", "", "audit a single commit")
