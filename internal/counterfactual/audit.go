@@ -175,6 +175,28 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	}
 
 	res := &Result{Commit: info, Changed: changed}
+
+	// The first commit of a repository has no parent, and the experiment
+	// needs one: the fix has to be taken away from somewhere.
+	//
+	// Saying so plainly is much better than letting git report an invalid
+	// reference, and much better than quietly auditing nothing.
+	hasParent, err := a.hasParent(ctx, sha)
+	if err == nil && !hasParent {
+		res.Verdict = VerdictNotApplicable
+		res.Findings = append(res.Findings, core.Finding{
+			Kind:     core.KindNotApplicable,
+			Severity: core.SevInfo,
+			Summary:  "这是仓库的第一个提交 —— 没有父提交可以对照",
+			Detail: fmt.Sprintf(
+				"提交 %s 是这个仓库的第一个提交，没有父提交。\n"+
+					"反事实审计要拿父提交当基线，所以这里不适用 —— "+
+					"这不是一个「有问题」的结论。", info.Short),
+			Hint: "第一个提交本来就无从对照，不用管这条",
+		})
+		return res, nil
+	}
+
 	for _, f := range changed {
 		switch {
 		case a.isTest(f.Path):
@@ -285,6 +307,20 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	res.Verdict = classify(run)
 	res.Findings = append(res.Findings, verdictFindings(res, run)...)
 	return res, nil
+}
+
+// hasParent reports whether a commit has a parent commit.
+//
+// An error means "could not tell", and the caller must not turn that into a
+// claim either way: a git hiccup must not be reported as "this is the first
+// commit".
+func (a *Auditor) hasParent(ctx context.Context, sha string) (bool, error) {
+	out, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-list", "--parents", "-n", "1", sha)
+	if err != nil {
+		return false, fmt.Errorf("read parents of %s: %w", sha, err)
+	}
+	// The line is "<sha> <parent>...". A root commit has only the sha.
+	return len(strings.Fields(out)) >= 2, nil
 }
 
 // isTest asks the adapter whether a path is a test file.

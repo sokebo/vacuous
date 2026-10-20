@@ -84,6 +84,10 @@ const (
 	// KindNoTestRunner means the repository has no way to run tests at all,
 	// so the counterfactual audit could not be carried out here.
 	KindNoTestRunner Kind = "no-test-runner"
+	// KindNotApplicable means there was nothing to judge - a commit with
+	// no parent to compare against, a commit that only touched
+	// documentation. It is not a problem, and it is not a pass.
+	KindNotApplicable Kind = "not-applicable"
 	// KindCoupled is inconclusive: the test could not be evaluated because
 	// it depends on the fix at compile time.
 	KindCoupled Kind = "coupled"

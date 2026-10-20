@@ -203,6 +203,38 @@ func TestAuditLeavesCosmeticChangesAlone(t *testing.T) {
 	}
 }
 
+// TestAuditLeavesTheFirstCommitAlone proves the tool does not turn git's
+// "invalid reference" into a finding.
+//
+// The first commit of a repository has no parent, and the counterfactual
+// needs one. The honest answer is "not applicable", not a raw git error and
+// not a silent pass.
+func TestAuditLeavesTheFirstCommitAlone(t *testing.T) {
+	m := testfixtures.NewRepo(t)
+	m.Write(t, "go.mod", "module example.com/first\n\ngo 1.26\n")
+	m.Write(t, "greet.go", "package fixture\n\nfunc Greet() string { return \"hi\" }\n")
+	m.Write(t, "greet_test.go", "package fixture\n\nimport \"testing\"\n\nfunc TestGreet(t *testing.T) {\n\tif Greet() == \"\" {\n\t\tt.Fatal(\"bad\")\n\t}\n}\n")
+	m.Init(t)
+
+	a := newAuditor(t, m.Dir)
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	if res.Verdict != VerdictNotApplicable {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictNotApplicable, res.Verdict, res.Findings)
+	}
+	for _, f := range res.Findings {
+		if f.Severity >= core.SevWarn {
+			t.Errorf("the first commit must not raise a warning: %+v", f)
+		}
+		if strings.Contains(f.Detail, "invalid reference") {
+			t.Errorf("the finding must not leak git's raw error: %q", f.Detail)
+		}
+	}
+}
+
 // TestAuditDetectsMissingTest covers the other end of the spectrum: a fix
 // that shipped with no test at all.
 func TestAuditDetectsMissingTest(t *testing.T) {
