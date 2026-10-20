@@ -59,22 +59,30 @@ jobs:
             -o "vacuous" ./cmd/vacuous
 
       - name: Smoke test the binary
-        # A binary that does not start is worse than no release. This check
-        # is the only thing standing between a broken build and every user
-        # who installs it.
+        # A binary that does not start is worse than no release.
+        #
+        # The job cross-compiles, so most of these binaries cannot be
+        # EXECUTED here - a darwin/arm64 binary on an amd64 Linux runner
+        # gives "Exec format error" no matter how good it is. "go version -m"
+        # reads the build info out of any Go binary on any platform, so it
+        # is the check that actually works everywhere.
         shell: bash
         env:
           GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
           set -e
           chmod +x vacuous
-          if [ "${GOOS}" = "windows" ]; then
-            echo "Windows binaries are smoke tested on a Windows runner."
-            exit 0
+          info="$(go version -m vacuous)"
+          echo "$info" | head -4
+          echo "$info" | grep -q "GOOS=${GOOS}" || { echo "wrong GOOS"; exit 1; }
+          echo "$info" | grep -q "GOARCH=${GOARCH}" || { echo "wrong GOARCH"; exit 1; }
+          # And it must actually run, on the one platform this runner can run.
+          if [ "${GOOS}" = "linux" ] && [ "${GOARCH}" = "amd64" ]; then
+            ./vacuous --help | head -1
+          else
+            echo "not runnable on this runner; build info verified instead"
           fi
-          ./vacuous --help > /dev/null
-          ./vacuous --help | head -1
-          echo "binary starts"
 
       - name: Package
         shell: bash
