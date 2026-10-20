@@ -19,6 +19,17 @@
 基线 commit: df223ea
 ```
 
+**被审计仓库的 HEAD**（同一个闸门也看这几行 —— 任何一个变了就需要重跑）：
+
+```
+alpha        77444cf
+beta        e41de04
+gamma 7f6f755
+delta   e902251
+epsilon      57b4a54
+zeta  517ecb0
+```
+
 ---
 
 ## 1. 静态体检（`--mode check`）
