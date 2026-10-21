@@ -1667,6 +1667,74 @@ pre-existing-failure，Summary 又开始说「这个红灯本来就在」；改�
 
 ---
 
+### 3.45 夹具（testdata）被当成测试 —— 报告说「覆盖率会算进去」，可它从来就没被算过
+
+**现象**：工具审自己（`--mode check .`）报 26 条，其中 3 条指向
+`internal/adapters/testdata/` 底下的**夹具文件**：
+
+| 文件 | 夹具里的那句 |
+|---|---|
+| `internal/adapters/testdata/goproj/add_test.go:15` | `t.Skip("not ready yet")` |
+| `internal/adapters/testdata/nodeproj/sum.test.js:7` | `test.skip('is pending', …)` |
+| `internal/adapters/testdata/pyproj/test_calc.py:13` | `pytest.skip("not ready yet")` |
+
+这三份文件是**别的仓的样本** —— 它们是给适配器当输入用的夹具，不是这个仓的测试。
+
+**根因**：`testdata` 是「测试要用的数据」的约定，**不是测试代码**。Go 工具链
+**直接无视**它：testdata 底下的 `_test.go` 永远不会被编译、不会被跑，也**不会被
+覆盖率算进去**。
+
+而适配器那层**早就知道**这件事 —— `adapters.skipPackageDir` 明确把 testdata
+排除在 Go package 之外。**静态检查那层不知道** —— `detect.isTestPath` 只看文件名，
+`add_test.go` 就是测试文件。
+
+同一个目录，两处给出相反的判断。这和 3.44 是同一个病根：判断写在两处，其中一处
+没跟上。
+
+**后果**：报告写的是「被跳过的测试没有证明任何事 —— **覆盖率会把它算进去**，但它
+一次都没跑过」。这句话落在 testdata 上，**每一句都是错的**：它不是测试，覆盖率也
+从不数它。读者收到的是一条指控，指控对象是一份夹具。
+
+**修复**：`detect.isTestPath` 加一条 —— 路径里有一段叫 `testdata` 的，就不是测试
+文件。名字**精确匹配**：`testdata2`、`testutils` 是普通代码，照样要扫。
+
+**负对照**（两个方向各有自己的用例，拆哪一半都会红）：
+
+| 拆掉的修复 | 变红的用例 | 保持绿 |
+|---|---|---|
+| 整条 testdata 规则去掉 | `TestTestdataIsNotTestCode`（4 个夹具全被报成「跳过测试」）、`TestTestdataFilesAreNotCountedAsTests`（夹具被当成 2 个测试文件） | `TestOnlyAnExactTestdataDirectoryIsExcluded` |
+| 精确匹配改成前缀匹配 | `TestOnlyAnExactTestdataDirectoryIsExcluded`（`testdata2/` 里的真测试被漏掉） | 上面那两条 |
+
+变红时报出来的正是生产症状：
+
+```
+--- FAIL: TestTestdataIsNotTestCode
+    a fixture under testdata is not a test and must not be reported as a
+    skipped test: testdata/fixture_test.go
+```
+
+**现场验证**（真仓，不是夹具）：
+
+- 工具审自己：**26 条 → 23 条**。消失的正好是那 3 条夹具；23 条真跳过
+  （`t.Skip("skipping: runs a real go test")` 之类）一条没少。
+- 6 个被审仓**逐条比对**（`--mode check --json`，改前 / 改后）：alpha 3 条、
+  beta 1 条、gamma 7 条、delta 1 条、epsilon 1 条、zeta 1 条
+  —— **全部一模一样**。修掉的是夹具，没碰到任何真信号。
+
+**记一笔（还没修，留给下一轮）**：同一个「testdata 不是代码」的判断，另外**两处**
+还不知道：
+
+- `internal/git/istest.go` 的 `isTestPath` —— 审计侧用它判断「改动的文件是不是
+  测试」。改了它，「这次改动有测试跟着」这句话的判据就变了，牵动的是判决，不是
+  噪声。
+- Python 适配器的套件发现（`UnittestSuites` 的目录遍历）—— Python 仓的
+  `testdata/` 夹具目录会被当成一个 unittest 套件去跑。
+
+两处的影响和改法都不一样，所以没有顺手改：前者动判决，后者动执行，都在别人的
+改动范围里。
+
+---
+
 ## 4. 两次独立复核
 
 这个项目最大的风险不是「查不出问题」，是「查错了还说得很有把握」。

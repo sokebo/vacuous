@@ -188,6 +188,23 @@ func (o Options) discoverTestFiles(repoRoot string) ([]string, error) {
 
 // isTestPath reports whether a repo-relative path looks like a test file.
 func isTestPath(rel string) bool {
+	// A testdata directory holds test DATA, not test code.
+	//
+	// The Go toolchain ignores those directories outright: a _test.go file
+	// under testdata is never built, never run, and never counted by
+	// coverage. The adapter layer already knows this - skipPackageDir
+	// refuses to treat a testdata directory as a Go package. The static
+	// checks did not, so a fixture that happened to contain a skip was
+	// reported as "a test that was skipped", and the report claimed that
+	// coverage counts it. Neither is true of a fixture: the fixture was
+	// never supposed to prove anything.
+	//
+	// A directory called testdata is the convention for "the bytes the
+	// tests need". Nothing in it is a test file, so nothing in it is
+	// scanned as one.
+	if underDataDir(rel) {
+		return false
+	}
 	base := path.Base(rel)
 	ext := path.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
@@ -214,6 +231,21 @@ func underTestDir(rel string) bool {
 	for _, seg := range strings.Split(path.Dir(rel), "/") {
 		switch seg {
 		case "test", "tests", "spec", "specs", "__tests__":
+			return true
+		}
+	}
+	return false
+}
+
+// underDataDir reports whether rel sits in a directory that conventionally
+// holds test data rather than test code.
+//
+// The name is matched exactly, at any depth: "testdata" is the convention,
+// and a directory that merely starts with the word "test" (testdata2, or a
+// package called testutils) is ordinary code and must keep being scanned.
+func underDataDir(rel string) bool {
+	for _, seg := range strings.Split(path.Dir(rel), "/") {
+		if seg == "testdata" {
 			return true
 		}
 	}
