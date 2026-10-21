@@ -90,6 +90,18 @@ type ParallelOptions struct {
 }
 
 // ParallelAuditor audits many commits at once.
+//
+// The repository's worktrees are cleaned up by the audit that created them:
+// each counterfactual run removes its own checkout when it ends, whether it
+// ended in a verdict or in a failure. That is what makes a parallel run
+// safe.
+//
+// One thing the caller has to know: `Repo.CleanupWorktrees()` takes every
+// worktree the repository knows about and deletes it. Calling it while a
+// round is still running would delete the checkout of a commit that is
+// being audited right now, and that audit would fail for a reason nobody
+// could explain afterwards. It belongs in a defer around the whole round,
+// which is where the serial path already has it.
 type ParallelAuditor struct {
 	auditor     *Auditor
 	concurrency int
@@ -263,7 +275,7 @@ func (p *ParallelAuditor) auditOne(ctx context.Context, sha string) (*Result, er
 	// - a conclusion drawn from a suite that never finished running. The
 	// evidence of a truncated run is not evidence.
 	if errors.Is(cctx.Err(), context.DeadlineExceeded) {
-		return p.timeoutResult(ctx, sha, res), nil
+		return p.timeoutResult(ctx, sha, res, err), nil
 	}
 	if err != nil {
 		return nil, &CommitError{Commit: sha, Err: err}
@@ -276,7 +288,7 @@ func (p *ParallelAuditor) auditOne(ctx context.Context, sha string) (*Result, er
 // It keeps everything the interrupted audit did learn - which commit it
 // was, which files it touched, what the test command was - and replaces
 // the conclusion, because a run that did not finish cannot support one.
-func (p *ParallelAuditor) timeoutResult(parent context.Context, sha string, res *Result) *Result {
+func (p *ParallelAuditor) timeoutResult(parent context.Context, sha string, res *Result, cause error) *Result {
 	out := &Result{Verdict: VerdictTimeout}
 	if res != nil {
 		out.Commit = res.Commit
@@ -291,7 +303,7 @@ func (p *ParallelAuditor) timeoutResult(parent context.Context, sha string, res 
 	if out.Commit.SHA == "" {
 		out.Commit = p.commitInfo(parent, sha)
 	}
-	out.Findings = []core.Finding{p.timeoutFinding(out)}
+	out.Findings = []core.Finding{p.timeoutFinding(out, cause)}
 	return out
 }
 
@@ -310,7 +322,7 @@ func (p *ParallelAuditor) commitInfo(parent context.Context, sha string) core.Co
 }
 
 // timeoutFinding describes a commit whose test run did not finish.
-func (p *ParallelAuditor) timeoutFinding(res *Result) core.Finding {
+func (p *ParallelAuditor) timeoutFinding(res *Result, cause error) core.Finding {
 	short := res.Commit.Short
 	if short == "" {
 		short = shortSHA(res.Commit.SHA)
@@ -318,6 +330,9 @@ func (p *ParallelAuditor) timeoutFinding(res *Result) core.Finding {
 	evidence := res.FailureOutput
 	if evidence == "" {
 		evidence = "测试进程在 " + p.timeout.String() + " 之后被中断"
+	}
+	if cause != nil {
+		evidence += "\n" + cause.Error()
 	}
 	return core.Finding{
 		Kind:     core.KindEnvironment,
