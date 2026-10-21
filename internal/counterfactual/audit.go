@@ -716,12 +716,17 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 	// expensive kind this tool can make.
 	//
 	// The baseline settles it: run the same scope with the fix back in
-	// place. Baseline green and counterfactual red means the red is the
-	// fix's. Baseline red too means the red was there before, and this
-	// commit cannot be judged.
+	// place. What the fix's removal broke is the set of tests that fail
+	// in the counterfactual and do NOT fail in the baseline.
+	//
+	// The comparison is on the tests, not on the counts. A suite with one
+	// test that was already failing and one that the fix guards has two
+	// failures in the counterfactual and one in the baseline; the counts
+	// differ, but the second failure is the witness, and the tool must
+	// not throw it away.
 	if countFailures(result) > 0 {
-		preExisting, detail := a.baselineAlsoRed(ctx, sha, target, plan)
-		if preExisting {
+		newFailures, detail := a.newFailuresWithoutFix(ctx, sha, target, plan, result)
+		if len(newFailures) == 0 {
 			out.preExisting = true
 			out.preExistingDetail = detail
 		}
@@ -730,31 +735,37 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 	return out, nil
 }
 
-// baselineAlsoRed runs the same scope with the fix in place and reports
-// whether the suite is red there too.
+// newFailuresWithoutFix runs the same scope with the fix in place and
+// returns the tests that fail in the counterfactual but not there.
 //
-// The commit's own tree is the baseline: it is the parent plus the fix plus
-// the tests. Anything red in it was red before the fix was removed, so the
-// counterfactual's red cannot be attributed to the removal.
+// Those are the tests the fix's removal broke - the witnesses. An empty
+// result means every red in the counterfactual was already there.
 //
-// It returns (true, detail) when the baseline is red as well, and
-// (false, "") when the baseline is green - which means the counterfactual's
-// red really is the fix's.
-//
-// A baseline that cannot be run at all counts as red. The question is
-// "was the suite already red", and a baseline that did not run cannot
-// answer it. That direction is the safe one: the tool says "cannot tell"
-// instead of claiming a test guards something it never saw.
-func (a *Auditor) baselineAlsoRed(ctx context.Context, sha string, target core.TestTarget, plan core.Plan) (bool, string) {
+// It returns (nil, detail) when the baseline cannot be run at all. The
+// question is "was the suite already red", and a baseline that did not run
+// cannot answer it. That direction is the safe one: the tool says "cannot
+// tell" instead of claiming a test guards something it never saw.
+func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target core.TestTarget, plan core.Plan, counterfactual core.RunResult) ([]string, string) {
 	wt, err := a.worktree.Create(ctx, sha)
 	if err != nil {
-		return true, "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
+		return nil, "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
 	}
 	defer wt.Remove()
 
+	// The baseline has to be prepared exactly the way the counterfactual
+	// is. The adapter's PrepareWorktree may generate a package that stands
+	// in for a build artefact, and the untracked build inputs may hold the
+	// files the build needs. A baseline that skips them fails to build for
+	// reasons that have nothing to do with the fix - and then every red
+	// looks pre-existing, which is the safe direction but a useless one.
+	a.copyUntrackedBuildInputs(ctx, wt.Path())
+	if preparer, ok := a.adapter.(core.WorktreePreparer); ok {
+		_ = preparer.PrepareWorktree(ctx, a.repo.Root(), wt.Path())
+	}
+
 	basePlan, err := a.adapter.Plan(ctx, core.PlanRequest{Root: wt.Path(), Target: target})
 	if err != nil {
-		return true, "基线建不出测试命令（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
+		return nil, "基线建不出测试命令（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
 	}
 	basePlan.Dir = wt.Path()
 
@@ -764,18 +775,44 @@ func (a *Auditor) baselineAlsoRed(ctx context.Context, sha string, target core.T
 	}
 	result, err := a.adapter.Run(runCtx, basePlan)
 	if err != nil {
-		return true, "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
+		return nil, "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
 	}
 	if len(result.BuildErrors) > 0 {
-		return true, "基线（带着修复的同一个提交）编译不过，所以无法确认这个红灯是不是这次修复造成的"
+		return nil, "基线（带着修复的同一个提交）编译不过（" +
+			strings.Join(result.BuildErrors, "；") +
+			"），所以无法确认这个红灯是不是这次修复造成的"
 	}
-	if countFailures(result) == 0 {
-		return false, ""
+
+	alreadyRed := failingTestNames(result)
+	var newOnes []string
+	for _, o := range counterfactual.Outcomes {
+		if o.Status != core.StatusFail {
+			continue
+		}
+		if !alreadyRed[o.Name] {
+			newOnes = append(newOnes, o.Name)
+		}
 	}
-	return true, fmt.Sprintf(
+	sort.Strings(newOnes)
+	if len(newOnes) > 0 {
+		return newOnes, ""
+	}
+
+	return nil, fmt.Sprintf(
 		"带着修复的同一个提交（%s）里，同样的测试也是红的（%d 个失败）—— "+
 			"这个红灯本来就在，不是撤掉这次修复造成的，所以这里下不了结论",
 		shortSHA(sha), countFailures(result))
+}
+
+// failingTestNames collects the names of the failing tests in a run.
+func failingTestNames(res core.RunResult) map[string]bool {
+	out := map[string]bool{}
+	for _, o := range res.Outcomes {
+		if o.Status == core.StatusFail {
+			out[o.Name] = true
+		}
+	}
+	return out
 }
 
 // countFailures counts the failing tests in a run.

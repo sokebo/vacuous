@@ -615,7 +615,139 @@ func PreExistingFailureFixture(t *testing.T) *GoModule {
 	m.Write(t, "greet_test.go", baseTest+alwaysFailingTest)
 	m.Init(t)
 	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest+alwaysFailingTest+`
+func TestStillGreen(t *testing.T) {
+	if Greet("bob") != "hello, bob" {
+		t.Fatal("greet broke")
+	}
+}
+`)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
+
+// PreExistingRedPlusWitnessFixture builds a repository whose suite is
+// already red AND whose fix commit also adds a real witness.
+//
+// The two reds have to be told apart. The suite is red either way, so a
+// comparison of the failure COUNTS says "nothing new" and throws the
+// witness away. The comparison that matters is on the tests themselves:
+// the witness fails in the counterfactual and not in the baseline, so the
+// fix's removal is what broke it.
+//
+// Getting this wrong is how a real witness gets reported as "nothing to
+// see here".
+func PreExistingRedPlusWitnessFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/preexistingwitness")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest+alwaysFailingTest)
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
 	m.Write(t, "greet_test.go", baseTest+alwaysFailingTest+witnessTestBody)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
+
+// embedBuggySource is the package before the fix. It embeds a file out of
+// the generated directory, so the package cannot even compile without it.
+const embedBuggySource = `package fixture
+
+import _ "embed"
+
+//go:embed dist/marker.txt
+var marker string
+
+// Greet returns a greeting.
+func Greet(name string) string {
+	return "hello, " + name
+}
+`
+
+// embedFixedSource is the same package after the fix.
+const embedFixedSource = `package fixture
+
+import _ "embed"
+
+//go:embed dist/marker.txt
+var marker string
+
+// Greet returns a greeting.
+func Greet(name string) string {
+	if name == "" {
+		return "hello, stranger"
+	}
+	return "hello, " + name
+}
+`
+
+// GeneratedInputFixture builds a repository whose package needs a generated
+// file that git does not track.
+//
+// The counterfactual worktree gets that file copied into it - the tool
+// copies untracked build inputs (dist/, build/, vendor/ ...) so that the
+// checkout can compile. The baseline worktree - the commit itself - has to
+// be prepared the same way. If it is not, the baseline cannot compile for a
+// reason that has nothing to do with this fix, and "the baseline is red"
+// then means "the baseline was never set up" rather than "the suite was
+// already red".
+//
+// This shape is common in the wild: a project that embeds its built
+// frontend, or that generates a version file before building.
+func GeneratedInputFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/generated")
+	m.Write(t, ".gitignore", "dist/\n")
+	m.Write(t, "dist/marker.txt", "generated\n")
+	m.Write(t, "greet.go", embedBuggySource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Init(t)
+	m.Write(t, "greet.go", embedFixedSource)
+	m.Write(t, "greet_test.go", baseTest+witnessTestBody)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
+
+// oldBehaviorTest pins the behaviour BEFORE the fix.
+//
+// It fails with the fix in place and passes without it - the opposite of a
+// witness. It is here to make the two reds in a counterfactual and its
+// baseline DIFFERENT SETS OF THE SAME SIZE, which is the only shape where
+// comparing counts and comparing tests give different answers.
+//
+// A suite with one test that was already failing and one that the fix
+// guards has two failures in the counterfactual and one in the baseline;
+// the counts differ, so both comparisons agree and the witness is kept.
+//
+// But a suite where the baseline's red is a different test is the shape
+// that catches a count-based comparison: the counts are equal, so "nothing
+// new" is the wrong answer, and the witness has to be found by name.
+const oldBehaviorTest = `
+func TestGreetEmptyNameIsUnchanged(t *testing.T) {
+	got := Greet("")
+	if got != "hello, " {
+		t.Fatalf("Greet(\"\") = %q, want %q", got, "hello, ")
+	}
+}
+`
+
+// SwappedRedFixture builds a repository where the counterfactual and the
+// baseline have the SAME NUMBER of failures but DIFFERENT ones.
+//
+// The counterfactual fails the always-failing test and the witness. The
+// baseline fails the always-failing test and a test that pins the old
+// behaviour. Two failures each.
+//
+// Comparing the counts says "nothing changed" and the witness is lost.
+// Comparing the tests says the witness is new - and it is.
+func SwappedRedFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/swappedred")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest+alwaysFailingTest)
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest+alwaysFailingTest+witnessTestBody+oldBehaviorTest)
 	m.Commit(t, "fix: greet an empty name")
 	return m
 }
