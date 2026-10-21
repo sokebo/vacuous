@@ -440,3 +440,121 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
+
+// UnittestSuites finds Python test suites that this tool cannot drive.
+//
+// The Python adapter drives pytest. A project that uses the standard
+// library's unittest has tests just the same - they are just not pytest,
+// and pytest is not installed.
+//
+// Saying "no supported test runner found" about such a project is not
+// true in the way a reader takes it: it sounds like the project has no
+// tests. It has tests; the tool cannot run them. Those are different
+// situations, and the difference decides what the reader does next: give
+// up on the repository, or add an adapter.
+//
+// A suite counts when it holds Python test files and nothing in it says
+// pytest. The directories are returned relative to root.
+func UnittestSuites(root string) []string {
+	if root == "" {
+		return nil
+	}
+
+	// Find the directories that configure pytest. A suite below one of
+	// them is a pytest suite, even when the configuration sits in an
+	// ancestor: the project decides for the whole tree.
+	pytestRoots := map[string]bool{}
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() {
+			return nil
+		}
+		switch filepath.Base(path) {
+		case ".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "__pycache__":
+			return filepath.SkipDir
+		}
+		for _, name := range []string{"pyproject.toml", "pytest.ini", "tox.ini"} {
+			if fileExists(filepath.Join(path, name)) {
+				rel, relErr := filepath.Rel(root, path)
+				if relErr == nil {
+					pytestRoots[rel] = true
+				}
+				return filepath.SkipDir
+			}
+		}
+		return nil
+	})
+
+	// underPytest reports whether a path sits inside a pytest project.
+	underPytest := func(rel string) bool {
+		d := rel
+		for {
+			if pytestRoots[d] {
+				return true
+			}
+			if d == "." {
+				return false
+			}
+			parent := filepath.Dir(d)
+			if parent == d {
+				return false
+			}
+			d = parent
+		}
+	}
+
+	seen := map[string]bool{}
+	var out []string
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		if rel == "." {
+			return nil
+		}
+		switch filepath.Base(path) {
+		case ".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "__pycache__":
+			return filepath.SkipDir
+		}
+		if underPytest(rel) {
+			return filepath.SkipDir
+		}
+		if !seen[rel] && dirHoldsPythonTests(path) {
+			seen[rel] = true
+			out = append(out, rel)
+		}
+		return nil
+	})
+	sort.Strings(out)
+	return out
+}
+
+// dirHoldsPythonTests reports whether dir contains Python test files.
+func dirHoldsPythonTests(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		base := e.Name()
+		if !strings.HasSuffix(base, ".py") {
+			continue
+		}
+		if strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py") {
+			return true
+		}
+	}
+	return false
+}

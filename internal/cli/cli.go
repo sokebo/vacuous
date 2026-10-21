@@ -246,6 +246,16 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 
 	if opts.Mode == "audit" || opts.Mode == "all" {
 		if adapter == nil {
+			// Say which of the two situations this is. "这个仓有测试，但工具
+			// 跑不了" and "这个仓压根没有测试" lead the reader to opposite
+			// next steps, and the first one is easy to miss.
+			if suites := adapters.UnittestSuites(root); len(suites) > 0 {
+				return nil, fmt.Errorf(
+					"这个仓的 Python 测试用的是 python -m unittest（%s），"+
+						"这个工具现在只会驱动 pytest，跑不了它们；"+
+						"先用 --mode check 看静态体检的结果",
+					strings.Join(suites, ", "))
+			}
 			return nil, fmt.Errorf(
 				"no supported test runner found in %s "+
 					"(supported: go, python/pytest, node/jest|vitest); "+

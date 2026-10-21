@@ -247,6 +247,35 @@ apply_setup() {
 	return 0
 }
 
+# prepare_node_deps 给 Node 仓装依赖。
+#
+# 没有 node_modules，测试套件根本起不来。工具会报 suite-crash（套件没跑起来）
+# —— 那句话是对的，但什么结论都得不到。装上依赖，套件才跑得起来。
+prepare_node_deps() {
+	local dir=$1
+	[ "${PREFETCH}" = "1" ] || return 0
+	[ -f "${dir}/package.json" ] || return 0
+	if [ -d "${dir}/node_modules" ]; then
+		log "    Node 依赖已就位"
+		return 0
+	fi
+	log "    装 Node 依赖"
+	local installer="npm install --no-audit --no-fund"
+	if [ -f "${dir}/package-lock.json" ]; then
+		installer="npm ci --no-audit --no-fund"
+	elif [ -f "${dir}/pnpm-lock.yaml" ]; then
+		installer="pnpm install --frozen-lockfile"
+	elif [ -f "${dir}/yarn.lock" ]; then
+		installer="yarn install --frozen-lockfile"
+	fi
+	log "      ${installer}"
+	(
+		cd "${dir}" || exit 0
+		with_timeout 1800 ${installer}
+	) >/dev/null 2>&1
+	[ -d "${dir}/node_modules" ] || log "    ⚠ 依赖没装上 —— 套件会判 suite-crash"
+}
+
 # clone_one 克隆一个仓并预热依赖。
 #
 # 已经克隆过就复用 —— 网络差的时候重新拉一遍是最贵的一步。
@@ -268,9 +297,10 @@ clone_one() {
 	fi
 	apply_setup "${dir}"
 	prefetch_deps "${dir}"
+	prepare_node_deps "${dir}"
 	return 0
 }
-export -f clone_one prefetch_deps with_timeout apply_setup
+export -f clone_one prefetch_deps with_timeout apply_setup prepare_node_deps
 
 # accept_one 审一个仓，结果追加到 ${LOG}。
 accept_one() {
@@ -333,18 +363,33 @@ PY
 	[ "$before" != "$after" ] && ro=CHANGED
 
 	# 退出码 2 表示工具自己没跑完 —— 那不算验收通过。
+	#
+	# 但有一种退出码 2 不是失败：这个仓**没有测试运行器**。工具给出了明确的
+	# 答案（并指向 --mode check），那是仓的性质，不是工具的问题。把它算成
+	# FAIL，等于说工具没跑完 —— 而它跑完了，答案是「这个仓没法做反事实」。
 	local ok=PASS
-	[ "$check_exit" = "2" ] && ok=FAIL
-	[ "$audit_exit" = "2" ] && ok=FAIL
-	[ "${ro}" != "SAME" ] && ok=FAIL
-	[ $((judged + na)) -ne "$LIMIT" ] && [ "${total}" -ge "$LIMIT" ] && ok=FAIL
-	# 跑完了但一个结论都没有 —— 单列出来，不能混进 PASS。
-	if [ "${ok}" = "PASS" ] && [ "${decided}" -eq 0 ]; then
-		ok=PASS_NO_CONCLUSION
+	local no_runner=0
+	if grep -q "no supported test runner found" "${WORK}/${name}.audit.err" 2>/dev/null; then
+		no_runner=1
 	fi
 
-	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-		"${name}" "${total}" "$check_exit" "$audit_exit" "${judged}" "${na}" "${decided}" "${strict}" "${ro}" >> "${LOG}"
+	if [ "${no_runner}" = "1" ]; then
+		ok=NO_TEST_RUNNER
+		[ "$check_exit" = "2" ] && ok=FAIL
+		[ "${ro}" != "SAME" ] && ok=FAIL
+	else
+		[ "$check_exit" = "2" ] && ok=FAIL
+		[ "$audit_exit" = "2" ] && ok=FAIL
+		[ "${ro}" != "SAME" ] && ok=FAIL
+		[ $((judged + na)) -ne "$LIMIT" ] && [ "${total}" -ge "$LIMIT" ] && ok=FAIL
+		# 跑完了但一个结论都没有 —— 单列出来，不能混进 PASS。
+		if [ "${ok}" = "PASS" ] && [ "${decided}" -eq 0 ]; then
+			ok=PASS_NO_CONCLUSION
+		fi
+	fi
+
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"${name}" "${total}" "$check_exit" "$audit_exit" "${judged}" "${na}" "${decided}" "${strict}" "${ro}" "${ok}" >> "${LOG}"
 	cd / || exit 1
 }
 

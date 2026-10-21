@@ -280,3 +280,50 @@ func Add(a, b int) int {
 		t.Errorf("the report should be empty:\n%s", stdout)
 	}
 }
+
+// TestAuditOnAUnittestProjectSaysWhatIsMissing proves the error tells the
+// truth about which situation this is.
+//
+// "这个仓有测试，但工具只会驱动 pytest" and "这个仓压根没有测试" lead the
+// reader to opposite next steps. A project that uses python -m unittest has
+// tests; the tool simply cannot drive them yet. Saying "no supported test
+// runner found" about it reads like the project has no tests at all.
+func TestAuditOnAUnittestProjectSaysWhatIsMissing(t *testing.T) {
+	m := testfixtures.NewRepo(t)
+	m.Write(t, "main.py", "print('hi')\n")
+	m.Write(t, "workbench/tests/test_thing.py",
+		"import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        pass\n")
+	m.Init(t)
+
+	code, _, stderr := runCLI(t, "--mode", "audit", m.Dir)
+
+	if code != ExitError {
+		t.Fatalf("exit code = %d, want %d", code, ExitError)
+	}
+	if !strings.Contains(stderr, "unittest") {
+		t.Errorf("expected the error to name unittest, got: %s", stderr)
+	}
+	if !strings.Contains(stderr, "workbench/tests") {
+		t.Errorf("expected the error to name the suite it found, got: %s", stderr)
+	}
+}
+
+// TestAuditOnARepoWithNoTestsSaysSo is the other half: a project with no
+// tests at all must not be described as having tests the tool cannot run.
+func TestAuditOnARepoWithNoTestsSaysSo(t *testing.T) {
+	m := testfixtures.NewRepo(t)
+	m.Write(t, "main.py", "print('hi')\n")
+	m.Init(t)
+
+	code, _, stderr := runCLI(t, "--mode", "audit", m.Dir)
+
+	if code != ExitError {
+		t.Fatalf("exit code = %d, want %d", code, ExitError)
+	}
+	if strings.Contains(stderr, "unittest") {
+		t.Errorf("a repo with no tests must not be described as a unittest project, got: %s", stderr)
+	}
+	if !strings.Contains(stderr, "no supported test runner") {
+		t.Errorf("expected the plain no-runner message, got: %s", stderr)
+	}
+}

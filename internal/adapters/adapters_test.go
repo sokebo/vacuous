@@ -585,3 +585,67 @@ func requireNodeRunner(t *testing.T, root string) {
 	t.Helper()
 	testfixtures.NodeRunner(t, root)
 }
+
+// TestUnittestSuitesFindsUnittestProjects is the rule.
+//
+// A project whose tests are driven by python -m unittest has tests. The
+// tool cannot drive them yet, and the report has to say so - otherwise the
+// reader concludes the project has no tests at all.
+func TestUnittestSuitesFindsUnittestProjects(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	write("workbench/tests/test_thing.py", "import unittest\n")
+	write("revenue_margin/history_query_app/test_other.py", "import unittest\n")
+	// A pytest project is not a unittest project. The adapter drives it.
+	write("pytest_proj/pyproject.toml", "[tool.pytest.ini_options]\n")
+	write("pytest_proj/tests/test_thing.py", "def test_x():\n    pass\n")
+	// Not a test file.
+	write("scripts/helper.py", "print('hi')\n")
+
+	got := UnittestSuites(dir)
+	want := map[string]bool{
+		"workbench/tests":                  true,
+		"revenue_margin/history_query_app": true,
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("UnittestSuites() = %v, want %d entries", got, len(want))
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("UnittestSuites() = %v, unexpected entry %q", got, g)
+		}
+	}
+}
+
+// TestUnittestSuitesIsEmptyForAPytestProject is the negative control.
+//
+// If the detection fired on every project with a tests/ directory, the
+// message would be wrong for exactly the projects the tool CAN drive.
+func TestUnittestSuitesIsEmptyForAPytestProject(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tests"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"),
+		[]byte("[tool.pytest.ini_options]\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tests", "test_thing.py"),
+		[]byte("def test_x():\n    pass\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if got := UnittestSuites(dir); len(got) != 0 {
+		t.Fatalf("UnittestSuites() = %v, want empty — a pytest project is not a unittest project", got)
+	}
+}
