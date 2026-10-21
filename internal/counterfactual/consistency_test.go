@@ -27,41 +27,26 @@ func TestCheckConsistencyCatchesAContradiction(t *testing.T) {
 		want    bool
 	}{
 		{
-			name: "the suite did not build, yet the verdict says it ran clean",
+			// The counts say everything passed; the runner printed a failure.
+			name: "the verdict says everything passed, but the output says FAIL",
 			run: &runOutcome{result: core.RunResult{
-				BuildErrors: []string{"pkg: FAIL\tpkg [build failed]"},
 				Outcomes: []core.TestOutcome{
-					{Name: "other/pkg.TestA", Status: core.StatusPass},
+					{Name: "pkg.TestA", Status: core.StatusPass},
 				},
+				RawOutput: "--- FAIL: TestA (0.00s)\nFAIL\n",
 			}},
 			verdict: VerdictVacuous,
 			want:    true,
 		},
 		{
-			name: "the verdict says a test failed, but none did",
+			name: "the verdict says a test failed, but the output says nothing failed",
 			run: &runOutcome{result: core.RunResult{
 				Outcomes: []core.TestOutcome{
-					{Name: "pkg.TestA", Status: core.StatusPass},
+					{Name: "pkg.TestA", Status: core.StatusFail},
 				},
+				RawOutput: "ok  \tpkg\t0.01s\nPASS\n",
 			}},
 			verdict: VerdictProven,
-			want:    true,
-		},
-		{
-			name: "the verdict says everything passed, but something failed",
-			run: &runOutcome{result: core.RunResult{
-				Outcomes: []core.TestOutcome{
-					{Name: "pkg.TestA", Status: core.StatusPass},
-					{Name: "pkg.TestB", Status: core.StatusFail},
-				},
-			}},
-			verdict: VerdictVacuous,
-			want:    true,
-		},
-		{
-			name:    "the verdict says tests ran, but not one of them did",
-			run:     &runOutcome{result: core.RunResult{}},
-			verdict: VerdictVacuous,
 			want:    true,
 		},
 		{
@@ -69,18 +54,31 @@ func TestCheckConsistencyCatchesAContradiction(t *testing.T) {
 			run: &runOutcome{result: core.RunResult{
 				Outcomes: []core.TestOutcome{
 					{Name: "pkg.TestA", Status: core.StatusPass},
-					{Name: "pkg.TestB", Status: core.StatusFail},
 				},
+				RawOutput: "ok  \tpkg\t0.01s\nPASS\n",
 			}},
-			verdict: VerdictProven,
+			verdict: VerdictVacuous,
 			want:    false,
 		},
 		{
 			name: "a verdict that never claimed a clean run is not checked",
 			run: &runOutcome{result: core.RunResult{
-				BuildErrors: []string{"pkg: FAIL\tpkg [build failed]"},
+				Outcomes: []core.TestOutcome{
+					{Name: "pkg.TestA", Status: core.StatusPass},
+				},
+				RawOutput: "--- FAIL: TestA (0.00s)\nFAIL\n",
 			}},
 			verdict: VerdictCoupled,
+			want:    false,
+		},
+		{
+			name: "no raw output means nothing to contradict",
+			run: &runOutcome{result: core.RunResult{
+				Outcomes: []core.TestOutcome{
+					{Name: "pkg.TestA", Status: core.StatusPass},
+				},
+			}},
+			verdict: VerdictVacuous,
 			want:    false,
 		},
 	}
@@ -149,5 +147,82 @@ func TestReproForProducesRunnableCommands(t *testing.T) {
 		if !strings.Contains(repro, want) {
 			t.Errorf("the repro block is missing %q:\n%s", want, repro)
 		}
+	}
+}
+
+// TestContradictionIsCaughtFromTheRawOutput is the check that makes the
+// self-check real.
+//
+// The earlier version compared the verdict with the counts - two views of
+// the same parsed data, which can never disagree, so the check was dead
+// code that only looked like a safety net.
+//
+// The raw output is a different thing: it is what the runner printed, before
+// any parsing. A parser that mistakes a build failure for a passing test
+// produces counts that say "everything passed" while the output says FAIL.
+// That is the failure this tool shipped with once, and it is exactly what
+// this catches.
+func TestContradictionIsCaughtFromTheRawOutput(t *testing.T) {
+	run := &runOutcome{result: core.RunResult{
+		// The counts say everything passed.
+		Outcomes: []core.TestOutcome{
+			{Name: "pkg.TestA", Status: core.StatusPass},
+			{Name: "pkg.TestB", Status: core.StatusPass},
+		},
+		// The runner's own output says otherwise.
+		RawOutput: "--- FAIL: TestB (0.00s)\n    widget_test.go:12: expected 3, got 4\nFAIL\n",
+	}}
+
+	verdict := classify(run, nil)
+	if verdict != VerdictContradictory {
+		t.Fatalf("classify() = %q, want %q — the counts and the runner's own "+
+			"output disagree, and the tool must not conclude on top of that",
+			verdict, VerdictContradictory)
+	}
+}
+
+// TestProvenWithoutAFailureInTheOutputIsCaught is the other direction.
+//
+// The counts say a test failed, but the runner never printed a failure. That
+// is a parse that invented a result.
+func TestProvenWithoutAFailureInTheOutputIsCaught(t *testing.T) {
+	run := &runOutcome{result: core.RunResult{
+		Outcomes: []core.TestOutcome{
+			{Name: "pkg.TestA", Status: core.StatusFail},
+		},
+		RawOutput: "ok  \tpkg\t0.01s\nPASS\n",
+	}}
+
+	verdict := classify(run, nil)
+	if verdict != VerdictContradictory {
+		t.Fatalf("classify() = %q, want %q", verdict, VerdictContradictory)
+	}
+}
+
+// TestConsistentRunIsNotFlagged is the precision control: a healthy run must
+// not be accused of contradicting itself.
+func TestConsistentRunIsNotFlagged(t *testing.T) {
+	run := &runOutcome{result: core.RunResult{
+		Outcomes: []core.TestOutcome{
+			{Name: "pkg.TestA", Status: core.StatusPass},
+		},
+		RawOutput: "ok  \tpkg\t0.01s\nPASS\n",
+	}}
+	if verdict := classify(run, nil); verdict == VerdictContradictory {
+		t.Fatal("a healthy run must not be reported as contradictory")
+	}
+}
+
+// TestRunWithoutRawOutputIsNotFlagged covers the adapters that do not
+// capture raw output: with nothing to compare against, there is nothing to
+// contradict.
+func TestRunWithoutRawOutputIsNotFlagged(t *testing.T) {
+	run := &runOutcome{result: core.RunResult{
+		Outcomes: []core.TestOutcome{
+			{Name: "pkg.TestA", Status: core.StatusPass},
+		},
+	}}
+	if verdict := classify(run, nil); verdict == VerdictContradictory {
+		t.Fatal("a run without raw output must not be reported as contradictory")
 	}
 }

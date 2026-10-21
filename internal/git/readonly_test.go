@@ -196,3 +196,81 @@ func tarWithFile(t *testing.T, name, content string) *bytes.Reader {
 	}
 	return bytes.NewReader(buf.Bytes())
 }
+
+// TestWorktreeCheckoutCoversExportIgnoreFiles is the guard the exactness
+// check exists for.
+//
+// "git archive" honours the export-ignore attribute: a file marked that way
+// is left out of the archive. A checkout missing a file is not the
+// repository - the counterfactual would run against a tree the real project
+// does not have, and nothing in the report would say so.
+//
+// The guard compares the archive's file count with the tree's. When they
+// differ, the checkout is made the other way instead.
+//
+// The negative control: remove the guard and this file goes missing from
+// the checkout, and this test goes red.
+func TestWorktreeCheckoutCoversExportIgnoreFiles(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init", "-q", "-b", "main", "--template=")
+	writeFile(t, dir, "kept.go", "package kept\n")
+	writeFile(t, dir, "excluded.txt", "this file is not for export\n")
+	writeFile(t, dir, ".gitattributes", "excluded.txt export-ignore\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-q", "-m", "a file that is not exported")
+
+	repo, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	wt, err := repo.NewWorktree("HEAD")
+	if err != nil {
+		t.Fatalf("NewWorktree: %v", err)
+	}
+	defer wt.Remove()
+
+	if _, err := os.Stat(filepath.Join(wt.Path(), "excluded.txt")); err != nil {
+		t.Errorf("the checkout is missing a file the tree has: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wt.Path(), "kept.go")); err != nil {
+		t.Errorf("the checkout is missing an ordinary file: %v", err)
+	}
+}
+
+// TestWorktreeLeavesNoTraceWhileItLives checks the promise in the middle of
+// the run, not only after it.
+//
+// The previous check compared the repository's fingerprint after Remove() -
+// which proves that the cleanup worked, not that the checkout was read-only
+// while it existed. Writing a file into .git/ during the run and removing it
+// afterwards would have passed that test.
+func TestWorktreeLeavesNoTraceWhileItLives(t *testing.T) {
+	f := newFixture(t)
+	repo := f.open()
+
+	wt, err := repo.NewWorktree("HEAD")
+	if err != nil {
+		t.Fatalf("NewWorktree: %v", err)
+	}
+	defer wt.Remove()
+
+	// The checkout is alive right now. Nothing may have been written.
+	if exists(filepath.Join(f.dir, ".git", "worktrees")) {
+		t.Error("the repository has a worktree registration while the checkout exists")
+	}
+	before := repoFingerprint(t, f.dir)
+
+	// Use it, the way an audit would.
+	if _, err := os.Stat(filepath.Join(wt.Path(), "bug.go")); err != nil {
+		t.Fatalf("the checkout is not usable: %v", err)
+	}
+	if err := wt.WriteFile("scratch.txt", "written by the audit\n"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	after := repoFingerprint(t, f.dir)
+	if before != after {
+		t.Errorf("the audited repository changed while the checkout was in use:\nbefore: %s\nafter:  %s", before, after)
+	}
+}

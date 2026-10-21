@@ -226,6 +226,9 @@ func (g *Go) runSingle(ctx context.Context, plan core.Plan) (core.RunResult, err
 		ExitCode:   exitCodeOf(runErr),
 		Command:    "go " + core.JoinCommand(args),
 		DurationMS: elapsed.Milliseconds(),
+		// The raw output is kept so the engine can check the counts
+		// against what the runner actually printed.
+		RawOutput: tailOf(stdout.Bytes(), 4000),
 	}
 
 	records, buildErrors := parseGoEvents(stdout.Bytes(), goStatus)
@@ -524,4 +527,15 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "\n... (truncated)"
+}
+
+// tailOf returns the last n bytes of a runner's output.
+//
+// The tail is what matters: a failure is at the end, and the beginning of a
+// long test run says little about how it ended.
+func tailOf(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[len(b)-n:])
 }

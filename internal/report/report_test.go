@@ -336,7 +336,7 @@ func TestRenderTextKeepsLinesWithinBudget(t *testing.T) {
 		{Kind: core.KindDiscardsError, Severity: core.SevWarn, Summary: long},
 		{Kind: core.KindNoTestForFix, Severity: core.SevHigh, Summary: long},
 		{Kind: core.KindCoupled, Severity: core.SevInfo, Summary: long},
-		{Kind: core.KindBrokenChange, Severity: core.SevHigh, Summary: long},
+		{Kind: core.KindEnvironment, Severity: core.SevHigh, Summary: long},
 	} {
 		r.Add(f)
 	}

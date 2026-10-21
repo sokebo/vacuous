@@ -118,9 +118,6 @@ const (
 	// Filing them under one name makes the report say "the test is
 	// coupled" when the truth is "we could not run the test".
 	KindEnvironment Kind = "environment"
-	// KindBrokenChange is a change whose tests already fail without any
-	// surgery, which means the change itself is broken.
-	KindBrokenChange Kind = "broken-change"
 )
 
 // Finding is one observation. Every detector in vacuous emits these and
@@ -228,6 +225,13 @@ type RunResult struct {
 	ExitCode int
 	// Command is the command line that was run, for the report.
 	Command string
+	// RawOutput is what the runner actually printed.
+	//
+	// It is the one piece of evidence that did NOT come through the
+	// parser, so it is the only thing that can contradict the counts.
+	// Without it, a tool that mis-parses a failing run as a passing one
+	// has no way to notice.
+	RawOutput string
 	// DurationMS is the wall time of the whole run.
 	DurationMS int64
 }

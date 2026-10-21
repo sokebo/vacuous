@@ -79,6 +79,12 @@ type Options struct {
 	FailOn string
 	// Timeout bounds a single test run.
 	Timeout time.Duration
+	// Concurrency is how many commits are audited at the same time.
+	//
+	// Zero means the package default. One turns the parallel path off
+	// entirely, which is what you want when the test suite is not safe to
+	// run twice at once.
+	Concurrency int
 	// Verbose enables extra detail.
 	Verbose bool
 }
@@ -135,6 +141,9 @@ func parse(args []string, stderr io.Writer) (*Options, error) {
 		// is the span a person can still remember and act on.
 		Limit:   20,
 		Timeout: 10 * time.Minute,
+		// Four is a good middle: two leaves the machine idle, sixteen
+		// makes every run slower because they fight over the build cache.
+		Concurrency: 4,
 	}
 	fs := flag.NewFlagSet("vacuous", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -155,6 +164,8 @@ func parse(args []string, stderr io.Writer) (*Options, error) {
 	fs.BoolVar(&opts.JSON, "json", false, "emit JSON instead of text")
 	fs.StringVar(&opts.FailOn, "fail-on", opts.FailOn, "lowest severity that fails the run: info|warn|high|critical")
 	fs.DurationVar(&opts.Timeout, "timeout", opts.Timeout, "timeout for a single test run")
+	fs.IntVar(&opts.Concurrency, "concurrency", opts.Concurrency,
+		"how many commits to audit at the same time (1 = one at a time)")
 	fs.BoolVar(&opts.Verbose, "v", false, "verbose output")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -281,16 +292,41 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 		}
 	}
 
-	for _, sha := range shas {
-		res, err := auditor.AuditCommit(ctx, sha)
-		if err != nil {
+	// The commits are audited side by side, each in a checkout of its own.
+	//
+	// One at a time is minutes per commit on a large repository, and a
+	// window of twenty commits is an afternoon. The verdicts do not change:
+	// every commit is judged by the same auditor, on the same evidence, in
+	// the same direction. Only the wall clock does.
+	parallel, err := counterfactual.NewParallel(counterfactual.ParallelOptions{
+		Auditor:     auditor,
+		Concurrency: opts.Concurrency,
+		Timeout:     opts.Timeout,
+	})
+	if err != nil {
+		return err
+	}
+	results, auditErr := parallel.AuditCommits(ctx, shas)
+
+	for i, sha := range shas {
+		var res *counterfactual.Result
+		if i < len(results) {
+			res = results[i]
+		}
+		if res == nil {
 			// One bad commit must not sink the whole run. Record it and
 			// keep going; the report will show it was not judged.
+			detail := "这个提交没有产生结果"
+			if auditErr != nil {
+				if one := counterfactual.FailureFor(auditErr, sha); one != nil {
+					detail = one.Error()
+				}
+			}
 			rep.Add(core.Finding{
 				Kind:     core.KindCoupled,
 				Severity: core.SevWarn,
 				Summary:  "无法审计这个提交",
-				Detail:   err.Error(),
+				Detail:   detail,
 			})
 			continue
 		}
