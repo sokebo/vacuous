@@ -100,7 +100,9 @@ func UnsupportedTests(root string, files []string) []core.Finding {
 			}, "\n"),
 			File:     shell[0],
 			Evidence: strings.Join(shell, "\n"),
-			Hint:     "想让它们也进这份报告，需要给工具加一个 shell 适配器",
+			Hint: "想让它们也进这份报告，需要给工具加一个 shell 适配器 —— " +
+				"但先确认它们在检出里能独立跑起来：不少 e2e 需要跑着的服务、" +
+				"数据库和凭据，那种是工具这种形态跑不了的",
 		})
 	}
 	if len(other) > 0 {

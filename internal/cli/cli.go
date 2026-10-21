@@ -147,7 +147,11 @@ func parse(args []string, stderr io.Writer) (*Options, error) {
 	fs.StringVar(&opts.Base, "base", "", "revision to compare against (default: merge-base with default branch)")
 	fs.StringVar(&opts.Commit, "commit", "", "audit a single commit")
 	fs.StringVar(&opts.Since, "since", "", "only audit commits newer than this revision")
-	fs.IntVar(&opts.Limit, "limit", 0, "maximum number of commits to audit (0 = no limit)")
+	// The default has to come from the struct, not from a literal here.
+	// fs.IntVar writes its default into the variable the moment it is
+	// registered, so a literal 0 would silently overwrite the 20 set
+	// above - and 0 means "no limit", i.e. audit the entire history.
+	fs.IntVar(&opts.Limit, "limit", opts.Limit, "maximum number of commits to audit (0 = no limit)")
 	fs.BoolVar(&opts.JSON, "json", false, "emit JSON instead of text")
 	fs.StringVar(&opts.FailOn, "fail-on", opts.FailOn, "lowest severity that fails the run: info|warn|high|critical")
 	fs.DurationVar(&opts.Timeout, "timeout", opts.Timeout, "timeout for a single test run")
