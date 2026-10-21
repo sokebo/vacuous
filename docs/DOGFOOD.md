@@ -1721,14 +1721,21 @@ pre-existing-failure，Summary 又开始说「这个红灯本来就在」；改�
   仓库 I 1 条、仓库 C 7 条、仓库 D 1 条、仓库 E 1 条、仓库 F 1 条
   —— **全部一模一样**。修掉的是夹具，没碰到任何真信号。
 
-**记一笔（还没修，留给下一轮）**：同一个「testdata 不是代码」的判断，**还有一处**
-不知道：
+**记一笔（当时还没修，2026-10-21 晚的那一轮修掉了 —— 见 3.51）**：同一个
+「testdata 不是代码」的判断，**还有一处**不知道。
 
-- `internal/git/istest.go` 的 `isTestPath` —— 审计侧用它判断「改动的文件是不是
-  测试」。改了它，「这次改动有测试跟着」这句话的判据就变了，牵动的是判决，不是
-  噪声。
+> **这一条当初指错了地方，这里更正。** 原来写的是
+> `internal/git/istest.go` 的 `isTestPath`「审计侧用它判断改动的文件是不是
+> 测试」。**不是的**：那个函数写出来的 `core.FileChange.IsTest` 字段
+> **在 `internal/git` 包外从来没有被读过**（`grep -rn IsTest` 只命中
+> `core/git.go`、`git/git.go`、`git/git_test.go`）。判决真正的来源是
+> `internal/counterfactual/audit.go` → 适配器的 `IsTestPath` / `IsSourcePath`。
+>
+> **按原来的指路去改，改了也不会改变任何判决** —— 那一轮就是这样白找了一趟。
+> 教训有两条：**死代码不能当指路牌**（它写得像那么回事，但没人读它）；
+> **指路必须指到「读取它的地方」，不是「写它的地方」**。
 
-影响和改法跟别处不一样，所以没有顺手改：它动的是判决。
+改动影响和别处不一样，所以当时没有顺手改：它动的是判决。
 
 > 同一份清单里的另外两处（Python 适配器的套件发现）后来修掉了，见 3.50 ——
 > 那条不是「同一个判断的另一处」那么简单：执行层跑夹具会**崩**，然后把夹具的
@@ -1914,6 +1921,154 @@ pattern 是 `test_*.py` → 一个文件都没收集到 → 报告说
 > 淹掉了，判决反而是对的。危害出现在**真测试没抓住**的时候：那时工具本该
 > 说「空洞」，却说了「套件崩了」。**所以造复现用例时，先确认方向对不对** ——
 > 我第一版把「先坏后修」建反了，工具判「空洞」是对的，我还以为它坏了。
+
+---
+
+### 3.51 夹具被当成「这次改动带来的测试」—— 判决指错了人，还盖住了真判决
+
+**现象**：一个 Go 仓的 `testdata/` 目录里放着一份**数据夹具**，文件名恰好长得
+像测试（`testdata/sample_test.go`）。工具审这个提交，报的是：
+
+```
+[HIGH] vacuous-test   testdata/sample_test.go
+    这个测试在撤掉修复后依然是绿的 —— 它没有测到修复修的那个行为
+    怎么修: 把断言落在可观察的行为上……
+    怎么自己验一遍:
+    # 2. 只把测试打进去，修复留在外面
+    git diff ... -- 'testdata/sample_test.go' > /tmp/vac-verify-tests.patch
+```
+
+**根因**：`testdata` 是「测试要用的数据」的约定，**不是测试代码**。Go 工具链
+**直接无视**它（`go help packages`：名为 `testdata` 的目录被 go 工具忽略）——
+底下的 `_test.go` **永远不会被编译**，所以它既不是测试，也不是代码。
+
+而**判决侧从来没问过这件事**。判决的路径是
+`internal/counterfactual/audit.go` → 适配器的 `IsTestPath` / `IsSourcePath`；
+适配器那层只有 Go 的**包发现**（`skipPackageDir`）认识 testdata，
+**判断一个文件是什么的那一层不认识**。
+
+**这不是 3.45 那个老毛病的第三次复发**：3.45 修的是静态检查那层，3.50 修的是
+Python 套件发现那层，**判决那层从来没被修过** —— 只是前两轮没人拿一个 testdata
+夹具去撞它。这条判断原来在这个仓里写了**三遍**，而**判决那一遍根本没写**。
+
+**后果**（两层伤害，第二层更贵）：
+
+1. **指控了一个 Go 工具链根本不编译的文件**，还附上「怎么自己验一遍」的配方 ——
+   读者照着做，就是去改一份**从来不会被运行**的夹具。
+2. **盖住了真判决**。那个提交改了真代码（`internal/greet/greet.go`），
+   **没带任何测试**。因为夹具被当成了「这次改动带来的测试」，工具走的是
+   「空洞测试」那条路，**从来没能说出那句真话**。
+
+修完之后，同一个提交说的是：`[HIGH] no-test-for-fix  internal/greet/greet.go`
+—— 「这个改动改了代码，但没有任何测试跟着来」。**这才是真相。**
+
+第二个复现：只改 `testdata/plain.go` 的提交（连真代码都没碰），修之前报
+`[HIGH] no-test-for-fix at testdata/plain.go`（「这个改动改了代码」）——
+**假指控**。修之后这个提交**一条发现都没有**：它改的是数据，不是行为。
+
+**修复**：把「什么是 testdata」收成**一份**规则（`adapters.IsTestDataPath`），
+所有调用点走它：
+
+| 调用点 | 之前 | 现在 |
+|---|---|---|
+| `adapters.Go.IsTestPath` | 认 testdata 里的 `_test.go` 是测试 | 不是（go 工具链不编译它） |
+| `adapters.Go.IsSourcePath` | 认 testdata 里的 `.go` 是源码 | 不是（它不属于任何包） |
+| `counterfactual.isSource`（非 Go 适配器的兜底） | 只按扩展名认 | 不是（testdata 存的是数据） |
+| `detect.isTestPath`（静态检查） | 自己写了一份 | 调同一份规则（原来那份删掉） |
+
+外加两个「发现」层：`adapters.skipPackageDir`（Go 包发现）和
+`adapters.skipUnittestDir`（Python 套件发现）也改成调同一份规则。
+
+**独立复核又抓出一条同类的**（`verifier` 自己找的改坏点，不是我给的清单里
+的）：`discards-error` 这条 **HIGH** 检查仍然指控 testdata 夹具。
+
+`internal/detect/discarded.go` 遍历的是**全部被跟踪的文件**（命令层传的是
+`repo.TrackedFiles("HEAD")`），过滤条件只有「后缀是 `.go`」——
+**没问过 testdata 这条规则**。结果是：
+
+```
+[HIGH] discards-error   testdata/fixture_test.go:7
+    错误被丢掉，断言却要求它是空的 —— 加载失败时这条断言照样通过
+    怎么修: 别丢掉错误：要么处理它，要么在错误时直接失败
+```
+
+这个文件 **Go 工具链根本不编译** —— 跟本轮修掉的那个 bug 是**同一类伤害**：
+指控一份「从来不会被运行」的夹具，还附上一张没法执行的处方。
+
+**为什么漏了它**：这条检查**故意**扫的不只是测试文件 —— 同样的形状在普通
+源码里也值得知道（仓库 A 那条 `cmd/seed/main.go` 就是）。所以它的过滤条件
+不能改成「是不是测试」，只能改成「是不是 testdata」。
+
+修完之后的负对照：`TestTestdataFixturesAreNotScannedForDiscardedErrors` ——
+**两头都要钉住**：夹具必须不报，而**真文件里的同一种形状必须照报**
+（`store_test.go` 和 `cmd/seed/main.go` 各一条）。只测一头的规则，
+「整个检查器被关掉」也能过。
+
+> **这一条本身就是 3.51 那条方法论的证据**：我这一轮把「写过这条判断」的
+> 三个地方收成了一份，却漏掉了**一个本该问它**的地方 —— 而那个地方正好是
+> **判决之外最贵的一条**（HIGH）。**收敛规则的时候，要问的是「谁在读它」，
+> 不是「谁写了它」** —— 没写的地方，比写散的地方更难发现。
+
+**为什么 Python 和 Node 的「是不是测试」不跟着改**：因为它们的运行器**真的会
+收集 testdata 里的文件**。实测：`pytest --collect-only` 在
+`testdata/test_fixture.py` 上列出了它的两个用例；vitest 默认收
+`**/*.test.ts`，同理。**运行器会跑的文件就是测试** —— 把它说成夹具，
+下一个后果是「这个提交没带测试」这种**新的假指控**（那个提交确实带了测试）。
+所以口径分成两条，而且**必须写清楚是哪一层**：
+
+- **「testdata 永远不是代码」** —— 三个语言都成立；
+- **「testdata 不是测试」** —— **判决层**只有 Go 成立，因为只有 Go 的工具链
+  给了这个保证。
+
+**静态检查层对所有语言都排除 testdata** —— 方向是**漏报**（少报一条真实的
+跳过），换来的是不会把「永远不会运行的夹具」算进这个仓的测试文件清单：
+3.50 的教训是跑一个夹具会崩，然后把夹具的锅扣到真测试头上。
+
+**两层对同一个文件给出不同答案，是有理由的**：判决层回答「这个文件会不会被跑
+起来」（pytest 说会，那就是测试），静态检查层回答「这个文件是不是这个仓的
+测试套件的一部分」（testdata 里的东西是套件的**输入**）。两个问题不同，答案
+就可以不同 —— 但**必须写下来**，否则下一轮会把它当 bug「修」掉。
+
+**负对照**（7 个改坏点全部实测：改坏 → 变红 → 改回）：
+
+| 改坏的地方 | 变红的用例 |
+|---|---|
+| 规则本身（名字改成 `testdata_NEVER`） | `TestIsTestDataPath`、`TestGoTreatsTestDataAsNeitherTestNorCode`、`TestSkipPackageDirSkipsTestdataAtAnyDepth`、`TestATestdataDirectoryIsNotASuite`、`TestAFixtureDirectoryDoesNotBreakTheRun`、`TestTestdataIsNotTestCode`、`TestTestdataFilesAreNotCountedAsTests` |
+| `Go.IsTestPath` 不再排除 testdata | `TestGoTreatsTestDataAsNeitherTestNorCode`、`TestAuditDoesNotAccuseATestDataFixture` |
+| `Go.IsSourcePath` 不再排除 testdata | `TestGoTreatsTestDataAsNeitherTestNorCode` |
+| `audit.isSource` 不再排除 testdata | `TestAuditorTreatsTestDataAsNeitherTestNorCode` |
+| `detect.isTestPath` 不再排除 testdata | `TestTestdataIsNotTestCode` |
+| `discarded.go` 不再排除 testdata | `TestTestdataFixturesAreNotScannedForDiscardedErrors` |
+| `skipPackageDir` 不再排除 testdata | `TestSkipPackageDirSkipsTestdataAtAnyDepth` |
+| `skipUnittestDir` 不再排除 testdata | `TestATestdataDirectoryIsNotASuite`、`TestAFixtureDirectoryDoesNotBreakTheRun` |
+
+端到端那条（`TestAuditDoesNotAccuseATestDataFixture`）变红时报出来的
+**正是生产症状**：
+
+```
+--- FAIL: TestAuditDoesNotAccuseATestDataFixture
+    the tool made a finding about a data fixture: {Kind:vacuous-test
+    Severity:high ... File:testdata/sample_test.go ...}
+```
+
+**现场验证**（真复现仓，不是夹具）：修复前后，同一个仓的同一批提交 ——
+`[HIGH] vacuous-test testdata/sample_test.go` → `[HIGH] no-test-for-fix
+internal/greet/greet.go`；只改夹具的那个提交 → **零发现**。
+
+**6 个被审仓逐条比对**：静态体检 6 个仓 + 审计（仓库 A）**逐条与基线一致**
+（改前 / 改后输出 diff 全为空）。修掉的是夹具，没碰到任何真信号。
+
+**一个没动的地方，说明一下**：Python / Node 的「是不是测试」**没动**。实测证明
+它们的运行器真的会收集 testdata 里的测试文件（`pytest --collect-only` 列出了
+`testdata/test_fixture.py` 的两个用例）—— 那种情况下工具报「空洞测试」是
+**真阳性**，不是误伤。这条写进文档，是为了不让下一轮又把它当 bug 修一遍。
+
+**一个已知边界**：`go:embed` **可以**引用 testdata 里的文件（embed 走文件路径，
+不走包解析）。所以「testdata 里的文件一定不是代码」这句话对 embed 不成立。
+本轮排除的是**文件分类**（不是代码、不是测试），embed 的**宿主文件**
+（`emb/emb.go`）照旧算代码 —— 实测 embed 提交的判决不变。唯一的取舍是：
+万一有人 `go:embed` 了一个 **.go** 文件，工具不会再为它要求测试。方向是
+**漏报**，符合「宁可漏报不可误伤」。
 
 ## 4. 两次独立复核
 
@@ -2123,6 +2278,18 @@ CI 里有两个 job：`build`（fmt / vet / build / test -race / 空缓存 test�
   修完之后它第一次能审了（`proven 2 · vacuous 1 · 无测试 7 · 无法判定 28`），
   但里面 25 条 environment 说明这套反事实在「一堆小 module 的实验仓」上很吃力：
   多数提交判不出来。还没有在「多个 module 中只有一个有测试」的仓库上验证过。
+- **静态检查层与判决层对 testdata 的口径不同**（3.51 写明的刻意选择）：
+  判决层按**运行器的实际行为**判断（pytest 收集 `testdata/test_fixture.py`，
+  它就是测试），静态检查层对**所有语言**都排除 testdata。方向是**漏报**
+  （Python 的 testdata 夹具里真有 `pytest.skip`，静态检查不报它）。
+  这个不对称**目前没有端到端测试守着**，只有各层自己的单测。
+- **Node 判决层拿不到 `vacuous` 结论**：vitest 5 的 JSON reporter 改成写文件
+  （`.vitest/json/output.json`）而不是 stdout，工具的 Node 适配器还在等 stdout，
+  于是 Node 仓一律判 `suite-crash`。**修前修后完全一样**，是既有的不兼容，
+  与 3.51 无关，但它的后果是：Node 路径目前**产不出** `vacuous` 判决，
+  3.51 那条「testdata 里的 Node 测试仍然算测试」只在**工具层**验过
+  （`IsTestPath` 认它、把它放进测试命令、不报 `no-test-for-fix`），
+  **判决层没验到**。
 
 ---
 
@@ -2456,3 +2623,67 @@ cd /tmp/verify && python3 -m unittest discover -v -s scripts -t scripts -p 'test
 也说明一件事：**「proven」这个判定本身是可以被第三方独立复核的** —— 工具把配方
 写进报告，读者照着跑就能看到那两棵树分别红在哪。配方不准，结论就作废。
 
+
+---
+
+### 再一轮：判决那一层从来不知道 testdata 是什么（3.51）
+
+**闸门**：代码指纹变了（`515b709` → `822c1f8`），三个新提交
+（`proven` 端到端手工复现、「带着修复也是红的」现在是一条能抓人的发现、
+清掉文档里剩下的内部标识）。6 个被审仓库**一个都没动**，CI 最近 3 次全绿。
+
+| 检查 | 结果 |
+|---|---|
+| `gofmt -l .` | 空 |
+| `go vet ./...` | 通过 |
+| `go test ./... -count=1` | 全绿 |
+| 6 个仓的静态体检 | **逐条与基线一致**（改前 / 改后输出 diff 全为空） |
+| 审计（仓库 A，最近 20 个提交） | `proven 3 · vacuous 0 · 无测试 4 · 无法判定 6 · 不适用 7`（与基线一致） |
+
+**这一轮找到的缺陷**（3.51）：`testdata/` 里的夹具被判决层当成「这次改动带来的
+测试」→ 一条 HIGH 的**假指控**，**并且盖住了真判决**（那个提交改了真代码、
+没带任何测试）。细节见 3.51。
+
+**独立复核又抓出一条同类的**（`verifier` 自己找的改坏点，不是我给的清单里
+的）：`discards-error` 这条 HIGH 检查仍在指控 testdata 夹具 —— 它遍历的是
+**全部被跟踪的文件**，过滤条件只有「后缀是 `.go`」，**没问过 testdata 这条
+规则**。跟本轮修掉的那个 bug 是同一类伤害。**我这一轮把「写过这条判断」的
+三个地方收成了一份，却漏掉了「一个本该问它」的地方** —— 而那个地方正好是
+判决之外最贵的一条。详见 3.51。
+
+**怎么找到的**：不是靠读代码，是靠**造一个复现仓**去撞。已有 6 个仓里一个
+testdata 夹具都没有，所以「逐条与基线一致」这条结论**既不能证实也不能证伪**
+这个缺陷 —— 跟 3.40 的教训一模一样。复现仓一造出来，两种判决（夹具被当测试、
+夹具被当代码）当场各出现一次。
+
+**负对照**：8 个改坏点全部实测「改坏 → 变红 → 改回」，**0 个假负对照**。
+其中 4 个是端到端 / 跨层的（`Go.IsTestPath`、`audit.isSource`、
+`detect.isTestPath`、`discarded.go`），4 个是单层的。
+
+**顺手更正了一处指错路的笔记**：3.45 末尾「记一笔」指着
+`internal/git/istest.go`，说改它就能改判决。**那是个死代码**——
+`core.FileChange.IsTest` 在包外从来没被读过，判决真正的来源是
+`audit.go` → 适配器的 `IsTestPath` / `IsSourcePath`。按原来的指路去改，
+**判决不会变**。
+
+**这一轮的两条方法论**：
+
+1. **「同一个判断写多处」这个病根，要按「谁在读它」来收敛，不是按「谁写了它」。**
+   这一轮把 testdata 规则收成一份（`adapters.IsTestDataPath`），不是因为
+   「写了三遍」难看，是因为**判决那一遍根本没写**，而前两遍（静态检查、
+   套件发现）各自修过、各自以为修完了。**判断分散在几个层里，最危险的不是
+   不一致，是「没有一层知道自己该管」** —— 3.45 / 3.50 都在各自层里修好了，
+   于是所有人都以为这件事结束了。**独立复核补上的那条（`discards-error`）
+   正是这个病根的第二个实例**：它属于「本该问、但没问」的那一类。
+2. **口径要按运行器的实际行为分，不能按目录名的直觉分。** 这一轮差点把
+   testdata 从 Python / Node 的「是不是测试」里也排除掉 —— 那会把一个**真阳性**
+   改成**假指控**（pytest 真的会跑 `testdata/test_fixture.py`，实测
+   `pytest --collect-only` 列出了它的两个用例）。**「testdata 是数据」在三个
+   语言里成立；「testdata 不是测试」只在 Go 的判决层里成立**，因为只有 Go 的
+   工具链给了这个保证。**同一个目录名，在不同运行器里不是同一个东西** ——
+   这种地方必须看工具链，不能看约定。
+3. **自己写的负对照，自己看不出它假。** 独立复核者自己找了 10 个改坏点
+   （含 3 个我没列的），逐个改坏 → 变红 → 还原，最后报回来一条我完全没看见的
+   HIGH 假指控（`discards-error`）。**「我自己跑了破坏实验」不等于
+   「破坏实验覆盖了所有入口」** —— 覆盖面的缺口，只能由一个不知道我结论的人
+   来补。

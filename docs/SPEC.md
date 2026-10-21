@@ -145,6 +145,10 @@ package adapters
 // Detect 返回能驱动 root 项目的所有适配器（按优先级排序）。
 func Detect(root string) []core.Adapter
 
+// IsTestDataPath 判断该路径是不是落在名为 testdata 的目录里。
+// 名字精确匹配，任意深度都算。
+func IsTestDataPath(path string) bool
+
 type Go struct { /* ... */ }     // 构造函数 NewGo() *Go
 type Python struct { /* ... */ }  // NewPython() *Python
 type Node struct { /* ... */ }    // NewNode() *Node
@@ -163,6 +167,29 @@ ScopeFor(changedNonTestFiles []string) []string
 
 `ScopeFor` 的语义必须是**保守收窄**：宁可返回全集，也绝不能返回一个
 会漏掉相关测试的子集。漏判比慢更糟。
+
+**为什么 `IsTestDataPath` 是导出的**：「什么是 testdata」是一条**跨层**的判断 ——
+静态检查（`internal/detect`）、适配器（`internal/adapters`）、判决
+（`internal/counterfactual`）都要用它。这条判断写在一处，各层去问它，
+比每层各写一份、再各自修一半要可靠：写散了的代价是**判决那一层根本没写**，
+而谁也不会发现（详见 `docs/DOGFOOD.md` 3.45、3.50、3.51）。
+
+**用它的地方，两边的口径不一样，这是刻意的**：
+
+- **「testdata 里的文件不是代码」** —— 所有语言都成立。判决层、静态检查层、
+  包发现、套件发现都按这条走。
+- **「testdata 里的文件不是测试」** —— **判决层**只对 Go 成立：Go 工具链保证不编译
+  `testdata` 目录；而 pytest 和 vitest **真的会收集**里面符合命名规则的文件，
+  把它们说成夹具会造成新的假指控（详见 `docs/DOGFOOD.md` 3.51）。
+- **静态检查层**对**所有语言**都排除 testdata。这个方向是**漏报**（少报一条
+  真实的跳过），换来的是不会把「永远不会运行的夹具」算进这个仓的测试文件清单
+  —— 3.50 的教训：跑一个夹具会崩，然后把夹具的锅扣到真测试头上。
+
+**两层对同一个文件给出不同答案，是有理由的**：判决层回答的是
+「这个文件会不会被跑起来」（pytest 说会，那就是测试），静态检查层回答的是
+「这个文件是不是这个仓的测试套件的一部分」（testdata 里的东西是套件的**输入**）。
+两个问题不同，答案就可以不同 —— 但**必须写下来**，否则下一轮会把它当 bug
+「修」掉。
 
 ### 4.3 `internal/detect` 须导出
 

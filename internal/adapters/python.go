@@ -1490,14 +1490,14 @@ func firstNonEmpty(values ...string) string {
 // imported where it sits, the run crashes, and the report blames the
 // real tests for a file that was never supposed to run.
 //
-// The name is matched exactly, at any depth: "testdata2" and a package
-// called "testutils" are ordinary code and must keep being scanned.
+// The name comes from IsTestDataPath, the one place that knows what a
+// testdata directory is, so the rule cannot drift between the layers.
 func skipUnittestDir(base string) bool {
 	switch base {
-	case ".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "__pycache__", "testdata":
+	case ".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "__pycache__":
 		return true
 	}
-	return false
+	return IsTestDataPath(base)
 }
 
 // UnittestSuites finds Python test suites that this tool cannot drive.

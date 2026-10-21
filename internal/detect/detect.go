@@ -32,6 +32,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sokebo/vacuous/internal/adapters"
 	"github.com/sokebo/vacuous/internal/core"
 )
 
@@ -202,7 +203,13 @@ func isTestPath(rel string) bool {
 	// A directory called testdata is the convention for "the bytes the
 	// tests need". Nothing in it is a test file, so nothing in it is
 	// scanned as one.
-	if underDataDir(rel) {
+	//
+	// The rule itself lives in adapters.IsTestDataPath. This file used to
+	// carry its own copy of it, and the copy drifted: the adapter layer
+	// fixed its half, the static layer kept its half, and the judgment
+	// path - the layer that decides what the tool says about a commit -
+	// had neither. One rule, one home.
+	if adapters.IsTestDataPath(rel) {
 		return false
 	}
 	base := path.Base(rel)
@@ -231,21 +238,6 @@ func underTestDir(rel string) bool {
 	for _, seg := range strings.Split(path.Dir(rel), "/") {
 		switch seg {
 		case "test", "tests", "spec", "specs", "__tests__":
-			return true
-		}
-	}
-	return false
-}
-
-// underDataDir reports whether rel sits in a directory that conventionally
-// holds test data rather than test code.
-//
-// The name is matched exactly, at any depth: "testdata" is the convention,
-// and a directory that merely starts with the word "test" (testdata2, or a
-// package called testutils) is ordinary code and must keep being scanned.
-func underDataDir(rel string) bool {
-	for _, seg := range strings.Split(path.Dir(rel), "/") {
-		if seg == "testdata" {
 			return true
 		}
 	}

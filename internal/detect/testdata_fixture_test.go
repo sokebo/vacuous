@@ -132,6 +132,71 @@ func TestTestdataFilesAreNotCountedAsTests(t *testing.T) {
 	}
 }
 
+// discardFixture is a file with the dangerous shape: the error is thrown
+// away, and the assertion wants the value to be empty - so a failed load
+// changes nothing and the assertion still passes.
+const discardFixture = `package fixture
+
+import "testing"
+
+type store struct{ items []string }
+
+func (s *store) List() ([]string, error) { return s.items, nil }
+
+func TestNoEdges(t *testing.T) {
+	st := &store{}
+	edges, _ := st.List()
+	if len(edges) != 0 {
+		t.Fatalf("expected no edges, got %d", len(edges))
+	}
+}
+`
+
+// TestTestdataFixturesAreNotScannedForDiscardedErrors is the negative
+// control for the second checker that walks the tree.
+//
+// The skip checker asks "is this a test file?" before it looks, and the
+// testdata rule lives in that question. The discarded-error checker asks
+// something else - it looks at Go files, test or not, because the same
+// shape is worth knowing about in ordinary source code too - and it used
+// to answer that question with "is it a .go file?" alone.
+//
+// The result was a HIGH finding against a fixture: an accusation that the
+// error thrown away in testdata/fixture_test.go makes an assertion vacuous,
+// with a prescription to fix it. The Go toolchain never compiles that
+// file, so the prescription cannot be carried out.
+//
+// Both halves have to hold. The fixture must be silent, and a real file
+// with the very same shape must still be reported - a rule that silences
+// the checker entirely would pass a one-sided test.
+func TestTestdataFixturesAreNotScannedForDiscardedErrors(t *testing.T) {
+	dir := newRepo(t)
+
+	// A fixture with the dangerous shape.
+	write(t, dir, "testdata/fixture_test.go", discardFixture)
+	// A real test file with the very same shape. This one must be reported.
+	write(t, dir, "store_test.go", discardFixture)
+	// A real source file with the same shape. This checker deliberately
+	// looks at source files too, and that must not change.
+	write(t, dir, "cmd/seed/main.go", discardFixture)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, trackedFiles(t, dir))
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+
+	if hasFinding(findings, string(core.KindDiscardsError), "testdata/fixture_test.go") {
+		t.Errorf("a fixture under testdata is never compiled, so a shape in it "+
+			"proves nothing and must not be reported: %+v", findings)
+	}
+	for _, real := range []string{"store_test.go", "cmd/seed/main.go"} {
+		if !hasFinding(findings, string(core.KindDiscardsError), real) {
+			t.Errorf("the same shape in a real file must still be reported: %s", real)
+		}
+	}
+}
+
 // trackedFiles lists the repository's files the way the command layer does:
 // everything under HEAD, as repo-relative paths. The static checks receive
 // that list and decide for themselves which of those files are tests.

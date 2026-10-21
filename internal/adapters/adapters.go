@@ -54,6 +54,48 @@ func IsGoTestPath(path string) bool {
 	return false
 }
 
+// testDataDir is the directory that holds the bytes the tests need.
+//
+// The Go toolchain turns the convention into a guarantee: `go help packages`
+// says that directories named "testdata" are ignored outright, so a file
+// inside one is never built, never run, and never counted by coverage.
+const testDataDir = "testdata"
+
+// IsTestDataPath reports whether path lives in a directory named "testdata".
+//
+// The rule came from a real false accusation. A repository kept a data
+// fixture at testdata/sample_test.go - a file the Go toolchain never
+// compiles - and the tool reported it as a HIGH "vacuous test": "this test
+// stays green after the fix is removed". The tool was accusing a file that
+// no Go program could ever run, and it handed the owner a recipe for making
+// that fixture assert something. Worse, the accusation masked the finding
+// that was actually true: the commit had changed real code and had brought
+// no test at all.
+//
+// The name is matched exactly, at any depth: "testdata2" and a package called
+// "testutils" are ordinary code and must keep being scanned.
+//
+// This function answers one question - "is this path inside a testdata
+// directory?" - and the callers decide what that means for their runner:
+//
+//   - The Go adapter treats it as neither test nor code, because the Go
+//     toolchain never compiles it.
+//   - The Python and Node adapters still treat a testdata file that matches
+//     their runner's naming rules as a test, because pytest and vitest
+//     really do collect those files. A test that is collected and runs is a
+//     test, wherever it sits.
+//
+// One rule, one home: the static checkers in internal/detect ask this
+// function too, so the answer cannot drift between the layers that need it.
+func IsTestDataPath(path string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
+		if seg == testDataDir {
+			return true
+		}
+	}
+	return false
+}
+
 // Go drives a Go module's test suite.
 type Go struct{}
 
@@ -114,16 +156,28 @@ func (g *Go) findModuleRoots(root string) []string {
 }
 
 // IsTestPath reports whether path is a Go test file.
+//
+// A file under a testdata directory is not one. The Go toolchain ignores
+// those directories outright, so a _test.go file inside one is never
+// compiled, never run, and never counted by coverage. Treating it as a test
+// made the tool report a HIGH "vacuous test" against a fixture, and - the
+// damage that matters - it masked the true finding: the commit had changed
+// real code and had brought no test at all.
 func (g *Go) IsTestPath(path string) bool {
-	return IsGoTestPath(path) && !IsDependencyPath(path)
+	return IsGoTestPath(path) && !IsDependencyPath(path) && !IsTestDataPath(path)
 }
 
 // IsSourcePath reports whether path holds Go code.
 //
 // A .go file is code. A .md file is not, and a commit that only edits
 // documentation has no test to write.
+//
+// A .go file under a testdata directory is not code either: the Go
+// toolchain never compiles it, so it is not part of the package, and a
+// commit that only edits one has changed no behaviour that a test could
+// watch.
 func (g *Go) IsSourcePath(path string) bool {
-	if IsDependencyPath(path) {
+	if IsDependencyPath(path) || IsTestDataPath(path) {
 		return false
 	}
 	return strings.HasSuffix(path, ".go") && !IsGoTestPath(path)
@@ -255,13 +309,19 @@ func (g *Go) packagesForFiles(root string, files []string) []string {
 }
 
 // skipPackageDir reports whether a directory is never a Go package.
+//
+// The Go toolchain ignores a directory named "testdata" at any depth, so
+// neither the directory itself nor anything below it is a package. Naming
+// one as a package pattern makes `go test` fail with "matched no packages",
+// and a build failure the tool caused itself must never be mistaken for a
+// finding about the code under review.
 func skipPackageDir(dir string) bool {
 	base := path.Base(dir)
 	switch base {
-	case "vendor", "node_modules", "testdata", "dist", "build", "examples":
+	case "vendor", "node_modules", "dist", "build", "examples":
 		return true
 	}
-	return false
+	return IsTestDataPath(dir)
 }
 
 // dirHasGoFiles reports whether a directory holds at least one Go file.
