@@ -109,6 +109,21 @@ func noRunnerFinding(root string, files []string) core.Finding {
 	// decides what the reader does next: write tests, or ask for an
 	// adapter.
 	harness := detect.HarnessCommands(root)
+	if tests == 0 {
+		// A repository can also ship its check as a plain script that
+		// nobody registered in package.json. A library package usually
+		// does: the consumer's package.json is the one that calls it,
+		// so the library's own package.json may not have a scripts
+		// section at all. Reporting such a repository as "no checks at
+		// all" is the same false alarm the harness rule exists to
+		// prevent - one level deeper.
+		//
+		// Only when there are no test files. A repository that does have
+		// test files needs the "there are tests but nobody runs them"
+		// warning more than it needs a list of checks this tool cannot
+		// drive.
+		harness = append(harness, detect.LocalCheckScripts(files, harness)...)
+	}
 
 	switch {
 	case src > 0 && tests == 0 && len(harness) == 0:
@@ -167,7 +182,13 @@ func noRunnerFinding(root string, files []string) core.Finding {
 func harnessFinding(harness []detect.HarnessCommand, src, tests int) core.Finding {
 	var lines, evidence []string
 	for _, h := range harness {
-		lines = append(lines, "  npm run "+h.Script+" → "+h.Command)
+		if h.Script != "" {
+			lines = append(lines, "  npm run "+h.Script+" → "+h.Command)
+		} else {
+			// A script the repository ships but does not register: the
+			// consumer calls it, so there is no "npm run" to quote.
+			lines = append(lines, "  "+h.Command)
+		}
 		evidence = append(evidence, h.Files...)
 	}
 

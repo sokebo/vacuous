@@ -267,3 +267,225 @@ func TestHarnessCommandsNamesTheCommandItFound(t *testing.T) {
 		t.Errorf("command = %q, want the command line", got[0].Command)
 	}
 }
+
+// The rules below protect the second half of the harness rule: a repository
+// can ship its check as a plain script that nobody registered in
+// package.json.
+//
+// The case it was found on is a library package. Its check script
+// (scripts/check-consumer.mjs) is called by the CONSUMER's package.json -
+// "check:theme": "node ../theme-pkg/scripts/check-consumer.mjs src/styles" -
+// so the library's own package.json has no scripts section at all. The
+// consumer correctly refuses to claim that script as its own harness, and
+// the library never mentions it anywhere the tool can see. The library was
+// reported as "a repository with code and not one test file", which is
+// false: it has a check, and that check is what the consumer's build runs.
+//
+// Each test below is paired with a control: a rule that fires on every
+// script-shaped file is as wrong as a rule that fires on none.
+
+// TestLocalCheckScriptsFindsAnUnregisteredCheckScript is the positive case.
+func TestLocalCheckScriptsFindsAnUnregisteredCheckScript(t *testing.T) {
+	got := LocalCheckScripts([]string{
+		"scripts/check-consumer.mjs",
+		"src/patterns/theme-reveal.js",
+	}, nil)
+
+	if len(got) != 1 {
+		t.Fatalf("LocalCheckScripts() = %+v, want exactly one harness", got)
+	}
+	if len(got[0].Files) != 1 || got[0].Files[0] != "scripts/check-consumer.mjs" {
+		t.Errorf("files = %v, want the script it found", got[0].Files)
+	}
+	if got[0].Command != "node scripts/check-consumer.mjs" {
+		t.Errorf("command = %q, want a runnable command line", got[0].Command)
+	}
+	if got[0].Script != "" {
+		t.Errorf("script = %q, want empty: nothing is registered in package.json", got[0].Script)
+	}
+}
+
+// TestLocalCheckScriptsFindsACheckInAnotherLanguage is the second positive.
+//
+// A check is a check whether it is JavaScript, Python or shell. The report
+// has to name the right runner, or the reader cannot run it.
+func TestLocalCheckScriptsFindsACheckInAnotherLanguage(t *testing.T) {
+	got := LocalCheckScripts([]string{
+		"scripts/check_public_boundary.sh",
+		"scripts/check_no_employer_data.py",
+	}, nil)
+
+	if len(got) != 2 {
+		t.Fatalf("LocalCheckScripts() = %+v, want two harnesses", got)
+	}
+	want := map[string]string{
+		"scripts/check_public_boundary.sh":  "bash scripts/check_public_boundary.sh",
+		"scripts/check_no_employer_data.py": "python3 scripts/check_no_employer_data.py",
+	}
+	for _, h := range got {
+		if want[h.Files[0]] != h.Command {
+			t.Errorf("command for %s = %q, want %q", h.Files[0], h.Command, want[h.Files[0]])
+		}
+	}
+}
+
+// TestLocalCheckScriptsIgnoresABuildScript is the control.
+//
+// "build" is not a check. A repository whose only script builds something
+// has no checks, and saying otherwise hides a real gap.
+func TestLocalCheckScriptsIgnoresABuildScript(t *testing.T) {
+	got := LocalCheckScripts([]string{
+		"scripts/build-font-subset.mjs",
+		"scripts/build-og.mjs",
+	}, nil)
+
+	if len(got) != 0 {
+		t.Fatalf("LocalCheckScripts() = %+v, want none: a build is not a check", got)
+	}
+}
+
+// TestLocalCheckScriptsIgnoresAWordThatMerelyStartsLikeAKeyword is the
+// control.
+//
+// "checkout.py" and "checkstyle.xml" are not checks. A word that merely
+// starts with the same letters is a different thing, and guessing here is
+// how a report starts crying wolf about repositories that have nothing.
+func TestLocalCheckScriptsIgnoresAWordThatMerelyStartsLikeAKeyword(t *testing.T) {
+	got := LocalCheckScripts([]string{
+		"scripts/checkout.py",
+		"scripts/checkstyle.mjs",
+		"scripts/verification-helper.mjs",
+		"scripts/check-notes.md",
+		"scripts/check-data.json",
+	}, nil)
+
+	if len(got) != 0 {
+		t.Fatalf("LocalCheckScripts() = %+v, want none", got)
+	}
+}
+
+// TestLocalCheckScriptsIgnoresAScriptPackageJSONAlreadyNames is the
+// control.
+//
+// The same file found twice is one finding, not two. package.json's
+// "smoke:css" already points at scripts/smoke-test-css.mjs.
+func TestLocalCheckScriptsIgnoresAScriptPackageJSONAlreadyNames(t *testing.T) {
+	claimed := []HarnessCommand{{
+		Script:  "smoke:css",
+		Command: "node scripts/smoke-test-css.mjs",
+		Files:   []string{"scripts/smoke-test-css.mjs"},
+	}}
+
+	got := LocalCheckScripts([]string{
+		"scripts/smoke-test-css.mjs",
+		"scripts/check-consumer.mjs",
+	}, claimed)
+
+	if len(got) != 1 {
+		t.Fatalf("LocalCheckScripts() = %+v, want only the script package.json does not name", got)
+	}
+	if got[0].Files[0] != "scripts/check-consumer.mjs" {
+		t.Errorf("files = %v, want the script package.json does not name", got[0].Files)
+	}
+}
+
+// TestLocalCheckScriptsIgnoresProductCodeNamedLikeACheck is the control.
+//
+// A file under src/ is the code being shipped, not a command someone runs.
+// Calling it a harness would make the report claim it looked at a check
+// that does not exist.
+func TestLocalCheckScriptsIgnoresProductCodeNamedLikeACheck(t *testing.T) {
+	got := LocalCheckScripts([]string{
+		"src/check-balance.js",
+		"lib/verify-payment.ts",
+	}, nil)
+
+	if len(got) != 0 {
+		t.Fatalf("LocalCheckScripts() = %+v, want none: product code is not a command", got)
+	}
+}
+
+// TestLocalCheckScriptsIgnoresATestFile is the control.
+//
+// "test" is not in the keyword list on purpose. A file called
+// test-something is a test file, and the tool already has an answer for
+// those - counting it as a check would hide the "there are tests but
+// nobody runs them" case.
+func TestLocalCheckScriptsIgnoresATestFile(t *testing.T) {
+	got := LocalCheckScripts([]string{
+		"scripts/test-contract.mjs",
+		"scripts/e2e-flow.mjs",
+	}, nil)
+
+	if len(got) != 0 {
+		t.Fatalf("LocalCheckScripts() = %+v, want none: those are test files", got)
+	}
+}
+
+// TestLocalCheckScriptsFindsChecksInTheOtherToolingDirectories is the
+// coverage for the directory rule.
+//
+// scripts/ is where most repositories keep their tooling, but not all of
+// them. A rule that only knows one directory is a rule nobody checked.
+func TestLocalCheckScriptsFindsChecksInTheOtherToolingDirectories(t *testing.T) {
+	got := LocalCheckScripts([]string{
+		"bin/check-release.sh",
+		"tools/verify-schema.py",
+	}, nil)
+
+	if len(got) != 2 {
+		t.Fatalf("LocalCheckScripts() = %+v, want two harnesses", got)
+	}
+	for _, h := range got {
+		if h.Files[0] != "bin/check-release.sh" && h.Files[0] != "tools/verify-schema.py" {
+			t.Errorf("unexpected harness: %+v", h)
+		}
+	}
+}
+
+// TestLocalCheckScriptsNamesTheRunnerForEveryScriptLanguage keeps the
+// command line runnable.
+//
+// The report hands the reader a command. If the runner is wrong for the
+// file's language, the command is worse than no command at all.
+func TestLocalCheckScriptsNamesTheRunnerForEveryScriptLanguage(t *testing.T) {
+	cases := []struct {
+		file string
+		want string
+	}{
+		{"scripts/check-a.mjs", "node scripts/check-a.mjs"},
+		{"scripts/check-a.js", "node scripts/check-a.js"},
+		{"scripts/check-a.ts", "npx tsx scripts/check-a.ts"},
+		{"scripts/check-a.py", "python3 scripts/check-a.py"},
+		{"scripts/check-a.sh", "bash scripts/check-a.sh"},
+		{"scripts/check-a.rb", "ruby scripts/check-a.rb"},
+		{"scripts/check-a.pl", "perl scripts/check-a.pl"},
+		{"scripts/check-a.ps1", "pwsh scripts/check-a.ps1"},
+		{"scripts/check-a.bat", "cmd /c scripts/check-a.bat"},
+		{"scripts/check-a.go", "go run scripts/check-a.go"},
+	}
+
+	for _, c := range cases {
+		got := LocalCheckScripts([]string{c.file}, nil)
+		if len(got) != 1 {
+			t.Fatalf("%s: LocalCheckScripts() = %+v, want one harness", c.file, got)
+		}
+		if got[0].Command != c.want {
+			t.Errorf("%s: command = %q, want %q", c.file, got[0].Command, c.want)
+		}
+	}
+}
+
+// TestLocalCheckScriptsIgnoresAScriptAtTheRepositoryRoot is the control.
+//
+// A check command is something someone runs. A file at the repository root
+// is not something the repository runs - it is part of the repository.
+func TestLocalCheckScriptsIgnoresAScriptAtTheRepositoryRoot(t *testing.T) {
+	got := LocalCheckScripts([]string{
+		"check-release.sh",
+	}, nil)
+
+	if len(got) != 0 {
+		t.Fatalf("LocalCheckScripts() = %+v, want none", got)
+	}
+}
