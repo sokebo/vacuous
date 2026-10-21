@@ -223,6 +223,10 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 		if adapter == nil {
 			rep.Add(noRunnerFinding(root, files))
 		}
+		// Say out loud which tests the report does not cover.
+		for _, f := range detect.UnsupportedTests(root, files) {
+			rep.Add(f)
+		}
 	}
 
 	if opts.Mode == "audit" || opts.Mode == "all" {
@@ -321,7 +325,10 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 		case counterfactual.VerdictNoTest:
 			rep.NoTest++
 		case counterfactual.VerdictNotApplicable:
-			// nothing to judge
+			// Nothing to judge - but the commit was looked at, and the
+			// count says so. A report that judged nothing must not look
+			// like a report that found nothing.
+			rep.NotApplicable++
 		default:
 			rep.Inconclusive++
 		}

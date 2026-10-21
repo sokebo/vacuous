@@ -36,6 +36,8 @@ type jsonSummary struct {
 	// NoTest is the number of behaviour changes that landed without any
 	// test at all.
 	NoTest int `json:"no_test"`
+	// NotApplicable is the number of commits that had nothing to judge.
+	NotApplicable int `json:"not_applicable"`
 	// ByKind counts the findings per kind.
 	ByKind map[string]int `json:"by_kind"`
 	// MaxSeverity is the worst severity in the report, "info" when the
@@ -96,12 +98,13 @@ func buildJSON(r *core.Report) jsonReport {
 		Project:  r.Project,
 		RepoRoot: r.RepoRoot,
 		Summary: jsonSummary{
-			Proven:       r.Proven,
-			Vacuous:      r.Vacuous,
-			Inconclusive: r.Inconclusive,
-			NoTest:       r.NoTest,
-			ByKind:       byKind,
-			MaxSeverity:  r.MaxSeverity().String(),
+			Proven:        r.Proven,
+			Vacuous:       r.Vacuous,
+			Inconclusive:  r.Inconclusive,
+			NoTest:        r.NoTest,
+			NotApplicable: r.NotApplicable,
+			ByKind:        byKind,
+			MaxSeverity:   r.MaxSeverity().String(),
 		},
 		Findings: make([]jsonFinding, 0, len(findings)),
 	}

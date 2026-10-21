@@ -84,6 +84,14 @@ const (
 	// KindNoTestRunner means the repository has no way to run tests at all,
 	// so the counterfactual audit could not be carried out here.
 	KindNoTestRunner Kind = "no-test-runner"
+	// KindUnsupportedTests means part of the repository's test suite is
+	// written in a form this tool cannot execute, so the report does not
+	// cover it.
+	//
+	// It is information rather than a defect. Its job is to stop an empty
+	// report from reading as "no problems", when the truth is "no problems
+	// in the part I could see".
+	KindUnsupportedTests Kind = "unsupported-tests"
 	// KindNotApplicable means there was nothing to judge - a commit with
 	// no parent to compare against, a commit that only touched
 	// documentation. It is not a problem, and it is not a pass.
@@ -277,6 +285,13 @@ type Report struct {
 	Vacuous int
 	// Inconclusive is the number of behaviours that could not be judged.
 	Inconclusive int
+	// NotApplicable is the number of commits that had nothing to judge:
+	// documentation, merges, commits that only added tests.
+	//
+	// It is counted because "every commit got an answer" has to be
+	// checkable. Without it, a report that judged nothing and a report
+	// that found nothing look identical.
+	NotApplicable int
 	// NoTest is the number of behaviour changes that landed without any
 	// test at all.
 	//
