@@ -301,6 +301,7 @@ func TestExitCodeDistinguishesUnknownFromChange(t *testing.T) {
 	}{
 		{"什么都没变", nil, 0},
 		{"代码变了", []Change{{Kind: "code"}}, 1},
+		{"工作树脏了", []Change{{Kind: "dirty"}}, 1},
 		{"被审仓动了", []Change{{Kind: "target"}}, 1},
 		{"判不出来", []Change{{Kind: "unknown"}}, 2},
 		{"又变了又判不出来", []Change{{Kind: "code"}, {Kind: "unknown"}}, 2},
@@ -309,6 +310,131 @@ func TestExitCodeDistinguishesUnknownFromChange(t *testing.T) {
 		if got := ExitCode(tc.changes); got != tc.want {
 			t.Errorf("%s：退出码应该是 %d，实际 %d", tc.name, tc.want, got)
 		}
+	}
+}
+
+// TestCheckReportsUncommittedCodeChange 守的是「改了但没提交」这个洞。
+//
+// 指纹量的是 HEAD，核验跑的却是工作树里的代码。改了没提交的那份改动，
+// 闸门看不见 —— 而它看不见的后果不是「少报一次」，是那份改动永远不会被
+// 核验、不会被提交，最后被下一轮覆盖掉。症状还和「一切正常」一模一样：
+// NO CHANGE、退出码 0。
+func TestCheckReportsUncommittedCodeChange(t *testing.T) {
+	dir := seedRepo(t)
+
+	st, err := CurrentState(dir, nil)
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 改了，但是没提交。
+	writeFile(t, dir, "main.go", "package main\n\nfunc main() { println(9) }\n")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	changes := Check(dir, loaded)
+	if len(changes) != 1 {
+		t.Fatalf("改了没提交应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+	}
+	if changes[0].Kind != "dirty" {
+		t.Errorf("应该是 dirty，实际是 %q", changes[0].Kind)
+	}
+	if !strings.Contains(changes[0].Detail, "main.go") {
+		t.Errorf("报错里要点名是哪个文件: %q", changes[0].Detail)
+	}
+}
+
+// TestCheckReportsUntrackedSourceFile 守的是「新文件忘了 git add」。
+//
+// 这种文件和「改了没提交」是同一类病：本地核验跑的是工作树（含这个新文件），
+// CI 跑的是 HEAD（不含它）—— 两份代码，核验结论却只对其中一份成立。
+func TestCheckReportsUntrackedSourceFile(t *testing.T) {
+	dir := seedRepo(t)
+
+	st, err := CurrentState(dir, nil)
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	writeFile(t, dir, "extra.go", "package main\n")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	changes := Check(dir, loaded)
+	if len(changes) != 1 {
+		t.Fatalf("多了一个没被跟踪的文件应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+	}
+	if changes[0].Kind != "dirty" {
+		t.Errorf("应该是 dirty，实际是 %q", changes[0].Kind)
+	}
+}
+
+// TestCheckIsQuietWhenOnlyDocsAreDirty 守的是「宁可漏报不可误伤」那一条：
+// 文档脏了不许触发。文档不影响工具跑出来的结果，每轮都因为它重跑，
+// 就是 3.18 那个自毁的毛病换个姿势复发。
+func TestCheckIsQuietWhenOnlyDocsAreDirty(t *testing.T) {
+	dir := seedRepo(t)
+
+	st, err := CurrentState(dir, nil)
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 文档：改了没提交，根目录和 docs/ 下各来一个。
+	writeFile(t, dir, "README.md", "# 还没提交\n")
+	writeFile(t, dir, "docs/notes.md", "# 还没提交\n")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	if changes := Check(dir, loaded); len(changes) != 0 {
+		t.Errorf("只有文档是脏的不该触发重跑，却报了: %+v", changes)
+	}
+}
+
+// TestCheckIsQuietWhenUntrackedFileIsIgnored 守的是编译产物。
+//
+// 被 .gitignore 忽略的文件（编译出来的二进制、覆盖率文件、临时目录）
+// 不该触发重跑 —— 它们每天都在那儿，触发就等于闸门永远在响。
+func TestCheckIsQuietWhenUntrackedFileIsIgnored(t *testing.T) {
+	dir := seedRepo(t)
+
+	// 忽略规则先落地并提交，再记状态 —— 记状态之前提交的东西是「代码变了」，
+	// 那是另一条判据（指纹变了），不能混在这条用例里。
+	writeFile(t, dir, ".gitignore", "vacuous\ndist/\n")
+	commitAll(t, dir, "加忽略规则")
+
+	st, err := CurrentState(dir, nil)
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	writeFile(t, dir, "vacuous", "编译出来的二进制")
+	writeFile(t, dir, "dist/out.txt", "产物")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	if changes := Check(dir, loaded); len(changes) != 0 {
+		t.Errorf("被忽略的文件不该触发重跑，却报了: %+v", changes)
 	}
 }
 

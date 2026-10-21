@@ -44,7 +44,8 @@ type Target struct {
 
 // Change 是一条「有东西变了」的记录。
 type Change struct {
-	// Kind: code（工具代码变了）/ target（被审仓库动了）/ unknown（判不出来）
+	// Kind: code（工具代码变了）/ dirty（工作树有未提交的改动）/
+	//       target（被审仓库动了）/ unknown（判不出来）
 	Kind   string `json:"kind"`
 	Detail string `json:"detail"`
 }
@@ -118,6 +119,50 @@ func isDoc(path string) bool {
 		return true
 	}
 	return strings.HasSuffix(path, ".md")
+}
+
+// DirtyPaths 返回工作树里「改了但还没提交」的路径。
+//
+// 它守的是一个具体的洞：指纹量的是 **HEAD**，而核验跑的是**工作树**里的
+// 那些代码，CI 跑的是 HEAD 里的那些代码。三者不是一份的时候，闸门报
+// 「没变化」就是在说谎，而且是说得很像真的那种谎 —— 改动就躺在磁盘上，
+// 闸门看不见它，那份改动也就永远不会被核验、不会被提交，最后被下一轮覆盖掉。
+// 症状和「一切正常」完全一样：都是 NO CHANGE、退出码 0。
+//
+// 文档照旧不算：改文档不改变工具跑出来的结果，拿它当触发条件就是让闸门空转
+// （见 DOGFOOD.md 3.18）。被 .gitignore 忽略的文件也不算：编译产物和临时
+// 文件不是「改动」。
+//
+// 注意这里**不看被审仓库的工作树**，只看工具自己的。被审仓库按 HEAD 算，
+// 是有原因的：delta 的工作树里一直有用户正在开发的未提交源码，把它算
+// 进去，闸门就会每一轮都喊「有变化」—— 正是 3.18 那个自毁的毛病。
+// 被审仓库的工作树由工具自己的审计去报（它会把那种情况报成高危）。
+func DirtyPaths(repoDir string) ([]string, error) {
+	// 用 -z：路径不会被 git 加引号，解析不会踩到转义。
+	out, err := gitOutput(repoDir, "status", "--porcelain", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("读工作树状态失败: %w", err)
+	}
+	entries := strings.Split(out, "\x00")
+	var paths []string
+	for i := 0; i < len(entries); i++ {
+		e := entries[i]
+		// 一条记录是「XY<空格>路径」，XY 是两个状态字符。
+		if len(e) < 4 {
+			continue
+		}
+		xy := e[:2]
+		path := e[3:]
+		// 重命名/复制在 -z 格式下后面多跟一条原路径，跳过它。
+		if strings.ContainsAny(xy, "RC") {
+			i++
+		}
+		if path == "" || isDoc(path) {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
 }
 
 // Head 返回一个仓库当前的 HEAD。
@@ -287,6 +332,19 @@ func Check(repoDir string, st State) []Change {
 		changes = append(changes, Change{
 			Kind:   "code",
 			Detail: fmt.Sprintf("工具代码变了（指纹 %s → %s）", short(st.Fingerprint), short(fp)),
+		})
+	}
+
+	// 指纹只量 HEAD，工作树里「改了没提交」的东西它看不见。
+	// 但核验跑的就是工作树里的代码 —— 看不见的那部分改动，等于不存在。
+	dirty, err := DirtyPaths(repoDir)
+	if err != nil {
+		// 读不出来就是读不出来，不许当成「没变化」。
+		changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("读工作树状态失败: %v", err)})
+	} else if len(dirty) > 0 {
+		changes = append(changes, Change{
+			Kind:   "dirty",
+			Detail: fmt.Sprintf("工具代码有未提交的改动（%d 个文件）：%s", len(dirty), strings.Join(dirty, "、")),
 		})
 	}
 

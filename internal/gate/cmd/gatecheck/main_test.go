@@ -99,6 +99,30 @@ func TestRunRecordRefusesToDropAWatchedTarget(t *testing.T) {
 	}
 }
 
+// TestRunCheckReportsUncommittedChange 守的是命令这一层的同一个洞。
+//
+// 判据在 gate 包里是对的，命令却不一定会把它透出来：check 的退出码必须
+// 把「改了没提交」当成「变了」（1），不能报成「没变化」（0）。
+func TestRunCheckReportsUncommittedChange(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	if rc := runRecord(dir, []string{target}, true, false); rc != 0 {
+		t.Fatalf("记录状态失败，退出码 %d", rc)
+	}
+	if rc := runCheck(dir, nil); rc != 0 {
+		t.Fatalf("工作树干净时应该是 0，实际 %d", rc)
+	}
+
+	// 改了但没提交。
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() { println(3) }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rc := runCheck(dir, nil); rc != 1 {
+		t.Errorf("改了没提交应该是 1（变了），实际 %d —— 这等于把「没核验过」说成「没问题」", rc)
+	}
+}
+
 // TestRunCheckExitCodes 守的是退出码的契约（0/1/2）。
 func TestRunCheckExitCodes(t *testing.T) {
 	dir := seedRepo(t)
