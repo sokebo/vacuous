@@ -13,6 +13,7 @@ package counterfactual
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -445,41 +446,32 @@ func (a *Auditor) hasParent(ctx context.Context, sha string) (bool, error) {
 	return len(strings.Fields(out)) >= 2, nil
 }
 
-// buildErrorFiles extracts the source files named in a build error.
+// buildErrorFilePattern matches a compiler error's "file:line:column" part.
 //
-// A compiler error reads "path/to/file.go:12:5: undefined: X". The line
-// NUMBER is what identifies it: a package-level message has no digits
-// after its first colon.
+// A compiler error reads:
+//
+//	pkg/widget_test.go:12:5: undefined: NewThing
+//
+// and the adapter wraps it with the package it belongs to, so the same line
+// can also read:
+//
+//	example.com/app/pkg: pkg/widget_test.go:12:5: undefined: NewThing
+//
+// Looking for the pattern anywhere in the line is more robust than trying
+// to strip a prefix: the prefix and the error can share a line, and a
+// hand-rolled "cut at the first colon" gets it wrong in one direction or
+// the other.
+var buildErrorFilePattern = regexp.MustCompile(`([A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+):\d+:\d+`)
+
+// buildErrorFiles extracts the source files named in a build error.
 //
 // The file is what matters here: an error in a test file and an error in a
 // source file mean opposite things.
 func buildErrorFiles(buildErrors []string) []string {
 	var out []string
 	for _, e := range buildErrors {
-		for _, line := range strings.Split(e, "\n") {
-			line = strings.TrimSpace(line)
-			colon := strings.Index(line, ":")
-			if colon <= 0 {
-				continue
-			}
-			// A compiler error has a line number right after the colon.
-			rest := line[colon+1:]
-			digits := 0
-			for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
-				digits++
-			}
-			if digits == 0 {
-				continue
-			}
-			file := line[:colon]
-			if strings.ContainsAny(file, " \t") {
-				continue
-			}
-			// A path with an extension is a file; "example.com/pkg" is not.
-			if !strings.Contains(file, ".") {
-				continue
-			}
-			out = append(out, file)
+		for _, m := range buildErrorFilePattern.FindAllStringSubmatch(e, -1) {
+			out = append(out, m[1])
 		}
 	}
 	return out

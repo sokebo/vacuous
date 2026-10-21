@@ -104,3 +104,52 @@ func TestBuildErrorFilesFindsTheFile(t *testing.T) {
 		t.Errorf("files[1] = %q, want pkg/other.go", files[1])
 	}
 }
+
+// TestEnvironmentPatternTableIsLoadBearing is the negative control for the
+// environment pattern table.
+//
+// The test that used to stand in for this one ("a missing sibling is an
+// environment problem") passed for the WRONG reason: the error string it
+// used had no "file.go:line:" shape, so the file-based branch could not
+// decide anything and the function fell through to its default. Empty the
+// whole table and that test still went green - the table was never
+// exercised.
+//
+// This one does exercise it: the build error names a TEST file and carries
+// a pattern the table knows. With the table, the verdict is environment.
+// Without it, the file branch would call it a coupling.
+//
+// The two are opposites, so the table decides between them. It has to be
+// under test.
+func TestEnvironmentPatternTableIsLoadBearing(t *testing.T) {
+	run := &runOutcome{result: core.RunResult{
+		BuildErrors: []string{
+			"example.com/app/pkg: pkg/widget_test.go:12:5: cannot find package \"example.com/x\"\n",
+		},
+	}}
+	verdict := classify(run, func(p string) bool {
+		return len(p) > 8 && p[len(p)-8:] == "_test.go"
+	})
+	if verdict != VerdictEnvironment {
+		t.Fatalf("classify() = %q, want %q — the error names a missing package, "+
+			"which is an environment problem, not a coupling", verdict, VerdictEnvironment)
+	}
+}
+
+// TestUnknownBuildErrorInATestFileIsCoupling is the other half.
+//
+// A build error the table does not know about, in a test file, is a
+// coupling: the test cannot be built without the fix.
+func TestUnknownBuildErrorInATestFileIsCoupling(t *testing.T) {
+	run := &runOutcome{result: core.RunResult{
+		BuildErrors: []string{
+			"example.com/app/pkg: pkg/widget_test.go:12:5: undefined: NewThing\n",
+		},
+	}}
+	verdict := classify(run, func(p string) bool {
+		return len(p) > 8 && p[len(p)-8:] == "_test.go"
+	})
+	if verdict != VerdictCoupled {
+		t.Fatalf("classify() = %q, want %q", verdict, VerdictCoupled)
+	}
+}
