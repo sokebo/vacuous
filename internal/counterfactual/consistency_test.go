@@ -243,7 +243,7 @@ func TestRunWithoutRawOutputIsNotFlagged(t *testing.T) {
 // it - and the tool reported "my verdict contradicts my own output" on runs
 // that were perfectly consistent.
 //
-// It showed up for real: three commits of relay-service came back
+// It showed up for real: three commits of a Go service repository came back
 // "contradictory" with "733 passed, 42 failed". The run was fine. The
 // window was too small.
 //
