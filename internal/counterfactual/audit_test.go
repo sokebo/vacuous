@@ -657,3 +657,40 @@ func TestABaselineThatCouldNotRunIsNotAPreExistingRed(t *testing.T) {
 		}
 	}
 }
+
+// TestAuditDoesNotAccuseAVendoredDependencyBump is the rule.
+//
+// A commit that only bumps a vendored dependency did not change this
+// repository's behaviour. Reporting it as "this change has no test
+// watching it" is a false accusation about code the owner did not write -
+// and the owner's only possible response is to write a test for somebody
+// else's library.
+//
+// Found on a real public repository: two such findings, both pointing into
+// vendor/.
+func TestAuditDoesNotAccuseAVendoredDependencyBump(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.NewGoModule(t, "example.com/vendored")
+	m.Write(t, "greet.go", "package fixture\n\n// Greet returns a greeting.\nfunc Greet(name string) string {\n\treturn \"hello, \" + name\n}\n")
+	m.Write(t, "vendor/example.com/lib/lib.go", "package lib\n\n// Version is the version.\nconst Version = \"1.0.0\"\n")
+	m.Init(t)
+	m.Write(t, "vendor/example.com/lib/lib.go", "package lib\n\n// Version is the version.\nconst Version = \"1.1.0\"\n")
+	m.Commit(t, "chore: bump vendored lib")
+
+	a := newAuditor(t, m.Dir)
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	for _, f := range res.Findings {
+		if f.Kind == core.KindNoTestForFix {
+			t.Fatalf("the tool accused a vendored dependency bump of being unguarded: %+v", res.Findings)
+		}
+	}
+	if res.Verdict == VerdictProven || res.Verdict == VerdictVacuous {
+		t.Fatalf("verdict = %q — a vendored dependency bump has nothing to judge", res.Verdict)
+	}
+}

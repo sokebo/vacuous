@@ -649,3 +649,44 @@ func TestUnittestSuitesIsEmptyForAPytestProject(t *testing.T) {
 		t.Fatalf("UnittestSuites() = %v, want empty — a pytest project is not a unittest project", got)
 	}
 }
+
+// TestIsDependencyPath pins down what counts as other people's code.
+//
+// The rule came from a real false accusation: a commit that only bumped a
+// vendored dependency was reported as "this change has no test watching
+// it". The owner did not write that code and cannot write a test for it.
+func TestIsDependencyPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"vendor/github.com/foo/bar.go", true},
+		{"vendor/modules.txt", true},
+		{"internal/vendor/x.go", true},
+		{"third_party/lib/lib.go", true},
+		{"node_modules/react/index.js", true},
+		{"internal/command/modules.go", false},
+		{"cmd/vacuous/main.go", false},
+		{"myvendor/x.go", false},
+		{"vendorish/x.go", false},
+	}
+	for _, tc := range cases {
+		if got := IsDependencyPath(tc.path); got != tc.want {
+			t.Errorf("IsDependencyPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestGoSourcePathSkipsVendoredCode is the adapter-level rule.
+func TestGoSourcePathSkipsVendoredCode(t *testing.T) {
+	g := NewGo()
+	if g.IsSourcePath("vendor/github.com/foo/bar.go") {
+		t.Error("a vendored file must not count as this repository's source")
+	}
+	if g.IsTestPath("vendor/github.com/foo/bar_test.go") {
+		t.Error("a vendored test must not count as this repository's test")
+	}
+	if !g.IsSourcePath("internal/command/modules.go") {
+		t.Error("the repository's own source must still count")
+	}
+}

@@ -114,13 +114,18 @@ func (g *Go) findModuleRoots(root string) []string {
 }
 
 // IsTestPath reports whether path is a Go test file.
-func (g *Go) IsTestPath(path string) bool { return IsGoTestPath(path) }
+func (g *Go) IsTestPath(path string) bool {
+	return IsGoTestPath(path) && !IsDependencyPath(path)
+}
 
 // IsSourcePath reports whether path holds Go code.
 //
 // A .go file is code. A .md file is not, and a commit that only edits
 // documentation has no test to write.
 func (g *Go) IsSourcePath(path string) bool {
+	if IsDependencyPath(path) {
+		return false
+	}
 	return strings.HasSuffix(path, ".go") && !IsGoTestPath(path)
 }
 
@@ -291,4 +296,35 @@ func dirHasGoFiles(root, dir string) bool {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// dependencyDirs are directories that hold other people's code.
+//
+// Go's own package resolution skips a directory named "vendor" - the "./..."
+// pattern does not match inside it - and the convention is that everything
+// under it is a dependency. A commit that bumps a vendored dependency did
+// not change this repository's behaviour, so the tool must not tell its
+// owner that a change is unguarded.
+//
+// The same goes for the other two conventions: "third_party" (Chromium
+// style) and "node_modules" (a committed dependency tree).
+var dependencyDirs = map[string]bool{
+	"vendor": true, "third_party": true, "node_modules": true,
+}
+
+// IsDependencyPath reports whether path points at other people's code.
+//
+// The tool already skips these directories when it looks for packages to
+// run and when it walks the tree for the static checkers. The changed-file
+// classification was the one place that did not - so a commit that only
+// bumps a vendored dependency was reported as "this change has no test
+// watching it", which is a false accusation about code the owner did not
+// write.
+func IsDependencyPath(path string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(path), "/") {
+		if dependencyDirs[seg] {
+			return true
+		}
+	}
+	return false
 }

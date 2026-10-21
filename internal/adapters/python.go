@@ -98,6 +98,9 @@ func (p *Python) detectPytest(root string) bool {
 
 // IsTestPath reports whether path is a Python test file.
 func (p *Python) IsTestPath(path string) bool {
+	if IsDependencyPath(path) {
+		return false
+	}
 	base := filepath.Base(path)
 	if strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py") {
 		return true
