@@ -243,6 +243,7 @@ var knownKinds = map[string]bool{
 	string(core.KindNoTestForFix):      true,
 	string(core.KindCoupled):           true,
 	string(core.KindEnvironment):       true,
+	string(core.KindSuiteCrash):        true,
 	string(core.KindNoTestRunner):      true,
 	string(core.KindNotApplicable):     true,
 }

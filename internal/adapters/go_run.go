@@ -227,8 +227,11 @@ func (g *Go) runSingle(ctx context.Context, plan core.Plan) (core.RunResult, err
 		Command:    "go " + core.JoinCommand(args),
 		DurationMS: elapsed.Milliseconds(),
 		// The raw output is kept so the engine can check the counts
-		// against what the runner actually printed.
+		// against what the runner actually printed. The tail is what a
+		// human reads; the flag below is what the check needs, and it is
+		// computed over the WHOLE output - a tail is not the output.
 		RawOutput: tailOf(stdout.Bytes(), 4000),
+		RawFailed: core.MentionsFailure(stdout.String()),
 	}
 
 	records, buildErrors := parseGoEvents(stdout.Bytes(), goStatus)

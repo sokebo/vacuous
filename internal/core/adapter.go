@@ -41,6 +41,26 @@ type Plan struct {
 	Env []string
 	// Description is a human-readable one-liner for the report.
 	Description string
+	// FullArgs is the argv that runs the whole suite, for a plan that
+	// narrows the run to part of it.
+	//
+	// It is optional: an adapter that cannot widen its run leaves it
+	// empty. When it is set, an adapter that ran the narrowed plan and
+	// saw no failing test may run this instead and use that result.
+	//
+	// The reason is a false negative, and it is the dangerous kind. A
+	// narrowed run that stays green says the tests next to the changed
+	// file stayed green - it says nothing about the rest of the suite.
+	// If the fix is guarded by a test that lives somewhere else, the
+	// narrowed run cannot see it, and the report would call a guarded
+	// fix unguarded.
+	FullArgs []string
+	// Script is the test command the project itself declares - the
+	// package.json "test" script, for a Node project.
+	//
+	// The report shows it next to the command that was actually run, so
+	// a reader can tell whether the adapter ran what the project runs.
+	Script string
 	// PkgPattern is the package pattern the plan narrows to, if any.
 	//
 	// It is relative to Dir. A runner that walks several modules has to

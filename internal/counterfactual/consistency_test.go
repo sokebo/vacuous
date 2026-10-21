@@ -34,6 +34,7 @@ func TestCheckConsistencyCatchesAContradiction(t *testing.T) {
 					{Name: "pkg.TestA", Status: core.StatusPass},
 				},
 				RawOutput: "--- FAIL: TestA (0.00s)\nFAIL\n",
+				RawFailed: true,
 			}},
 			verdict: VerdictVacuous,
 			want:    true,
@@ -45,6 +46,7 @@ func TestCheckConsistencyCatchesAContradiction(t *testing.T) {
 					{Name: "pkg.TestA", Status: core.StatusFail},
 				},
 				RawOutput: "ok  \tpkg\t0.01s\nPASS\n",
+				RawFailed: false,
 			}},
 			verdict: VerdictProven,
 			want:    true,
@@ -56,6 +58,7 @@ func TestCheckConsistencyCatchesAContradiction(t *testing.T) {
 					{Name: "pkg.TestA", Status: core.StatusPass},
 				},
 				RawOutput: "ok  \tpkg\t0.01s\nPASS\n",
+				RawFailed: false,
 			}},
 			verdict: VerdictVacuous,
 			want:    false,
@@ -67,6 +70,7 @@ func TestCheckConsistencyCatchesAContradiction(t *testing.T) {
 					{Name: "pkg.TestA", Status: core.StatusPass},
 				},
 				RawOutput: "--- FAIL: TestA (0.00s)\nFAIL\n",
+				RawFailed: true,
 			}},
 			verdict: VerdictCoupled,
 			want:    false,
@@ -171,6 +175,7 @@ func TestContradictionIsCaughtFromTheRawOutput(t *testing.T) {
 		},
 		// The runner's own output says otherwise.
 		RawOutput: "--- FAIL: TestB (0.00s)\n    widget_test.go:12: expected 3, got 4\nFAIL\n",
+		RawFailed: true,
 	}}
 
 	verdict := classify(run, nil)
@@ -191,6 +196,7 @@ func TestProvenWithoutAFailureInTheOutputIsCaught(t *testing.T) {
 			{Name: "pkg.TestA", Status: core.StatusFail},
 		},
 		RawOutput: "ok  \tpkg\t0.01s\nPASS\n",
+		RawFailed: false,
 	}}
 
 	verdict := classify(run, nil)
@@ -207,6 +213,7 @@ func TestConsistentRunIsNotFlagged(t *testing.T) {
 			{Name: "pkg.TestA", Status: core.StatusPass},
 		},
 		RawOutput: "ok  \tpkg\t0.01s\nPASS\n",
+		RawFailed: false,
 	}}
 	if verdict := classify(run, nil); verdict == VerdictContradictory {
 		t.Fatal("a healthy run must not be reported as contradictory")
@@ -224,5 +231,78 @@ func TestRunWithoutRawOutputIsNotFlagged(t *testing.T) {
 	}}
 	if verdict := classify(run, nil); verdict == VerdictContradictory {
 		t.Fatal("a run without raw output must not be reported as contradictory")
+	}
+}
+
+// TestAFailureOutsideTheRawTailIsNotACcontradiction is the regression test
+// for the bug this tool shipped with.
+//
+// The consistency check looked for the failure marker in a 4KB tail of the
+// runner's output. On a repository with a few hundred tests, the tail was
+// nothing but passing packages - the failure marker had been pushed out of
+// it - and the tool reported "my verdict contradicts my own output" on runs
+// that were perfectly consistent.
+//
+// It showed up for real: three commits of relay-service came back
+// "contradictory" with "733 passed, 42 failed". The run was fine. The
+// window was too small.
+//
+// The failure marker now comes from the runner's COMPLETE output, so where
+// in the output it sits cannot change the verdict.
+func TestAFailureOutsideTheRawTailIsNotACcontradiction(t *testing.T) {
+	// The failure comes FIRST, and 8KB of passing packages follow it.
+	//
+	// That is the shape a real `go test -json` run has: the runner prints
+	// events as they happen, so a package that failed early is followed by
+	// packages that passed, and a tail window holds only the passing ones.
+	var b strings.Builder
+	b.WriteString("--- FAIL: TestB (0.00s)\nFAIL\n")
+	for i := 0; i < 80; i++ {
+		b.WriteString("ok  \tpkg" + strings.Repeat("x", 80) + "\n")
+	}
+	full := b.String()
+	if len(full) <= 4000 {
+		t.Fatalf("the fixture is %d bytes, it must be longer than the tail window", len(full))
+	}
+
+	run := &runOutcome{result: core.RunResult{
+		Outcomes: []core.TestOutcome{
+			{Name: "pkg.TestA", Status: core.StatusFail},
+		},
+		// The tail a human would see holds only passing packages.
+		RawOutput: full[len(full)-4000:],
+		// The flag is computed over the whole output.
+		RawFailed: core.MentionsFailure(full),
+	}}
+
+	if verdict := classify(run, nil); verdict == VerdictContradictory {
+		t.Fatal("a run whose failure marker sits outside the tail must not be " +
+			"reported as contradictory - the check looked through too small a window")
+	}
+	if verdict := classify(run, nil); verdict != VerdictProven {
+		t.Fatalf("classify() = %q, want %q", verdict, VerdictProven)
+	}
+}
+
+// TestMentionsFailureSeesTheWholeOutput is the unit behind the flag.
+func TestMentionsFailureSeesTheWholeOutput(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"a failing test", "--- FAIL: TestA (0.00s)\nFAIL\n", true},
+		{"a failed build", "FAIL\tpkg [build failed]\n", true},
+		{"a panic", "panic: runtime error\n", true},
+		{"a clean run", "ok  \tpkg\t0.01s\nPASS\n", false},
+		{"nothing at all", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := core.MentionsFailure(tc.output); got != tc.want {
+				t.Errorf("MentionsFailure() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
