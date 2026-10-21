@@ -208,3 +208,110 @@ func TestCheckOnARepositoryWithItsOwnHarnessDoesNotFailTheRun(t *testing.T) {
 		t.Errorf("the report must not claim the repository has no tests at all:\n%s", stdout)
 	}
 }
+
+// TestNoRunnerFindingDoesNotCallALibraryPackageUnprotected is the case the
+// bug was found on, one level deeper than the harness rule.
+//
+// A library package usually ships its check as a plain script, because the
+// consumer is the one that calls it:
+//
+//	"check:theme": "node ../theme-pkg/scripts/check-consumer.mjs src/styles"
+//
+// The consumer correctly refuses to claim that script as its own harness -
+// the file lives in another repository. The library never mentions it
+// anywhere the tool can see: its package.json has no scripts section at
+// all. So the library was reported as "a repository with code and not one
+// test file" - a HIGH finding that fails the run - while the check it
+// ships sat in the repository, called by the consumer's build.
+//
+// The control for this is TestNoRunnerFindingStillReportsARepositoryWithNoChecks
+// above: the same repository without the check script must still be
+// reported, loudly.
+func TestNoRunnerFindingDoesNotCallALibraryPackageUnprotected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package.json", `{
+  "name": "@themeworks/theme",
+  "version": "0.4.2"
+}
+`)
+	writeFile(t, dir, "scripts/check-consumer.mjs", "process.exit(0)\n")
+	writeFile(t, dir, "src/patterns/theme-reveal.js", "export const x = 1\n")
+
+	f := noRunnerFinding(dir, []string{
+		"package.json",
+		"scripts/check-consumer.mjs",
+		"src/patterns/theme-reveal.js",
+	})
+
+	if f.Kind == core.KindNoTestForFix {
+		t.Fatalf("the repository ships a check; it must not be reported as untested: %+v", f)
+	}
+	if f.Severity >= core.SevHigh {
+		t.Errorf("severity = %v, want below high: a blind spot in the report is not a defect in the repository", f.Severity)
+	}
+	if f.Kind != core.KindUnsupportedTests {
+		t.Errorf("kind = %q, want %q: the report must say what it did not cover", f.Kind, core.KindUnsupportedTests)
+	}
+	if !strings.Contains(f.Detail, "scripts/check-consumer.mjs") {
+		t.Errorf("the finding must name the script it found, got:\n%s", f.Detail)
+	}
+}
+
+// TestNoRunnerFindingStillReportsALibraryWithOnlyABuildScript is the
+// control.
+//
+// The library ships a script, but the script builds something. That is not
+// a check, and the repository is still unguarded.
+func TestNoRunnerFindingStillReportsALibraryWithOnlyABuildScript(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package.json", `{
+  "name": "@themeworks/theme",
+  "version": "0.4.2"
+}
+`)
+	writeFile(t, dir, "scripts/build-font-subset.mjs", "process.exit(0)\n")
+	writeFile(t, dir, "src/patterns/theme-reveal.js", "export const x = 1\n")
+
+	f := noRunnerFinding(dir, []string{
+		"package.json",
+		"scripts/build-font-subset.mjs",
+		"src/patterns/theme-reveal.js",
+	})
+
+	if f.Kind != core.KindNoTestForFix {
+		t.Errorf("kind = %q, want %q", f.Kind, core.KindNoTestForFix)
+	}
+	if f.Severity != core.SevHigh {
+		t.Errorf("severity = %v, want high", f.Severity)
+	}
+}
+
+// TestCheckOnALibraryWithItsOwnCheckScriptDoesNotFailTheRun is the
+// end-to-end proof.
+//
+// The finding has to be visible in the report, and the run has to pass: a
+// repository that ships its own check is not a defect.
+func TestCheckOnALibraryWithItsOwnCheckScriptDoesNotFailTheRun(t *testing.T) {
+	m := testfixtures.NewRepo(t)
+	m.Write(t, "package.json", `{
+  "name": "@themeworks/theme",
+  "version": "0.4.2"
+}
+`)
+	m.Write(t, "scripts/check-consumer.mjs", "process.exit(0)\n")
+	m.Write(t, "src/patterns/theme-reveal.js", "export const x = 1\n")
+	m.Init(t)
+
+	code, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
+
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want %d: the repository ships its own check.\nstdout: %s\nstderr: %s",
+			code, ExitOK, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "验证命令") {
+		t.Errorf("the report must say what it did not cover, got:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "一个测试文件都没有") {
+		t.Errorf("the report must not claim the repository has no tests at all:\n%s", stdout)
+	}
+}
