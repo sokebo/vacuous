@@ -100,7 +100,7 @@ scripts/gate.sh check     # 退出码 0=没变 1=变了 2=判不出来
 > 里记的毛病。仓库 F 确实有检查：`scripts/check-consumer.mjs`，它守着
 > 「消费方引用的每个 token 在本包里真的存在」。而且**它不是躺在仓里没人跑** ——
 > 仓库 E 的 `package.json` 里写着
-> `"check:theme": "node ../zeta/scripts/check-consumer.mjs src/styles"`，
+> `"check:theme": "node ../theme-pkg/scripts/check-consumer.mjs src/styles"`，
 > 消费方的 build 每次都跑它。
 >
 > 仓库 F 的 `package.json` 自己**一个 scripts 段都没有**（检查脚本是消费方
@@ -1412,7 +1412,7 @@ jest / vitest。要审 `npm run verify` 这种套件，得加一个能驱动任�
 
 ```json
 // 消费方（仓库 E）的 package.json
-"check:theme": "node ../zeta/scripts/check-consumer.mjs src/styles"
+"check:theme": "node ../theme-pkg/scripts/check-consumer.mjs src/styles"
 ```
 
 于是这个检查**两边都看不见**：消费方那一侧，工具**故意**不认这条命令
@@ -1717,8 +1717,8 @@ pre-existing-failure，Summary 又开始说「这个红灯本来就在」；改�
 
 - 工具审自己：**26 条 → 23 条**。消失的正好是那 3 条夹具；23 条真跳过
   （`t.Skip("skipping: runs a real go test")` 之类）一条没少。
-- 6 个被审仓**逐条比对**（`--mode check --json`，改前 / 改后）：alpha 3 条、
-  beta 1 条、gamma 7 条、delta 1 条、epsilon 1 条、zeta 1 条
+- 6 个被审仓**逐条比对**（`--mode check --json`，改前 / 改后）：仓库 B 3 条、
+  仓库 I 1 条、仓库 C 7 条、仓库 D 1 条、仓库 E 1 条、仓库 F 1 条
   —— **全部一模一样**。修掉的是夹具，没碰到任何真信号。
 
 **记一笔（还没修，留给下一轮）**：同一个「testdata 不是代码」的判断，**还有一处**
@@ -2353,7 +2353,7 @@ no such file or directory)
 | `gofmt -l .` | 空 |
 | `go vet ./...` | 通过 |
 | `go test ./... -count=1` | 全绿 |
-| 6 个仓的静态体检 | **逐条与基线一致**（alpha 3 · beta 1 · gamma 7 · delta 1 · epsilon 1 · zeta 1） |
+| 6 个仓的静态体检 | **逐条与基线一致**（仓库 B 3 · 仓库 I 1 · 仓库 C 7 · 仓库 D 1 · 仓库 E 1 · 仓库 F 1） |
 | 审计（仓库 A，最近 20 个提交） | `proven 3 · vacuous 0 · 无测试 4 · 无法判定 6 · 不适用 7`（与基线一致） |
 
 **这一轮最重要的一句话**：6 个仓「逐条与基线一致」这个结论**本身是需要被怀疑

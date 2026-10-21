@@ -30,7 +30,7 @@ FILES=("${@:2}")
 		# 来源：内部仓和公开仓可能同名（有两个都叫 terraform），要分得清。
 		case "$f" in
 			*vacuous-public*) src=公开仓 ;;
-			*) src=example ;;
+			*) src=内部仓 ;;
 		esac
 		# 每个仓只留最后一行
 		awk -F'\t' -v s="$src" '{ row[$1] = $0 } END { for (k in row) print row[k] }' "$f" |
