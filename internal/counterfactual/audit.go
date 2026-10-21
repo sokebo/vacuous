@@ -320,6 +320,40 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		return res, nil
 	}
 
+	// A test the commit DELETED is not a test that could have guarded
+	// anything.
+	//
+	// Treating its removal as "the test to keep" produces a verdict about
+	// nothing: the experiment removes a fix that was already a removal,
+	// keeps a test that no longer exists, and then reports that the
+	// remaining tests all passed - as if the commit had added a test that
+	// proved nothing.
+	//
+	// It shows up in real repositories: a commit that deletes a feature
+	// usually deletes its tests too.
+	kept := make([]core.FileChange, 0, len(res.TestFiles))
+	for _, f := range res.TestFiles {
+		if f.Status != "D" {
+			kept = append(kept, f)
+		}
+	}
+	if len(res.TestFiles) > 0 && len(kept) == 0 {
+		res.Verdict = VerdictNotApplicable
+		res.Findings = append(res.Findings, core.Finding{
+			Kind:     core.KindNotApplicable,
+			Severity: core.SevInfo,
+			Summary:  "这个提交把测试删掉了 —— 没有可以对照的测试",
+			Detail: fmt.Sprintf(
+				"提交 %s 删掉了 %d 个测试文件，没有新增或修改任何测试。\n"+
+					"反事实审计要拿一个测试来「撤掉修复看它会不会红」—— "+
+					"这里既没有修复可撤，也没有测试可留。",
+				info.Short, len(res.TestFiles)),
+			Hint: "删测试这件事本身值得看一眼，但不是这个工具能回答的问题",
+		})
+		return res, nil
+	}
+	res.TestFiles = kept
+
 	// A commit that ships no test at all.
 	if len(res.TestFiles) == 0 {
 		// How loudly to say this depends on how much changed.
