@@ -2,6 +2,8 @@ package counterfactual
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -35,18 +37,26 @@ var buildInputNames = []string{
 // one-way. A failure to copy is not fatal. A missing asset means the
 // build will fail, and the failure is reported as an environment problem
 // rather than being silently papered over.
-func (a *Auditor) copyUntrackedBuildInputs(ctx context.Context, worktreePath string) {
+func (a *Auditor) copyUntrackedBuildInputs(ctx context.Context, worktreePath string) error {
 	root := a.repo.Root()
 
+	var failures []string
 	for _, dir := range a.findBuildInputDirs(ctx, root) {
 		src := filepath.Join(root, dir)
 		dst := filepath.Join(worktreePath, dir)
 		if err := copyTree(src, dst); err != nil {
-			// A failed copy is not worth failing the audit over: the
-			// build error that follows is reported honestly.
-			continue
+			// A failed copy is not worth failing the audit over, but it
+			// must not be hidden either: swallowed, it shows up as
+			// "the code is missing something", which points the reader
+			// at the wrong thing entirely.
+			failures = append(failures,
+				fmt.Sprintf("复制 %s 失败: %v", dir, err))
 		}
 	}
+	if len(failures) > 0 {
+		return errors.New(strings.Join(failures, "\n"))
+	}
+	return nil
 }
 
 // findBuildInputDirs locates the generated directories in a repository.
@@ -94,6 +104,24 @@ func (a *Auditor) findBuildInputDirs(ctx context.Context, root string) []string 
 }
 
 // copyTree copies a directory tree, creating the destination as needed.
+//
+// Symlinks are COPIED AS SYMLINKS, not followed.
+//
+// Following them is wrong in two separate ways, and both were found by
+// running the tool on a real repository:
+//
+//   - A link that points at a directory makes the walk descend into it and
+//     then try to copy the directory as a file, which aborts the whole walk.
+//     On a pnpm layout that killed the copy after 0.9% of node_modules, and
+//     because the error was swallowed the tool reported "the code is
+//     missing something" instead of "the copy failed".
+//
+//   - A link inside node_modules/.bin usually points at a file whose
+//     contents use a path RELATIVE to the link's own directory. Writing
+//     the target's contents into the link's path breaks that relative
+//     path, and the runner stops working. Keeping the link keeps the
+//     relative path working, because the tree it points into was copied
+//     too.
 func copyTree(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -108,16 +136,29 @@ func copyTree(src, dst string) error {
 			return os.MkdirAll(target, 0o755)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			// Follow the link and copy what it points at. A dangling
-			// link is skipped rather than failing the whole copy.
-			resolved, err := os.Stat(path)
-			if err != nil {
-				return nil
-			}
-			info = resolved
+			return copySymlink(path, target)
 		}
 		return copyFile(path, target, info.Mode())
 	})
+}
+
+// copySymlink recreates a symbolic link at the destination.
+//
+// The link keeps its original target, which is usually relative - and a
+// relative target keeps working because the tree it points into was copied
+// alongside it.
+func copySymlink(src, dst string) error {
+	link, err := os.Readlink(src)
+	if err != nil {
+		// A link that cannot be read is skipped rather than failing the
+		// whole copy.
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	_ = os.Remove(dst)
+	return os.Symlink(link, dst)
 }
 
 // copyFile copies one file, preserving its permission bits.

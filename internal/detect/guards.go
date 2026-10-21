@@ -209,14 +209,23 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 	// Does any workflow run the tests?
 	var withTests []string
 	var checks []string
+	// A workflow that CALLS another workflow tells us nothing: the test
+	// command may be in the other repository. Not knowing is not the same
+	// as knowing there are no tests, and saying "this repository's CI
+	// never runs tests" when the answer is "I could not see" is exactly
+	// the kind of confident wrong claim this tool exists to stop making.
+	var opaque []string
 	for _, w := range workflows {
 		if runsAnyCommand(w.text, commands) {
 			withTests = append(withTests, w.name)
 		}
+		if callsAnotherWorkflow(w.text) {
+			opaque = append(opaque, w.name)
+		}
 		checks = append(checks, matchedCommands(w.text, checkCommands)...)
 	}
 
-	if len(withTests) == 0 {
+	if len(withTests) == 0 && len(opaque) == 0 {
 		detail := fmt.Sprintf(
 			".github/workflows/ 下有 %d 个 workflow，没有一个跑测试。\n"+
 				"这个仓库的 CI 从来不执行测试套件 —— 代码坏了，CI 照样是绿的。",
@@ -234,6 +243,25 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 			"这个仓库的 CI 不跑任何测试",
 			detail, evidence,
 			"加一个跑测试的步骤，并让它失败时阻断合并"))
+	} else if len(withTests) == 0 {
+		// Some workflows are opaque: they call a workflow that lives in
+		// another repository, so the test command is not in this file.
+		//
+		// "I could not see" is not "there is none". Saying "this
+		// repository's CI never runs tests" when the truth is "I could
+		// not look" is exactly the kind of confident wrong claim this
+		// tool exists to stop making.
+		out = append(out, finding(core.KindUnsupportedTests, core.SevInfo,
+			".github/workflows", 0,
+			"看不出来这个仓库的 CI 跑不跑测试",
+			fmt.Sprintf(
+				"有 %d 个 workflow 复用了别处的 workflow（%s），"+
+					"测试命令可能在那个仓库里，本工具看不到。\n"+
+					"所以这里不下「CI 不跑测试」的结论 —— 看不到不等于没有。",
+				len(opaque), strings.Join(dedupe(opaque), ", ")),
+			"复用了 workflow: "+strings.Join(dedupe(opaque), ", "),
+			"如果那些被复用的 workflow 里确实不跑测试，"+
+				"把测试命令直接写进本仓库的 workflow 里，这个工具才看得见"))
 	}
 
 	// A workflow that runs the tests and then ignores the failures.
@@ -281,6 +309,28 @@ func dedupe(in []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// callsAnotherWorkflow reports whether a workflow delegates to another one.
+//
+// A reusable workflow lives in another repository, so the commands it runs
+// are not in this file.
+func callsAnotherWorkflow(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "uses:") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, "uses:"))
+		// A step that uses an ACTION is not a reusable workflow: the
+		// action's own code is not this repository's test command.
+		// A reusable workflow says so in its path.
+		if !strings.Contains(value, ".github/workflows/") {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // hasContinueOnError reports whether a workflow opts out of failing.

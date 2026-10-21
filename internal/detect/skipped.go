@@ -147,13 +147,43 @@ func skipCallName(line string, markers map[string]bool) (string, bool) {
 	for _, pat := range []string{
 		"pytest.skip(", "self.skipTest(", "pytest.mark.skip",
 		"describe.skip(", "it.skip(", "test.skip(",
+		// "xit(" has to be a word on its own. Without the boundary it
+		// matches "process.exit(" - which is how a real repository ended
+		// up with five bogus "skipped test" findings, all of them
+		// quoting a process.exit() call.
 		"xit(", "xdescribe(",
+		"it.skip(", "describe.skip(",
 	} {
-		if strings.Contains(line, pat) {
+		if containsCall(line, pat) {
 			return pat, true
 		}
 	}
 	return "", false
+}
+
+// containsCall reports whether a call pattern appears in a line as a word.
+//
+// The boundary matters. A plain substring search for "xit(" matches
+// "process.exit(" - which is how a real repository ended up with five bogus
+// "this test is skipped" findings, every one of them quoting a process.exit()
+// call.
+func containsCall(line, pat string) bool {
+	for i := 0; i+len(pat) <= len(line); i++ {
+		if line[i:i+len(pat)] != pat {
+			continue
+		}
+		if i == 0 {
+			return true
+		}
+		prev := line[i-1]
+		if prev == '.' || prev == '_' ||
+			(prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
+			(prev >= '0' && prev <= '9') {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // textSkipped scans a non-Go test file for skip statements.
