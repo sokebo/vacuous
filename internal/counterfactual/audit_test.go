@@ -296,6 +296,39 @@ func TestAuditLeavesCosmeticChangesAlone(t *testing.T) {
 	}
 }
 
+// TestAuditLeavesCosmeticChangesAloneWhenTestsWereTouched is the same
+// question asked a second way.
+//
+// The commit here changes only a comment in the source file, and also
+// documents the test file. The rule used to depend on whether the commit
+// touched a test file at all: touched -> the counterfactual ran -> the
+// comment was "removed" -> the tests still passed -> "this test watched
+// nothing".
+//
+// That is a false accusation. A comment has no behaviour to break, so
+// removing it can never turn a test red, and asking whether the test turns
+// red is asking a question with no answer. The file list must not change
+// the verdict.
+func TestAuditLeavesCosmeticChangesAloneWhenTestsWereTouched(t *testing.T) {
+	m := testfixtures.CosmeticWithTestChangeFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictNotApplicable {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictNotApplicable, res.Verdict, res.Findings)
+	}
+	for _, f := range res.Findings {
+		if f.Kind == core.KindVacuousTest {
+			t.Errorf("a comment-only change must not be reported as a vacuous test: %+v", f)
+		}
+	}
+}
+
 // TestAuditLeavesTheFirstCommitAlone proves the tool does not turn git's
 // "invalid reference" into a finding.
 //

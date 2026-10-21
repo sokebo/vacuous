@@ -273,9 +273,6 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 		}
 	}
 
-	// A comment in the source can silence a finding here too.
-	sup := newSuppressor(repo.Root())
-
 	for _, sha := range shas {
 		res, err := auditor.AuditCommit(ctx, sha)
 		if err != nil {
@@ -289,6 +286,33 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 			})
 			continue
 		}
+		// The comment that silences a finding has to be the one this
+		// commit carries. A note added to the working tree today says
+		// nothing about what the commit contained when it was made, and
+		// letting it silence that commit would hide a finding that was
+		// real then.
+		sup := newSuppressorAt(repo, sha)
+		silenced := false
+		for _, f := range res.Findings {
+			if f.Kind == "proven-test" {
+				continue
+			}
+			if !sup.allows(f) {
+				silenced = true
+				continue
+			}
+			rep.Add(f)
+		}
+		// A silenced finding is not a finding. Counting it anyway would
+		// make the report contradict itself: "无测试 1" next to an
+		// empty list of findings, with nothing to show for the one.
+		//
+		// The reason it was silenced is not lost - it is written next to
+		// the code that earned it, which is where the next person will
+		// look.
+		if silenced {
+			continue
+		}
 		switch res.Verdict {
 		case counterfactual.VerdictProven:
 			rep.Proven++
@@ -300,15 +324,6 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 			// nothing to judge
 		default:
 			rep.Inconclusive++
-		}
-		for _, f := range res.Findings {
-			if f.Kind == "proven-test" {
-				continue
-			}
-			if !sup.allows(f) {
-				continue
-			}
-			rep.Add(f)
 		}
 	}
 	return nil

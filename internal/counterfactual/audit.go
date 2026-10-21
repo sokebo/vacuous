@@ -245,36 +245,77 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		}
 	}
 
-	// A commit that touches no test and no source is not this tool's
-	// business: docs, CI config, changelogs.
+	// A commit that changed no source has no fix to take away: there is
+	// nothing the experiment could remove.
+	//
+	// Either it touched nothing but documentation and configuration - not
+	// this tool's business - or it only added tests.
+	if len(res.SourceFiles) == 0 {
+		if len(res.TestFiles) == 0 {
+			res.Verdict = VerdictNotApplicable
+			return res, nil
+		}
+
+		// A commit that only touches test files has no fix to take away.
+		//
+		// The experiment is "remove the fix, keep the test". A commit that
+		// changed no code has no fix, so the question has no answer here.
+		// The tempting alternative is to call it vacuous - the new tests
+		// do pass against the parent - but that accuses a commit that did
+		// nothing but add good tests of behaviour that already existed.
+		// Whether those tests are any good is a different question, and
+		// the honest answer to it is mutation testing, not this tool.
+		res.Verdict = VerdictNotApplicable
+		res.Findings = append(res.Findings, core.Finding{
+			Kind:     core.KindNoTestForFix,
+			Severity: core.SevInfo,
+			Summary:  "这个提交只加了测试，没有改代码 —— 没有可以撤掉的修复",
+			Detail: fmt.Sprintf(
+				"提交 %s 改了 %d 个测试文件，没有改任何代码。\n"+
+					"「撤掉修复，测试会不会红」这个问题在这里没有答案 —— "+
+					"因为这个提交没有引入需要被看守的行为。",
+				info.Short, len(res.TestFiles)),
+			File: firstPath(res.TestFiles),
+			Hint: "想知道这些测试本身有没有效，用变异测试（mutation testing）",
+		})
+		return res, nil
+	}
+
+	// The source change might be cosmetic: a rename, a reindent, a
+	// comment. A commit like that does not need a new test, and
+	// demanding one is the kind of noise that teaches people to
+	// ignore the tool.
+	//
+	// This is asked before anything else, and it does not depend on
+	// whether the commit also touched a test file. A comment has no
+	// behaviour to break, so the experiment has nothing to say about it.
+	// Whether the commit's tests go red when the comment is taken away
+	// is a question with no answer - and answering it "no test watched
+	// this" accuses a commit that did nothing but explain itself.
+	//
+	// A commit that renames a symbol and rewrites the comment around it
+	// is a real change and is judged below; this is only about changes
+	// that leave the code exactly as it was.
+	change, err := a.sourceChange(ctx, sha, res.SourceFiles)
+	if err == nil && change.cosmetic {
+		res.Verdict = VerdictNotApplicable
+		res.Findings = append(res.Findings, core.Finding{
+			Kind:     core.KindNoTestForFix,
+			Severity: core.SevInfo,
+			Summary:  "这个改动没有改变代码的行为 —— 不需要新的测试",
+			Detail: fmt.Sprintf(
+				"提交 %s 改了 %d 个源文件，但改动只有注释和空白。\n"+
+					"它没有改变任何行为，所以没有测试需要跟着来。",
+				info.Short, len(res.SourceFiles)),
+			File:     firstPath(res.SourceFiles),
+			Evidence: "逐行比对：去掉注释和空白之后，改动前后完全一样",
+			Hint:     "如果这个提交其实改变了行为，那它需要测试",
+		})
+		return res, nil
+	}
+
+	// A commit that ships no test at all.
 	if len(res.TestFiles) == 0 {
-		if len(res.SourceFiles) == 0 {
-			res.Verdict = VerdictNotApplicable
-			return res, nil
-		}
-
-		// The source change might be cosmetic: a rename, a reindent, a
-		// comment. A commit like that does not need a new test, and
-		// demanding one is the kind of noise that teaches people to
-		// ignore the tool.
-		change, err := a.sourceChange(ctx, sha, res.SourceFiles)
-		if err == nil && change.cosmetic {
-			res.Verdict = VerdictNotApplicable
-			res.Findings = append(res.Findings, core.Finding{
-				Kind:     core.KindNoTestForFix,
-				Severity: core.SevInfo,
-				Summary:  "这个改动没有改变代码的行为 —— 不需要新的测试",
-				Detail: fmt.Sprintf(
-					"提交 %s 改了 %d 个源文件，但改动只有注释和空白。\n"+
-						"它没有改变任何行为，所以没有测试需要跟着来。",
-					info.Short, len(res.SourceFiles)),
-				File:     firstPath(res.SourceFiles),
-				Evidence: "逐行比对：去掉注释和空白之后，改动前后完全一样",
-				Hint:     "如果这个提交其实改变了行为，那它需要测试",
-			})
-			return res, nil
-		}
-
 		// How loudly to say this depends on how much changed.
 		//
 		// A one-line change is often a rename, a message string, a
@@ -299,32 +340,6 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 			File:     firstPath(res.SourceFiles),
 			Hint:     "补一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
 			Evidence: strings.Join(pathsOf(res.SourceFiles), "\n"),
-		})
-		return res, nil
-	}
-
-	// A commit that only touches test files has no fix to take away.
-	//
-	// The experiment is "remove the fix, keep the test". A commit that
-	// changed no code has no fix, so the question has no answer here. The
-	// tempting alternative is to call it vacuous - the new tests do pass
-	// against the parent - but that accuses a commit that did nothing but
-	// add good tests of behaviour that already existed. Whether those
-	// tests are any good is a different question, and the honest answer to
-	// it is mutation testing, not this tool.
-	if len(res.SourceFiles) == 0 {
-		res.Verdict = VerdictNotApplicable
-		res.Findings = append(res.Findings, core.Finding{
-			Kind:     core.KindNoTestForFix,
-			Severity: core.SevInfo,
-			Summary:  "这个提交只加了测试，没有改代码 —— 没有可以撤掉的修复",
-			Detail: fmt.Sprintf(
-				"提交 %s 改了 %d 个测试文件，没有改任何代码。\n"+
-					"「撤掉修复，测试会不会红」这个问题在这里没有答案 —— "+
-					"因为这个提交没有引入需要被看守的行为。",
-				info.Short, len(res.TestFiles)),
-			File: firstPath(res.TestFiles),
-			Hint: "想知道这些测试本身有没有效，用变异测试（mutation testing）",
 		})
 		return res, nil
 	}

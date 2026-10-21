@@ -482,6 +482,47 @@ func Greet(name string) string {
 	return m
 }
 
+// CosmeticWithTestChangeFixture builds the case the cosmetic rule used to
+// miss.
+//
+// The source change is only comments - exactly like CosmeticFixture - but
+// this commit also touches the test file, because it documents it.
+//
+// Whether a commit touches a test file has no bearing on whether its
+// source change altered any behaviour. A comment has no behaviour to
+// break, so the counterfactual experiment has nothing to say about it, and
+// judging such a commit by whether its tests go red asks a question with
+// no answer.
+func CosmeticWithTestChangeFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/cosmetic-test")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Init(t)
+	m.Write(t, "greet.go", `package fixture
+
+// Greet returns a greeting.
+//
+// The empty name is handled by the caller.
+func Greet(name string) string {
+	return "hello, " + name
+}
+`)
+	m.Write(t, "greet_test.go", `package fixture
+
+import "testing"
+
+// TestGreetNormalName covers the ordinary case.
+func TestGreetNormalName(t *testing.T) {
+	if Greet("bob") != "hello, bob" {
+		t.Fatal("unexpected greeting")
+	}
+}
+`)
+	m.Commit(t, "docs: explain the empty-name case")
+	return m
+}
+
 // baseTestBody is the body of the starting test file.
 const baseTestBody = `
 func TestGreetNormalName(t *testing.T) {

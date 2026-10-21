@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/sokebo/vacuous/internal/core"
+	"github.com/sokebo/vacuous/internal/git"
 )
 
 // A checker that cries wolf gets switched off, and a checker that cannot be
@@ -34,14 +36,33 @@ const ignoreMarker = "vacuous:ignore"
 //
 // It reads each file once and keeps the lines, because a run touches the
 // same file many times.
+//
+// The revision matters, and it is not a detail. A check judges the working
+// tree, so it reads the working tree. An audit judges one commit, so it
+// reads that commit's source: a note written today says nothing about what
+// a commit made months ago contained, and letting it silence that commit
+// would hide a finding that was real when it was made.
 type suppressor struct {
 	root  string
+	repo  *git.Repo
+	rev   string
 	lines map[string][]string
 }
 
-// newSuppressor creates a suppressor rooted at a repository.
+// newSuppressor creates a suppressor that reads the working tree.
 func newSuppressor(root string) *suppressor {
 	return &suppressor{root: root, lines: map[string][]string{}}
+}
+
+// newSuppressorAt creates a suppressor that reads the source as it was at a
+// revision.
+func newSuppressorAt(repo *git.Repo, rev string) *suppressor {
+	return &suppressor{
+		root:  repo.Root(),
+		repo:  repo,
+		rev:   rev,
+		lines: map[string][]string{},
+	}
 }
 
 // allows reports whether a finding should be reported.
@@ -56,6 +77,17 @@ func (s *suppressor) allows(f core.Finding) bool {
 	}
 	if len(lines) == 0 {
 		return true
+	}
+
+	// A finding that names a file but no line is anchored to the file as
+	// a whole - the report says "app.go", not "app.go:12". A standalone
+	// comment anywhere in that file silences it.
+	//
+	// Findings that do name a line do not get this. One marker at the
+	// top of a file would otherwise silence every finding in it, and a
+	// file can hold several.
+	if f.Line == 0 {
+		return !silencedByStandalone(lines, string(f.Kind))
 	}
 
 	// The line itself: a trailing comment counts.
@@ -91,8 +123,34 @@ func standaloneMarker(line string) bool {
 	return strings.Contains(trimmed, ignoreMarker)
 }
 
+// silencedByStandalone reports whether any standalone comment line in the
+// file silences the given kind.
+//
+// Only a comment on its own line counts. A trailing comment is about the
+// code it sits on; a marker that speaks for the whole file has to be a note
+// of its own.
+func silencedByStandalone(lines []string, kind string) bool {
+	for _, line := range lines {
+		if standaloneMarker(line) && silencedBy(line, kind) {
+			return true
+		}
+	}
+	return false
+}
+
 // read loads a file's lines.
+//
+// At a revision the file is read from that revision. A path that does not
+// exist there is an empty file, not an error: there is nothing to find, so
+// nothing is silenced.
 func (s *suppressor) read(rel string) []string {
+	if s.repo != nil && s.rev != "" {
+		text, err := s.repo.FileAt(s.rev, rel)
+		if err != nil {
+			return nil
+		}
+		return strings.Split(text, "\n")
+	}
 	data, err := os.ReadFile(filepath.Join(s.root, filepath.FromSlash(rel)))
 	if err != nil {
 		return nil
@@ -125,26 +183,54 @@ func silencedBy(line, kind string) bool {
 	}
 
 	// Space form: vacuous:ignore kind1 kind2
-	// Anything after the marker that is not a known kind is prose, not a
-	// kind name - so "vacuous:ignore because this is a refactor" silences
-	// everything, and "vacuous:ignore no-test-for-fix" silences one kind.
-	for _, word := range strings.Fields(rest) {
-		word = strings.TrimRight(word, ".,;")
-		if !isKnownKind(word) {
-			// Prose: the comment silences everything on the line.
-			return true
+	//
+	// The tokens are split on commas and whitespace alike, so "a,b" and
+	// "a, b" mean the same thing. Without that, "no-test-for-fix,
+	// skipped-test" would arrive as one unknown word - and an unknown
+	// word reads as prose, which silences every kind.
+	tokens := kindTokens(rest)
+
+	// If every token names a kind, the comment names kinds: it silences
+	// exactly those, and nothing else.
+	if len(tokens) > 0 {
+		allKinds := true
+		for _, tok := range tokens {
+			if !isKnownKind(tok) {
+				allKinds = false
+				break
+			}
+		}
+		if allKinds {
+			for _, tok := range tokens {
+				if tok == kind {
+					return true
+				}
+			}
+			return false
 		}
 	}
-	// Only kind names followed: it silences the named kinds. If the
-	// finding's kind is among them, it is silenced.
-	for _, word := range strings.Fields(rest) {
-		word = strings.TrimRight(word, ".,;")
-		if word == kind {
-			return true
-		}
+
+	// Anything else is prose - a reason rather than a category name. It
+	// silences every kind on the line.
+	//
+	// "vacuous:ignore because this is a refactor" silences everything,
+	// and "vacuous:ignore no-test-for-fix" silences one kind.
+	return true
+}
+
+// kindTokens splits the text after the marker into candidate kind names.
+//
+// Commas and semicolons separate names as well as spaces do, and trailing
+// punctuation is dropped so that "no-test-for-fix." still names a kind.
+func kindTokens(rest string) []string {
+	fields := strings.FieldsFunc(rest, func(r rune) bool {
+		return r == ',' || r == ';' || unicode.IsSpace(r)
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		out = append(out, strings.TrimRight(f, ".,;:"))
 	}
-	// No kind named and no prose: silences everything.
-	return len(strings.Fields(rest)) == 0
+	return out
 }
 
 // knownKinds are the finding kinds a suppression comment can name.
