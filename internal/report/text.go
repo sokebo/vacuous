@@ -71,8 +71,8 @@ func renderText(w io.Writer, r *core.Report) error {
 	}
 
 	if err := writeField(w, "统计", fmt.Sprintf(
-		"proven %d · vacuous %d · 无测试 %d · 无法判定 %d",
-		r.Proven, r.Vacuous, r.NoTest, r.Inconclusive)); err != nil {
+		"proven %d · vacuous %d · 无测试 %d · 无法判定 %d · 不适用 %d",
+		r.Proven, r.Vacuous, r.NoTest, r.Inconclusive, r.NotApplicable)); err != nil {
 		return err
 	}
 	return writeField(w, "按类别", byKindLine(r))
