@@ -607,3 +607,53 @@ func TestAuditFindsAWitnessWhenTheCountsMatch(t *testing.T) {
 			res.Verdict, VerdictProven, res.Findings)
 	}
 }
+
+// TestABaselineThatCouldNotRunIsNotAPreExistingRed is the rule.
+//
+// The baseline answers one question: "was the red already there?". A
+// baseline that never ran does not answer it. It cannot - it never
+// compiled.
+//
+// When the tool cannot tell, it must say so. It must not say "the red was
+// already there": that is a statement about the repository, it is false
+// (the suite is green), and the reader's next move is to go fix a suite
+// that was never broken.
+//
+// The report must point at what actually happened - the checkout was
+// missing something - and nowhere else.
+func TestABaselineThatCouldNotRunIsNotAPreExistingRed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.UnbuildableBaselineFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict == VerdictPreExistingFailure {
+		t.Fatalf("verdict = %q — the baseline never compiled, so nobody knows "+
+			"whether the red was already there. The report must not blame the "+
+			"suite for a checkout that was never set up.\nfindings: %+v",
+			res.Verdict, res.Findings)
+	}
+
+	// The report has to name the real cause: the checkout could not be
+	// built, not the suite being red.
+	for _, f := range res.Findings {
+		if strings.Contains(f.Detail, "测试套件本来就是红的") {
+			t.Errorf("the report tells the reader their suite was already red, "+
+				"which nobody checked and which is false here:\n%s", f.Detail)
+		}
+		if strings.Contains(f.Hint, "测试套件本来就是红的") {
+			t.Errorf("the hint tells the reader their suite was already red, "+
+				"which nobody checked and which is false here:\n%s", f.Hint)
+		}
+		if strings.Contains(f.Summary, "这个红灯本来就在") {
+			t.Errorf("the summary claims the red was already there, which the "+
+				"tool never established:\n%s", f.Summary)
+		}
+	}
+}

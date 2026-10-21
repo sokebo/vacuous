@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sokebo/vacuous/internal/adapters"
 	"github.com/sokebo/vacuous/internal/core"
 )
 
@@ -94,7 +95,7 @@ func UnsupportedTests(root string, files []string) []core.Finding {
 			Summary:  "这个仓有一部分测试是 shell 脚本 —— 我跑不了它们，所以没审",
 			Detail: strings.Join([]string{
 				"找到 " + itoa(len(shell)) + " 个 shell 驱动的测试文件。",
-				"这个工具目前只会跑 Go、Python（pytest）和 Node（jest/vitest）的测试；",
+				"这个工具目前只会跑 " + adapters.SupportedRunnersText("、") + " 的测试；",
 				"这一部分不在它的能力范围内，所以报告里没有它们的结论。",
 				"这不是说它们有问题 —— 是说这份报告没有覆盖到它们。",
 			}, "\n"),
@@ -112,7 +113,7 @@ func UnsupportedTests(root string, files []string) []core.Finding {
 			Summary:  "这个仓有一部分测试不是 Go/Python/Node 的 —— 我没审它们",
 			Detail: strings.Join([]string{
 				"找到 " + itoa(len(other)) + " 个其它形态的测试文件。",
-				"这个工具目前只会跑 Go、Python（pytest）和 Node（jest/vitest）的测试。",
+				"这个工具目前只会跑 " + adapters.SupportedRunnersText("、") + " 的测试。",
 				"这一部分不在它的能力范围内，所以报告里没有它们的结论。",
 			}, "\n"),
 			File:     other[0],

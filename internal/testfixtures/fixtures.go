@@ -751,3 +751,54 @@ func SwappedRedFixture(t *testing.T) *GoModule {
 	m.Commit(t, "fix: greet an empty name")
 	return m
 }
+
+// embedMetaSource is a package that embeds a file out of a directory that
+// is neither tracked by git nor one of the conventional build-output
+// directories the tool copies into a checkout.
+//
+// The parent commit has no embed at all, so a checkout of the parent
+// compiles. A checkout of the commit does not, because the file it needs
+// is not in the tree and not copied in.
+const embedMetaSource = `package fixture
+
+import _ "embed"
+
+//go:embed meta/version.txt
+var version string
+
+// Greet returns a greeting.
+func Greet(name string) string {
+	if name == "" {
+		return "hello, stranger"
+	}
+	return "hello, " + name
+}
+`
+
+// UnbuildableBaselineFixture builds a repository whose FIX COMMIT cannot be
+// built in a clean checkout, while its parent builds and runs fine.
+//
+// The counterfactual - the parent plus the test patch, fix removed - builds,
+// runs, and is red: the witness fails without the fix.
+//
+// The baseline - the commit itself - cannot compile, because the commit
+// embeds a file that git does not track and the tool does not copy into a
+// checkout.
+//
+// So the baseline never ran, and the question "was the red already there?"
+// has no answer. The tool must say "cannot tell". It must not say "the red
+// was already there" - the suite is green, and the only thing broken is the
+// checkout.
+func UnbuildableBaselineFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/unbuildablebaseline")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Init(t)
+	m.Write(t, ".gitignore", "meta/\n")
+	m.Write(t, "meta/version.txt", "v1\n")
+	m.Write(t, "greet.go", embedMetaSource)
+	m.Write(t, "greet_test.go", baseTest+witnessTestBody)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}

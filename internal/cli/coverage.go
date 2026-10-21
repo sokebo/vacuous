@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sokebo/vacuous/internal/adapters"
 	"github.com/sokebo/vacuous/internal/core"
 	"github.com/sokebo/vacuous/internal/detect"
 )
@@ -199,7 +200,7 @@ func harnessFinding(harness []detect.HarnessCommand, src, tests int) core.Findin
 	}
 	detail = append(detail, lines...)
 	detail = append(detail,
-		"这个工具只会驱动 go test / pytest / jest / vitest，跑不了它们。",
+		"这个工具只会驱动 "+adapters.SupportedRunnersText(" / ")+"，跑不了它们。",
 		"所以这份报告没有覆盖到这些检查 —— 不是这个仓没有检查，是我没看。",
 	)
 
