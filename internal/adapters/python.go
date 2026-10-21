@@ -1476,6 +1476,30 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// skipUnittestDir reports whether the suite discovery must not look into a
+// directory.
+//
+// The list is the directories that hold other people's code, or the test
+// data itself.
+//
+// "testdata" is in it for the reason 3.45 gives: a directory with that
+// name holds test DATA, not test code. The Go toolchain never builds it,
+// the static check never counts it, and the suite discovery must not run
+// it either. Running a fixture is not a neutral act - a fixture usually
+// assumes a layout the repository does not have, so it cannot be
+// imported where it sits, the run crashes, and the report blames the
+// real tests for a file that was never supposed to run.
+//
+// The name is matched exactly, at any depth: "testdata2" and a package
+// called "testutils" are ordinary code and must keep being scanned.
+func skipUnittestDir(base string) bool {
+	switch base {
+	case ".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "__pycache__", "testdata":
+		return true
+	}
+	return false
+}
+
 // UnittestSuites finds Python test suites that this tool cannot drive.
 //
 // The Python adapter drives pytest. A project that uses the standard
@@ -1518,8 +1542,7 @@ func UnittestSuites(root string) []string {
 		if !info.IsDir() {
 			return nil
 		}
-		switch filepath.Base(path) {
-		case ".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "__pycache__":
+		if skipUnittestDir(filepath.Base(path)) {
 			return filepath.SkipDir
 		}
 		for _, name := range []string{"pyproject.toml", "pytest.ini", "tox.ini"} {
@@ -1565,11 +1588,8 @@ func UnittestSuites(root string) []string {
 		if relErr != nil {
 			return nil
 		}
-		if rel != "." {
-			switch filepath.Base(path) {
-			case ".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "__pycache__":
-				return filepath.SkipDir
-			}
+		if rel != "." && skipUnittestDir(filepath.Base(path)) {
+			return filepath.SkipDir
 		}
 		if underPytest(rel) {
 			return filepath.SkipDir

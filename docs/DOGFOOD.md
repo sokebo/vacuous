@@ -1721,17 +1721,18 @@ pre-existing-failure，Summary 又开始说「这个红灯本来就在」；改�
   beta 1 条、gamma 7 条、delta 1 条、epsilon 1 条、zeta 1 条
   —— **全部一模一样**。修掉的是夹具，没碰到任何真信号。
 
-**记一笔（还没修，留给下一轮）**：同一个「testdata 不是代码」的判断，另外**两处**
-还不知道：
+**记一笔（还没修，留给下一轮）**：同一个「testdata 不是代码」的判断，**还有一处**
+不知道：
 
 - `internal/git/istest.go` 的 `isTestPath` —— 审计侧用它判断「改动的文件是不是
   测试」。改了它，「这次改动有测试跟着」这句话的判据就变了，牵动的是判决，不是
   噪声。
-- Python 适配器的套件发现（`UnittestSuites` 的目录遍历）—— Python 仓的
-  `testdata/` 夹具目录会被当成一个 unittest 套件去跑。
 
-两处的影响和改法都不一样，所以没有顺手改：前者动判决，后者动执行，都在别人的
-改动范围里。
+影响和改法跟别处不一样，所以没有顺手改：它动的是判决。
+
+> 同一份清单里的另外两处（Python 适配器的套件发现）后来修掉了，见 3.50 ——
+> 那条不是「同一个判断的另一处」那么简单：执行层跑夹具会**崩**，然后把夹具的
+> 锅扣到真测试头上。
 
 ---
 
@@ -1861,6 +1862,58 @@ pattern 是 `test_*.py` → 一个文件都没收集到 → 报告说
 > 这条修的是「清单自己会跑」。
 
 ---
+
+### 3.50 Python 适配器的套件发现不认识 testdata —— 夹具的锅扣到真测试头上
+
+**现象**：一个 Python 仓，根目录有真测试 `test_calc.py`，另有一个
+`testdata/` 目录放着别家仓的样本。工具审它，报的是：
+
+```
+[WARN] suite-crash   test_calc.py
+    测试套件没有跑起来 —— 它一个用例都没执行，所以什么都没证明
+    证据: 命令: python3 -m unittest -v test_calc && python3 -m unittest discover -v -s testdata -t testdata -p *_test.py
+          testdata/sample_test.py: the test module could not be imported: ModuleNotFoundError: No module named 'fixtures'
+    怎么修: 先让这个测试文件自己能跑起来（修 import、把 beforeAll 里的副作用挪走），再审这个提交
+```
+
+**根因**：`UnittestSuites` 遍历目录时跳过的清单里没有 `testdata`。于是
+`testdata/` 被当成一个 unittest 套件去跑。
+
+**跑一个夹具不是中性的事**：夹具是**别家仓的样本**，它假设的目录结构本仓
+没有，所以它在自己的位置上是 import 不了的 → 套件崩 → 判决变成「无法判定」。
+
+**后果**：**误伤**。报告指名 `test_calc.py`，说它「一个用例都没执行」，让它
+「修 import」—— 而 `test_calc.py` 的 import 根本没坏。真正坏的是那个**从
+来就不该被运行**的夹具。
+
+而且这个误伤**会掩盖真判决**：同一个仓、同一批提交，夹具没跑起来时工具说
+「无法判定」；夹具被跳过之后，它才说出那句真话 ——「撤掉这几行、只留测试
+后，2 个测试全部通过」，也就是「这个改动没有测试看着」。
+
+**口径不是新定的**：3.45 已经把「testdata 里的文件不是测试代码」写进了
+静态检查那层（`detect.isTestPath`），Go 的包解析那层也早就不看它
+（`adapters.skipPackageDir`）。**只有执行这一层还在跑它** —— 两半自相
+矛盾：一边说那些文件不是测试，一边把它们当测试跑，跑了还崩溃。
+
+**修复**：套件发现跳过 `testdata`，名字**精确匹配**（`testdata2`、
+`testutils` 是普通代码，照样要扫）。顺带把那个目录清单收成一份
+（`skipUnittestDir`）—— 原来同一条清单在这个函数里写了两遍。
+
+**负对照**（实测）：
+
+| 改坏的地方 | 变红的用例 |
+|---|---|
+| `testdata` 不再被跳过 | `TestATestdataDirectoryIsNotASuite`、`TestAFixtureDirectoryDoesNotBreakTheRun` |
+| 跳过规则改成前缀匹配（`testdata2` 也被跳过） | `TestATestdataDirectoryIsNotASuite` |
+
+**现场验证**（真仓，不是夹具）：同一个仓，修复前 `suite-crash`（指责真测试
+「修 import」），修复后 `vacuous-test`（诚实的判决：没有测试看着这个改动）。
+
+> **一个差点让我误判的细节**：`verdictFrom` 里有一条短路 —— 套件崩了但**别的
+> 套件变红了**，以红灯为准。所以「真测试抓得住 bug」的时候，夹具崩溃被
+> 淹掉了，判决反而是对的。危害出现在**真测试没抓住**的时候：那时工具本该
+> 说「空洞」，却说了「套件崩了」。**所以造复现用例时，先确认方向对不对** ——
+> 我第一版把「先坏后修」建反了，工具判「空洞」是对的，我还以为它坏了。
 
 ## 4. 两次独立复核
 
@@ -2307,7 +2360,7 @@ no such file or directory)
 的**（3.40 的教训）。三个真缺陷**全部**是从「看起来一致」的地方挖出来的 ——
 它们在受审的 6 个仓里一个都不显形，因为那些仓一个 Python 测试都没有。
 
-**找到的四条缺陷**（详见 3.46 – 3.49）：
+**找到的五条缺陷**（详见 3.46 – 3.50）：
 
 | # | 缺陷 | 方向 |
 |---|---|---|
@@ -2315,9 +2368,21 @@ no such file or directory)
 | 3.47 | 从根目录跑套件会把底下的包拖进来 → **假 import 报错** | **误伤** |
 | 3.48 | `*_test.py` 命名的测试「数得出来、跑不起来」 | 漏报 |
 | 3.49 | 运行器清单可以静默缩水（复核发现的假负对照） | 谎话 |
+| 3.50 | Python 套件发现不认识 testdata → **夹具的锅扣到真测试头上** | **误伤** |
 
-3.47 是这一轮唯一的**误伤**：一个健康的仓，工具报它「测试套件没跑起来」，
-还附一条「先修 import」的提示 —— 而 import 根本没坏。
+3.47 和 3.50 是这一轮的两条**误伤**：都是工具指名一个**没坏的**测试文件，
+让它「修 import」—— 而 import 根本没坏。
+
+**3.50 是并发轮次交过来的线索**：另一个会话在 3.45 里把「静态检查那层已经
+认识 testdata 了，但 Python 适配器的套件发现还不认识」记了下来，并明确说
+「它就在你正在改的文件里，我插进去就是在你的活上动手」。它还给了一个取舍
+提醒：排除 testdata 之后，**真的**把测试放在 testdata/ 里的仓，工具就看不见
+那些测试了。
+
+**这个取舍不用另定口径** —— 3.45 已经定了：testdata 里的文件**不是测试
+代码**（静态检查不数它、Go 的包解析不看它）。执行这一层还去跑它，是两半
+自相矛盾：一边说那些文件不是测试，一边把它们当测试跑，跑了还崩溃。所以
+这条是**把执行层对齐到已有的口径**，不是新开一个口径。
 
 **负对照**（全部实测：改坏 → 变红 → 改回）：
 
@@ -2332,6 +2397,8 @@ no such file or directory)
 | 清单里删掉 `go test` / `jest` | `TestTheClaimedRunnersAreExactlyTheOnesTheToolDrives` |
 | CLI 清单改回手写 | `TestTheNoRunnerMessageNamesEveryRunnerTheToolCanDrive` |
 | 恢复「只会驱动 pytest」 | `TestTheUnittestMessageDoesNotSayTheToolCannotDriveUnittest` |
+| `testdata` 不再被跳过 | `TestATestdataDirectoryIsNotASuite` + `TestAFixtureDirectoryDoesNotBreakTheRun` |
+| 跳过规则改成前缀匹配 | `TestATestdataDirectoryIsNotASuite` |
 
 **两条关于负对照本身的教训**（都是这一轮现场撞上的）：
 
