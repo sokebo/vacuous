@@ -76,9 +76,6 @@ const (
 	// VerdictSkipped means the tests did not execute at all, so they
 	// witnessed nothing.
 	VerdictSkipped Verdict = "skipped"
-	// VerdictBroken means the tests failed even with the fix in place.
-	// The commit itself is broken, which is a different problem.
-	VerdictBroken Verdict = "broken"
 	// VerdictEnvironment means the run could not produce evidence because
 	// the checkout was missing something the build needs — a generated
 	// artefact, a submodule, a vendored directory. It says nothing about
@@ -404,12 +401,9 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		res.SourceChange = change
 	}
 
-	// The tool arguing with itself. If the conclusion and the raw output
-	// disagree, the tool does not get to pick a winner - it says so.
-	if reason := checkConsistency(run, res.Verdict); reason != "" {
-		res.Verdict = VerdictContradictory
-		res.Contradiction = reason
-	}
+	// The tool arguing with itself. classify() already refused to
+	// conclude on contradictory evidence; this records why.
+	res.Contradiction = run.contradiction
 
 	res.Findings = append(res.Findings, verdictFindings(res, run)...)
 	return res, nil
@@ -534,6 +528,9 @@ type runOutcome struct {
 	result core.RunResult
 	// failureTail is the tail of the output when something failed.
 	failureTail string
+	// contradiction explains why the verdict could not be trusted, when
+	// the runner's own output disagrees with the counts.
+	contradiction string
 }
 
 // runCounterfactual builds the "fix removed, test kept" tree and runs the
@@ -648,7 +645,26 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 //	moved on, and every commit that touches it now fails to build. That
 //	is an environment problem, and blaming the test for it is exactly
 //	wrong.
+//
+// classify turns a run into a verdict, and then checks that verdict against
+// the runner's own output.
+//
+// The check is part of the verdict, not a postscript on it: a verdict that
+// the evidence contradicts must never be returned as a verdict.
 func classify(run *runOutcome, isTest func(string) bool) Verdict {
+	if run == nil {
+		return VerdictNotApplicable
+	}
+	verdict := verdictFrom(run, isTest)
+	if reason := checkConsistency(run, verdict); reason != "" {
+		run.contradiction = reason
+		return VerdictContradictory
+	}
+	return verdict
+}
+
+// verdictFrom computes the verdict from the evidence.
+func verdictFrom(run *runOutcome, isTest func(string) bool) Verdict {
 	if run == nil {
 		return VerdictNotApplicable
 	}
@@ -709,19 +725,18 @@ func classify(run *runOutcome, isTest func(string) bool) Verdict {
 	return VerdictVacuous
 }
 
-// checkConsistency asks whether the raw output supports the verdict.
+// checkConsistency asks whether the runner's own output supports the
+// verdict.
 //
-// This is the tool arguing with itself, and it is the most important
-// check in the whole program.
+// The counts and the raw output come from different places: the counts are
+// parsed out of the runner's event stream, the raw output is what the runner
+// printed. If the two disagree, the parse is wrong - and a tool that
+// concludes something on top of a wrong parse is the failure mode this
+// project exists to avoid.
 //
-// The bug that motivated it: the tool reported "36 tests all passed" on a
-// real commit, while its own evidence said "FAIL ... [build failed]". The
-// package under examination had not executed a single test, and the tool
-// accused a test of proving nothing. Nothing in the output flagged the
-// contradiction - the report looked completely normal, and it was wrong.
-//
-// So when the verdict and the output disagree, the tool does not pick a
-// side. It refuses to conclude, and it shows both.
+// It is not a tautology. A parser that mistakes a build failure for a
+// passing test produces "everything passed" while the output says FAIL.
+// That is exactly the bug this tool shipped with once.
 //
 // The returned string is the reason; an empty string means the verdict
 // holds up.
@@ -729,19 +744,26 @@ func checkConsistency(run *runOutcome, verdict Verdict) string {
 	if run == nil {
 		return ""
 	}
-	r := run.result
-	pass, fail, skip, _ := r.Counts()
-	ranClean := verdict == VerdictProven || verdict == VerdictVacuous
+	raw := run.result.RawOutput
+	if strings.TrimSpace(raw) == "" {
+		// No raw output to check against (some adapters do not capture
+		// it). Nothing to contradict.
+		return ""
+	}
 
-	switch {
-	case ranClean && len(r.BuildErrors) > 0:
-		return "结论说测试套件跑通了，但原始输出里有编译错误 —— 那个包一次都没跑起来"
-	case verdict == VerdictProven && fail == 0:
-		return "结论说有测试变红了，但原始输出里没有失败的测试"
-	case verdict == VerdictVacuous && fail > 0:
-		return "结论说全部通过，但原始输出里有失败的测试"
-	case ranClean && pass+fail+skip == 0:
-		return "结论说测试跑过了，但原始输出里一个测试都没有"
+	mentionsFailure := strings.Contains(raw, "FAIL") ||
+		strings.Contains(raw, "build failed") ||
+		strings.Contains(raw, "panic:")
+
+	switch verdict {
+	case VerdictProven:
+		if !mentionsFailure {
+			return "结论说有测试变红了，但运行器自己的输出里没有失败"
+		}
+	case VerdictVacuous:
+		if mentionsFailure {
+			return "结论说测试全部通过，但运行器自己的输出里有失败 —— 解析多半错了"
+		}
 	}
 	return ""
 }
@@ -969,20 +991,8 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			Repro:    reproFor(res, run),
 			Hint:     "这是工具的问题。请把它当成工具的 bug 报回来，别当成代码的问题。",
 		})
-
-	case VerdictBroken:
-		out = append(out, core.Finding{
-			Kind:     core.KindBrokenChange,
-			Severity: core.SevCritical,
-			Summary:  "这个提交自己的测试就是红的 —— 修复本身坏了",
-			Detail: fmt.Sprintf("提交 %s 在带着修复的情况下测试就已经失败了。",
-				res.Commit.Short),
-			File:     testFile,
-			Evidence: evidenceFor(run),
-			Repro:    reproFor(res, run),
-			Hint:     "先修好这个提交，再谈它有没有被测试覆盖",
-		})
 	}
+
 	return out
 }
 
