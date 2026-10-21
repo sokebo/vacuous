@@ -694,3 +694,46 @@ func TestAuditDoesNotAccuseAVendoredDependencyBump(t *testing.T) {
 		t.Fatalf("verdict = %q — a vendored dependency bump has nothing to judge", res.Verdict)
 	}
 }
+
+// TestAuditReportsARedSuiteAtTheCommitItself is the state that used to be
+// unreachable.
+//
+// The counterfactual only ever ran the "fix removed" side, so "the suite is
+// red even WITH the fix" could never come out of this tool. The baseline
+// makes it come out - and it is worth a finding of its own: a commit whose
+// own tree has a red suite is a commit that may have broken the suite.
+//
+// What the tool does NOT claim is that the commit caused it. The parent's
+// state is not known, so "the suite is red at this commit" is a fact and
+// "this commit broke it" is not.
+func TestAuditReportsARedSuiteAtTheCommitItself(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.PreExistingFailureFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	var found *core.Finding
+	for i := range res.Findings {
+		if res.Findings[i].Kind == core.KindPreExistingFailure {
+			found = &res.Findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a pre-existing-failure finding, got: %+v", res.Findings)
+	}
+	// The suite is red at the commit itself - that is a warning, not a
+	// footnote.
+	if found.Severity != core.SevWarn {
+		t.Errorf("severity = %v, want %v — the suite is red at the commit "+
+			"itself, and that is worth a warning", found.Severity, core.SevWarn)
+	}
+	if !strings.Contains(found.Summary, "套件本身就是红的") {
+		t.Errorf("the summary must lead with the fact, got: %q", found.Summary)
+	}
+}
