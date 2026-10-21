@@ -91,6 +91,32 @@ func TestTheToolClaimsNoRunnerItCannotDrive(t *testing.T) {
 	}
 }
 
+// TestTheClaimedRunnersAreExactlyTheOnesTheToolDrives is the direction
+// that can be lost without a trace.
+//
+// The test above checks that the list holds no runner the tool cannot
+// drive. This one checks the other half: that the list still holds every
+// runner the tool does drive.
+//
+// A runner quietly removed from the list is a runner the report stops
+// claiming to cover - and the reader is told their tests were never
+// judged, when in fact they were. Every test in this file compared the
+// list with itself, so the list could shrink to nothing and the file
+// would still be green.
+func TestTheClaimedRunnersAreExactlyTheOnesTheToolDrives(t *testing.T) {
+	want := []string{"go test", "pytest", "python -m unittest", "jest", "vitest"}
+
+	if len(SupportedRunners) != len(want) {
+		t.Fatalf("SupportedRunners = %v, want %v: a runner that is missing from "+
+			"the list is a runner the report stops claiming to cover", SupportedRunners, want)
+	}
+	for _, r := range want {
+		if !claimsRunner(r) {
+			t.Errorf("the tool drives %q but does not claim it: %v", r, SupportedRunners)
+		}
+	}
+}
+
 // claimsRunner reports whether the list names the runner.
 func claimsRunner(runner string) bool {
 	for _, r := range SupportedRunners {

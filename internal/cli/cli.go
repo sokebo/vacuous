@@ -246,21 +246,10 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 
 	if opts.Mode == "audit" || opts.Mode == "all" {
 		if adapter == nil {
-			// Say which of the two situations this is. "这个仓有测试，但工具
-			// 跑不了" and "这个仓压根没有测试" lead the reader to opposite
-			// next steps, and the first one is easy to miss.
-			if suites := adapters.UnittestSuites(root); len(suites) > 0 {
-				return nil, fmt.Errorf(
-					"这个仓的 Python 测试用的是 python -m unittest（%s），"+
-						"这个工具现在只会驱动 pytest，跑不了它们；"+
-						"先用 --mode check 看静态体检的结果",
-					strings.Join(suites, ", "))
-			}
-			return nil, fmt.Errorf(
-				"no supported test runner found in %s "+
-					"(supported: go, python/pytest, node/jest|vitest); "+
-					"run with --mode check for the static analysis instead",
-				root)
+			// Say which of the two situations this is. The sentence
+			// itself, and why it reads the way it does, live in
+			// noRunnerMessage.
+			return nil, fmt.Errorf("%s", noRunnerMessage(root, adapters.UnittestSuites(root)))
 		}
 		if err := runAudit(ctx, opts, repo, adapter, rep); err != nil {
 			return nil, err
@@ -268,6 +257,39 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 	}
 
 	return rep, nil
+}
+
+// noRunnerMessage builds the sentence the tool says when it cannot drive
+// a repository's tests.
+//
+// Two situations, two sentences. "这个仓的测试是 unittest，但这次没找到能
+// 驱动它们的运行器" and "这个仓压根没有测试" lead the reader to opposite
+// next steps, and the first one is easy to miss.
+//
+// The list of runners the tool CAN drive comes from the one place that
+// holds it (adapters.SupportedRunners). This message used to spell the
+// list out by hand, and when the unittest adapter landed it kept saying
+// "go, python/pytest, node/jest|vitest" - so a reader whose tests are
+// unittest read a promise that the tool cannot see them, and moved on.
+// The tool had in fact driven them. Same lie as 3.44, one place over.
+//
+// The same sentence used to say the tool "only drives pytest", which
+// stopped being true the moment the unittest adapter landed.
+func noRunnerMessage(root string, suites []string) string {
+	if len(suites) > 0 {
+		return fmt.Sprintf(
+			"这个仓的 Python 测试用的是 python -m unittest（%s），"+
+				"但这次没有找到能驱动它们的运行器"+
+				"（这个工具能驱动的是 %s）；"+
+				"先用 --mode check 看静态体检的结果",
+			strings.Join(suites, ", "),
+			adapters.SupportedRunnersText(" / "))
+	}
+	return fmt.Sprintf(
+		"no supported test runner found in %s "+
+			"(supported: %s); "+
+			"run with --mode check for the static analysis instead",
+		root, adapters.SupportedRunnersText(", "))
 }
 
 // runAudit performs the counterfactual audit over the selected commits.
