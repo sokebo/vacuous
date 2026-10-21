@@ -27,7 +27,7 @@ FILES=("${@:2}")
 	printf '%-22s %-10s %6s %6s %8s %8s %8s %6s %s\n' 仓 来源 提交 判定数 不适用 结论数 严格判定 只读 结论
 	for f in "${FILES[@]}"; do
 		[ -f "$f" ] || continue
-		# 来源：example 的仓和公开仓可能同名（两个 terraform），要分得清。
+		# 来源：内部仓和公开仓可能同名（有两个都叫 terraform），要分得清。
 		case "$f" in
 			*vacuous-public*) src=公开仓 ;;
 			*) src=example ;;
