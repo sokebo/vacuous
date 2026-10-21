@@ -24,13 +24,18 @@ FILES=("${@:2}")
 	echo
 	echo "门槛: 提交数 >= 500；窗口: 最近 20 个提交；只读: 工作树/暂存区/HEAD/所有 ref/worktree 列表逐字未变"
 	echo
-	printf '%-22s %6s %6s %8s %8s %8s %8s %6s %s\n' 仓 提交 判定数 不适用 结论数 严格判定 只读 结论
+	printf '%-22s %-10s %6s %6s %8s %8s %8s %6s %s\n' 仓 来源 提交 判定数 不适用 结论数 严格判定 只读 结论
 	for f in "${FILES[@]}"; do
 		[ -f "$f" ] || continue
+		# 来源：example 的仓和公开仓可能同名（两个 terraform），要分得清。
+		case "$f" in
+			*vacuous-public*) src=公开仓 ;;
+			*) src=example ;;
+		esac
 		# 每个仓只留最后一行
-		awk -F'\t' '{ row[$1] = $0 } END { for (k in row) print row[k] }' "$f" |
+		awk -F'\t' -v s="$src" '{ row[$1] = $0 } END { for (k in row) print row[k] }' "$f" |
 			sort -t$'\t' -k2 -rn |
-			awk -F'\t' '{printf "%-22s %6s %6s %8s %8s %8s %8s %6s %s\n", $1,$2,$5,$6,$7,$8,$9,$10}'
+			awk -F'\t' -v s="$src" '{printf "%-22s %-10s %6s %6s %8s %8s %8s %6s %s\n", $1,s,$2,$5,$6,$7,$8,$9,$10}'
 	done
 	echo
 	echo "## 怎么读这张表"
