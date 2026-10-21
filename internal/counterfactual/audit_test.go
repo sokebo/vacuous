@@ -514,3 +514,96 @@ func TestAuditDoesNotClaimAProofFromAPreExistingRed(t *testing.T) {
 		t.Fatalf("expected a pre-existing-failure finding, got: %+v", res.Findings)
 	}
 }
+
+// TestAuditComparesLikeWithLike is the rule.
+//
+// The baseline is only worth running if it is the same tree as the
+// counterfactual, with the fix put back. That means the same preparation:
+// the untracked build inputs copied in, the sibling dependencies staged.
+//
+// Otherwise the two runs are not a comparison but two different
+// experiments. A baseline that was never set up cannot compile, and
+// "the baseline is red" then means "the baseline never ran" - while the
+// tool reports it as "this red was already there", which is a statement
+// about the repository that nobody checked.
+//
+// The consequence is not a false accusation - it is a false alibi, and it
+// costs the tool its only positive result: on any repository that needs a
+// generated file, no commit can ever be shown to be guarded.
+func TestAuditComparesLikeWithLike(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.GeneratedInputFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictProven {
+		t.Fatalf("verdict = %q, want %q — the counterfactual is red (the "+
+			"witness fails without the fix) and the baseline is green (the fix "+
+			"is in place), so the red really is the fix's\nfindings: %+v",
+			res.Verdict, VerdictProven, res.Findings)
+	}
+}
+
+// TestAuditKeepsARealWitnessBesideAPreExistingRed is the other half.
+//
+// The suite is red already AND the fix commit adds a real witness. The
+// counterfactual has two failures, the baseline has one. A comparison of
+// the COUNTS says "nothing new" and throws the witness away - and a real
+// witness reported as "nothing to see here" is as wrong as the opposite.
+//
+// The comparison that matters is on the tests themselves: the witness fails
+// in the counterfactual and not in the baseline.
+func TestAuditKeepsARealWitnessBesideAPreExistingRed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.PreExistingRedPlusWitnessFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictProven {
+		t.Fatalf("verdict = %q, want %q — the witness fails without the fix "+
+			"and passes with it, so it is a witness even though the suite was "+
+			"already red\nfindings: %+v",
+			res.Verdict, VerdictProven, res.Findings)
+	}
+}
+
+// TestAuditFindsAWitnessWhenTheCountsMatch is the sharpest form of the rule.
+//
+// Here the counterfactual and the baseline have the SAME NUMBER of failing
+// tests - two each - and they are not the same two. The counterfactual fails
+// the witness; the baseline fails a test that pins the old behaviour.
+//
+// A comparison of the counts says "nothing new" and the witness is lost.
+// The comparison that matters is on the tests: the witness fails without the
+// fix and passes with it.
+func TestAuditFindsAWitnessWhenTheCountsMatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.SwappedRedFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictProven {
+		t.Fatalf("verdict = %q, want %q — the witness fails without the fix and "+
+			"passes with it, even though both runs have the same number of "+
+			"failures\nfindings: %+v",
+			res.Verdict, VerdictProven, res.Findings)
+	}
+}
