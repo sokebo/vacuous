@@ -191,6 +191,12 @@ ScopeFor(changedNonTestFiles []string) []string
 两个问题不同，答案就可以不同 —— 但**必须写下来**，否则下一轮会把它当 bug
 「修」掉。
 
+**「不是代码」这条判断是有代价的，而且代价是刻意接受的**：Python / Node 的
+testdata 文件**可能**被真测试 import（Go 不可能 —— 工具链保证不编译它）。
+这时「只改了这个文件」的提交会落进「既不是测试也不是代码」，那条
+`no-test-for-fix` 的**真阳性就被吞掉**。要判准需要 import 图，静态判断看不到；
+**不做 import 分析是刻意的** —— 猜错了就是误伤。详见 `docs/DOGFOOD.md` 3.51。
+
 ### 4.3 `internal/detect` 须导出
 
 ```go

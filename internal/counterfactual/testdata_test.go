@@ -23,6 +23,18 @@ import (
 //
 // The audit's own check comes before the adapter's opinion on purpose: the
 // fact is stronger than any adapter's guess about it.
+//
+// The price is paid knowingly, and this test is where that price is
+// pinned: a testdata file that a real test imports - possible in Python
+// and Node, impossible in Go - now counts as neither test nor source, so a
+// commit that only edits it produces no finding at all. Before the rule
+// existed it produced a "no test is watching this" finding, which was
+// right in that case.
+//
+// Getting it right would take an import graph, which a static pass does
+// not have. Guessing wrong costs a false accusation - the expensive kind -
+// so the tool declines to guess. The direction of the error is deliberate:
+// a missed finding, not a wrong one.
 func TestAuditorTreatsTestDataAsNeitherTestNorCode(t *testing.T) {
 	for _, adapter := range []core.Adapter{
 		adapters.NewGo(),
