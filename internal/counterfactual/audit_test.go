@@ -463,3 +463,54 @@ func snapshotTree(t *testing.T, dir string) string {
 	}
 	return b.String()
 }
+
+// TestAuditDoesNotClaimAProofFromAPreExistingRed is the rule.
+//
+// The counterfactual answers "is anything red without the fix". It does not
+// answer "did removing the fix make it red". A suite that was already red,
+// or a flaky test, answers the first question and says nothing about the
+// second.
+//
+// Without the baseline the tool would accuse the witness of guarding a fix
+// it never watched - and the reader's next move would be to delete a test
+// that was fine. That is the most expensive mistake available to this tool.
+//
+// Found on a real public repository: a flaky test in the suite made the
+// counterfactual red, and the commit was reported as "vacuous" when it was
+// not.
+func TestAuditDoesNotClaimAProofFromAPreExistingRed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.PreExistingFailureFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict == VerdictProven {
+		t.Fatalf("verdict = %q — the suite is red with the fix in place too, "+
+			"so the red says nothing about this fix\nfindings: %+v",
+			res.Verdict, res.Findings)
+	}
+	if res.Verdict != VerdictPreExistingFailure {
+		t.Fatalf("verdict = %q, want %q\nfindings: %+v",
+			res.Verdict, VerdictPreExistingFailure, res.Findings)
+	}
+
+	// The finding has to say why, not just that it cannot tell.
+	found := false
+	for _, f := range res.Findings {
+		if f.Kind == core.KindPreExistingFailure {
+			found = true
+			if f.Detail == "" {
+				t.Errorf("the pre-existing-failure finding must explain itself")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a pre-existing-failure finding, got: %+v", res.Findings)
+	}
+}

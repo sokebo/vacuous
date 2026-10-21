@@ -129,6 +129,10 @@ const (
 	// something. Filing them under one name makes the report blame the
 	// developer's laptop for a test file with a broken import.
 	KindSuiteCrash Kind = "suite-crash"
+	// KindPreExistingFailure means the counterfactual was red and the same
+	// suite is red with the fix in place, so the red says nothing about
+	// whether the test guards this fix.
+	KindPreExistingFailure Kind = "pre-existing-failure"
 )
 
 // Finding is one observation. Every detector in vacuous emits these and

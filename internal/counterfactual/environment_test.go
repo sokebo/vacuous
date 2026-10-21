@@ -136,6 +136,8 @@ func TestEnvironmentPatternTableCoversEveryPattern(t *testing.T) {
 		{"dial tcp", "dial tcp 10.0.0.1:443: connect: connection timed out"},
 		{"i/o timeout", "read tcp: i/o timeout"},
 		{"connection refused", "dial tcp 127.0.0.1:443: connect: connection refused"},
+		{"toolchain not available", "go: download go1.28.0 (darwin/arm64): toolchain not available"},
+		{"go.mod requires go >=", "go: go.mod requires go >= 1.28 (running go 1.26.5; GOTOOLCHAIN=local)"},
 	}
 
 	for _, tc := range cases {

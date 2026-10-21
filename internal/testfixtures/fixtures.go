@@ -587,3 +587,35 @@ func SkippedFixture(t *testing.T) *GoModule {
 	m.Commit(t, "fix: greet an empty name, with a corpus-driven test")
 	return m
 }
+
+// alwaysFailingTest is a test that fails no matter what the code does.
+//
+// It is the shape that makes a counterfactual run ambiguous: the run is red,
+// but the red is not about the fix. A suite that was already red - or a
+// flaky test - answers "is anything red without the fix" and says nothing
+// about whether removing the fix is what made it red.
+const alwaysFailingTest = `
+func TestAlwaysFails(t *testing.T) {
+	t.Fatal("this test is red no matter what")
+}
+`
+
+// PreExistingFailureFixture builds a repository whose test suite is already
+// red before the fix, and whose fix commit also adds a real witness.
+//
+// The counterfactual (parent plus the test patch, fix removed) is red - the
+// always-failing test is in it. So is the baseline (the commit itself, fix
+// in place). Nothing can be concluded about the witness, and saying "the
+// witness guards the fix" would be an accusation the evidence does not
+// support.
+func PreExistingFailureFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/preexisting")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest+alwaysFailingTest)
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest+alwaysFailingTest+witnessTestBody)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
