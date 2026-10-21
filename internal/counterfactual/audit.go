@@ -185,6 +185,30 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 
 	res := &Result{Commit: info, Changed: changed}
 
+	// A merge commit is not a change anybody made. It is the integration of
+	// a branch whose commits were already examined one by one, and diffing
+	// it against its first parent attributes the whole branch to the merge.
+	//
+	// The consequence is not academic: on a repository that merges often,
+	// every single merge gets reported as "code changed, no test followed",
+	// and the gate stops being able to let anything through. The commits
+	// on the branch are the ones that deserve the question.
+	if parents, err := a.parentCount(ctx, sha); err == nil && parents > 1 {
+		res.Verdict = VerdictNotApplicable
+		res.Findings = append(res.Findings, core.Finding{
+			Kind:     core.KindNotApplicable,
+			Severity: core.SevInfo,
+			Summary:  "这是合并提交 —— 里面的改动在分支的各个提交里已经审过了",
+			Detail: fmt.Sprintf(
+				"提交 %s 有 %d 个父提交，是一次合并。\n"+
+					"它带来的改动属于分支上的那些提交，那些提交各自会被单独审计。\n"+
+					"把合并提交本身当成一次「改了代码」的改动去指责，是算错了对象。",
+				info.Short, parents),
+			Hint: "要看这次合并带来的问题，去看分支上那几个提交",
+		})
+		return res, nil
+	}
+
 	// The first commit of a repository has no parent, and the experiment
 	// needs one: the fix has to be taken away from somewhere.
 	//
@@ -326,6 +350,23 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 
 	res.Findings = append(res.Findings, verdictFindings(res, run)...)
 	return res, nil
+}
+
+// parentCount returns how many parents a commit has.
+//
+// A root commit has none, an ordinary commit has one, and a merge has two
+// or more. An error means "could not tell", and the caller must not turn
+// that into a claim either way.
+func (a *Auditor) parentCount(ctx context.Context, sha string) (int, error) {
+	out, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-list", "--parents", "-n", "1", sha)
+	if err != nil {
+		return 0, fmt.Errorf("read parents of %s: %w", sha, err)
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("%s is not a commit", sha)
+	}
+	return len(fields) - 1, nil
 }
 
 // hasParent reports whether a commit has a parent commit.
