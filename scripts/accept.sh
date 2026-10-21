@@ -30,9 +30,9 @@ LIMIT=${ACCEPT_LIMIT:-20}
 WORK=${ACCEPT_WORK:-/tmp/vacuous-accept}
 SKIP_CLONE=${ACCEPT_SKIP_CLONE:-0}
 
-mkdir -p "$WORK"
-LOG="$WORK/results.tsv"
-touch "$LOG"
+mkdir -p "${WORK}"
+LOG="${WORK}/results.tsv"
+touch "${LOG}"
 
 # 私有仓需要 GOPRIVATE；本地 replace 依赖需要 GOPROXY=direct。
 export GOPRIVATE="${GOPRIVATE:-github.com/*/*}"
@@ -57,24 +57,24 @@ fingerprint() {
 	git worktree list | md5
 }
 
-# accept_one 审一个仓，结果追加到 $LOG。
+# accept_one 审一个仓，结果追加到 ${LOG}。
 accept_one() {
 	local name=$1 dir=$2 total=$3
-	log "── $name ──"
+	log "── ${name} ──"
 
-	cd "$dir" || return
+	cd "${dir}" || return
 	local before after
 	before=$(fingerprint)
 
-	"$V" --mode check --json > "$WORK/$name.check.json" 2>"$WORK/$name.check.err"
+	"$V" --mode check --json > "${WORK}/${name}.check.json" 2>"${WORK}/${name}.check.err"
 	local check_exit=$?
 
-	"$V" --mode audit --limit "$LIMIT" --json > "$WORK/$name.audit.json" 2>"$WORK/$name.audit.err"
+	"$V" --mode audit --limit "$LIMIT" --json > "${WORK}/${name}.audit.json" 2>"${WORK}/${name}.audit.err"
 	local audit_exit=$?
 
 	# 判定数 + 不适用数 = 审过的提交数。
 	local judged na
-	judged=$(python3 - "$WORK/$name.audit.json" <<'PY'
+	judged=$(python3 - "${WORK}/${name}.audit.json" <<'PY'
 import json, sys
 try:
     s = json.load(open(sys.argv[1])).get("summary", {})
@@ -83,7 +83,7 @@ except Exception:
     print(0)
 PY
 )
-	na=$(python3 - "$WORK/$name.audit.json" <<'PY'
+	na=$(python3 - "${WORK}/${name}.audit.json" <<'PY'
 import json, sys
 try:
     print(int(json.load(open(sys.argv[1])).get("summary", {}).get("not_applicable", 0)))
@@ -100,11 +100,11 @@ PY
 	local ok=PASS
 	[ "$check_exit" = "2" ] && ok=FAIL
 	[ "$audit_exit" = "2" ] && ok=FAIL
-	[ "$ro" != "SAME" ] && ok=FAIL
-	[ $((judged + na)) -ne "$LIMIT" ] && [ "$total" -ge "$LIMIT" ] && ok=FAIL
+	[ "${ro}" != "SAME" ] && ok=FAIL
+	[ $((judged + na)) -ne "$LIMIT" ] && [ "${total}" -ge "$LIMIT" ] && ok=FAIL
 
 	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-		"$name" "$total" "$check_exit" "$audit_exit" "$judged" "$na" "$ro" "$ok" >> "$LOG"
+		"${name}" "${total}" "$check_exit" "$audit_exit" "${judged}" "${na}" "${ro}" "${ok}" >> "${LOG}"
 	cd / || exit 1
 }
 
@@ -112,12 +112,12 @@ PY
 if [ "${1:-}" = "--local" ]; then
 	shift
 	for dir in "$@"; do
-		name=$(basename "$dir")
-		[ -d "$dir/.git" ] || { log "跳过 $name（不是 git 仓）"; continue; }
-		total=$(cd "$dir" && git rev-list --count HEAD 2>/dev/null || echo 0)
-		accept_one "$name" "$dir" "$total"
+		name=$(basename "${dir}")
+		[ -d "${dir}/.git" ] || { log "跳过 ${name}（不是 git 仓）"; continue; }
+		total=$(cd "${dir}" && git rev-list --count HEAD 2>/dev/null || echo 0)
+		accept_one "${name}" "${dir}" "${total}"
 	done
-	echo "结果: $LOG"
+	echo "结果: ${LOG}"
 	exit 0
 fi
 
@@ -125,36 +125,36 @@ fi
 ORG=${1:?用法: scripts/accept.sh <org> | --local <目录> ...}
 shift
 
-repos=$(gh repo list "$ORG" --limit 100 --json name,diskUsage \
+repos=$(gh repo list "${ORG}" --limit 100 --json name,diskUsage \
 	--jq '.[] | "\(.name)\t\(.diskUsage)"' | sort -t$'\t' -k2 -rn | cut -f1)
 
 for name in $repos; do
-	if grep -q "^$name	" "$LOG" 2>/dev/null; then
-		log "── $name （已跑过，跳过）──"
+	if grep -q "^${name}	" "${LOG}" 2>/dev/null; then
+		log "── ${name} （已跑过，跳过）──"
 		continue
 	fi
 
-	total=$(count_commits "$ORG" "$name")
-	[ -z "$total" ] && total=0
-	if [ "$total" -lt "$MIN_COMMITS" ]; then
-		log "── $name（$total 提交，低于门槛 $MIN_COMMITS，跳过）──"
+	total=$(count_commits "${ORG}" "${name}")
+	[ -z "${total}" ] && total=0
+	if [ "${total}" -lt "$MIN_COMMITS" ]; then
+		log "── ${name}（${total} 提交，低于门槛 $MIN_COMMITS，跳过）──"
 		continue
 	fi
 
-	dir="$WORK/$name"
+	dir="${WORK}/${name}"
 	if [ "$SKIP_CLONE" = "1" ]; then
-		[ -d "$dir/.git" ] || { log "── $name（本地没有克隆，跳过）──"; continue; }
+		[ -d "${dir}/.git" ] || { log "── ${name}（本地没有克隆，跳过）──"; continue; }
 	else
-		log "── $name（$total 提交）克隆中 ──"
-		rm -rf "$dir"
-		if ! git clone -q --depth=40 --single-branch "git@github.com:$ORG/$name.git" "$dir" 2>/dev/null; then
-			printf '%s\t%s\tCLONE_FAIL\t-\t-\t-\t-\tFAIL\n' "$name" "$total" >> "$LOG"
+		log "── ${name}（${total} 提交）克隆中 ──"
+		rm -rf "${dir}"
+		if ! git clone -q --depth=40 --single-branch "git@github.com:${ORG}/${name}.git" "${dir}" 2>/dev/null; then
+			printf '%s\t%s\tCLONE_FAIL\t-\t-\t-\t-\tFAIL\n' "${name}" "${total}" >> "${LOG}"
 			continue
 		fi
 	fi
 
-	accept_one "$name" "$dir" "$total"
+	accept_one "${name}" "${dir}" "${total}"
 done
 
-echo "结果: $LOG"
-cat "$LOG"
+echo "结果: ${LOG}"
+cat "${LOG}"
