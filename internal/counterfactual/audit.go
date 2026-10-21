@@ -551,7 +551,7 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 	// Copying the caller's untracked, ignored files into the worktree
 	// makes the counterfactual tree as close as possible to a working
 	// checkout. It is a copy: nothing is written back.
-	a.copyUntrackedBuildInputs(ctx, wt.Path())
+	copyErr := a.copyUntrackedBuildInputs(ctx, wt.Path())
 
 	// Some projects need neighbours that live outside the repository
 	// entirely - a Go module that replaces a dependency with a local
@@ -623,6 +623,12 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 		return nil, fmt.Errorf("run tests: %w", err)
 	}
 	result.Command = plan.Command()
+
+	if copyErr != nil {
+		// The copy failed, so the tree is not the project. Say so, instead
+		// of letting the build error point at the code.
+		result.BuildErrors = append(result.BuildErrors, copyErr.Error())
+	}
 
 	return &runOutcome{
 		command:     plan.Command(),
