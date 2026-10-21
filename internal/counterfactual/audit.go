@@ -596,6 +596,19 @@ type runOutcome struct {
 	preExisting bool
 	// preExistingDetail explains the baseline run in one sentence.
 	preExistingDetail string
+	// baselineUnknown says the baseline could not be run at all, so the
+	// question it was supposed to answer - "was the red already there?" -
+	// has no answer.
+	//
+	// This is not the same as preExisting, and the difference is the whole
+	// point. "The red was already there" is a statement about the
+	// repository, and the reader acts on it: they go and fix a suite that
+	// is green. "The baseline never ran" is a statement about the
+	// checkout, and the reader acts on that one too: they make the
+	// checkout build.
+	baselineUnknown bool
+	// baselineUnknownDetail explains why the baseline could not run.
+	baselineUnknownDetail string
 }
 
 // runCounterfactual builds the "fix removed, test kept" tree and runs the
@@ -725,14 +738,45 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 	// differ, but the second failure is the witness, and the tool must
 	// not throw it away.
 	if countFailures(result) > 0 {
-		newFailures, detail := a.newFailuresWithoutFix(ctx, sha, target, plan, result)
-		if len(newFailures) == 0 {
+		base := a.newFailuresWithoutFix(ctx, sha, target, plan, result)
+		switch {
+		case !base.ran:
+			// The baseline never ran. It cannot say whether the red was
+			// already there, and neither can the tool. Saying "it was
+			// already there" would blame the suite for a checkout that
+			// was never set up.
+			out.baselineUnknown = true
+			out.baselineUnknownDetail = base.detail
+		case len(base.newFailures) == 0:
 			out.preExisting = true
-			out.preExistingDetail = detail
+			out.preExistingDetail = base.detail
 		}
 	}
 
 	return out, nil
+}
+
+// baselineOutcome is what the baseline run had to say.
+//
+// The baseline answers one question: "was the red already there?". Three
+// answers are possible, and they are not the same answer:
+//
+//   - the baseline ran and the red was there too -> pre-existing
+//   - the baseline ran and the red was not there -> the red is the fix's
+//   - the baseline never ran -> nobody knows
+//
+// The third one used to be folded into the first. That was wrong: it made
+// the tool say "this red was already there" about a suite it had never
+// seen run, and the reader's next move was to go and fix a green suite.
+type baselineOutcome struct {
+	// newFailures are the tests that fail in the counterfactual and not in
+	// the baseline - the witnesses the fix's removal broke.
+	newFailures []string
+	// ran says the baseline actually ran. When it did not, the question it
+	// was asked has no answer, and the tool must not pretend otherwise.
+	ran bool
+	// detail explains the baseline in one sentence.
+	detail string
 }
 
 // newFailuresWithoutFix runs the same scope with the fix in place and
@@ -741,14 +785,14 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 // Those are the tests the fix's removal broke - the witnesses. An empty
 // result means every red in the counterfactual was already there.
 //
-// It returns (nil, detail) when the baseline cannot be run at all. The
-// question is "was the suite already red", and a baseline that did not run
-// cannot answer it. That direction is the safe one: the tool says "cannot
-// tell" instead of claiming a test guards something it never saw.
-func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target core.TestTarget, plan core.Plan, counterfactual core.RunResult) ([]string, string) {
+// It returns ran=false when the baseline cannot be run at all. The question
+// is "was the suite already red", and a baseline that did not run cannot
+// answer it. That direction is the safe one: the tool says "cannot tell"
+// instead of claiming a test guards something it never saw.
+func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target core.TestTarget, plan core.Plan, counterfactual core.RunResult) baselineOutcome {
 	wt, err := a.worktree.Create(ctx, sha)
 	if err != nil {
-		return nil, "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
+		return baselineOutcome{detail: "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"}
 	}
 	defer wt.Remove()
 
@@ -765,7 +809,7 @@ func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target 
 
 	basePlan, err := a.adapter.Plan(ctx, core.PlanRequest{Root: wt.Path(), Target: target})
 	if err != nil {
-		return nil, "基线建不出测试命令（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
+		return baselineOutcome{detail: "基线建不出测试命令（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"}
 	}
 	basePlan.Dir = wt.Path()
 
@@ -775,12 +819,12 @@ func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target 
 	}
 	result, err := a.adapter.Run(runCtx, basePlan)
 	if err != nil {
-		return nil, "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
+		return baselineOutcome{detail: "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"}
 	}
 	if len(result.BuildErrors) > 0 {
-		return nil, "基线（带着修复的同一个提交）编译不过（" +
+		return baselineOutcome{detail: "基线（带着修复的同一个提交）编译不过（" +
 			strings.Join(result.BuildErrors, "；") +
-			"），所以无法确认这个红灯是不是这次修复造成的"
+			"），所以无法确认这个红灯是不是这次修复造成的"}
 	}
 
 	alreadyRed := failingTestNames(result)
@@ -795,13 +839,13 @@ func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target 
 	}
 	sort.Strings(newOnes)
 	if len(newOnes) > 0 {
-		return newOnes, ""
+		return baselineOutcome{newFailures: newOnes, ran: true}
 	}
 
-	return nil, fmt.Sprintf(
+	return baselineOutcome{ran: true, detail: fmt.Sprintf(
 		"带着修复的同一个提交（%s）里，同样的测试也是红的（%d 个失败）—— "+
 			"这个红灯本来就在，不是撤掉这次修复造成的，所以这里下不了结论",
-		shortSHA(sha), countFailures(result))
+		shortSHA(sha), countFailures(result))}
 }
 
 // failingTestNames collects the names of the failing tests in a run.
@@ -863,6 +907,14 @@ func verdictFrom(run *runOutcome, isTest func(string) bool) Verdict {
 	if run.preExisting {
 		return VerdictPreExistingFailure
 	}
+	// A baseline that never ran tells us nothing either - but it is a
+	// different nothing. "The red was already there" is a statement about
+	// the suite; "the baseline never ran" is a statement about the
+	// checkout. The second one is an environment problem, and reporting it
+	// as anything else sends the reader after the wrong thing.
+	//
+	// It is checked after the build errors below, because a counterfactual
+	// that could not build has its own, more specific story to tell.
 	r := run.result
 	// A suite that could not even build cannot witness anything. It is
 	// inconclusive, not a pass and not a failure.
@@ -894,6 +946,14 @@ func verdictFrom(run *runOutcome, isTest func(string) bool) Verdict {
 		}
 		// The build broke somewhere that is not a test: the dependencies
 		// moved on and the code at the parent no longer fits them.
+		return VerdictEnvironment
+	}
+
+	// The counterfactual built and ran. The baseline did not, so the
+	// question it was supposed to answer - "was the red already there?" -
+	// was never answered. The checkout is what is missing something, so
+	// this is an environment problem and the report has to say so.
+	if run.baselineUnknown {
 		return VerdictEnvironment
 	}
 
@@ -1219,16 +1279,33 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		})
 
 	case VerdictEnvironment:
+		// Two different things land here, and they need different
+		// sentences. The common one is a counterfactual that could not
+		// build. The other is a counterfactual that built fine and a
+		// baseline that did not - and there the missing piece is in the
+		// BASELINE's checkout, not in the experiment.
+		summary := "这个提交没法判定：检查出的代码缺东西，跑不起来"
+		detail := fmt.Sprintf(
+			"提交 %s 的测试跑不起来，但原因不是测试和修复耦合 —— "+
+				"是检查出的代码缺了构建需要的东西（通常是未入库的生成物，"+
+				"或者一个用 replace 指向本地目录的依赖在检出的环境里找不到）。\n"+
+				"这跟测试好不好无关，所以不下结论。",
+			res.Commit.Short)
+		if run != nil && run.baselineUnknown {
+			summary = "这个提交没法判定：基线那棵代码树没跑起来"
+			detail = fmt.Sprintf(
+				"提交 %s 的反事实实验跑起来了：有 %d 个测试变红。\n"+
+					"但基线（带着修复的同一个提交）没有跑起来，所以"+
+					"「这个红灯是不是这次修复造成的」这个问题没有人回答过。\n"+
+					"%s\n"+
+					"注意：套件本身可能是绿的 —— 坏的是检出，不是测试。",
+				res.Commit.Short, countFail(run), run.baselineUnknownDetail)
+		}
 		out = append(out, core.Finding{
 			Kind:     core.KindEnvironment,
 			Severity: core.SevInfo,
-			Summary:  "这个提交没法判定：检查出的代码缺东西，跑不起来",
-			Detail: fmt.Sprintf(
-				"提交 %s 的测试跑不起来，但原因不是测试和修复耦合 —— "+
-					"是检查出的代码缺了构建需要的东西（通常是未入库的生成物，"+
-					"或者一个用 replace 指向本地目录的依赖在检出的环境里找不到）。\n"+
-					"这跟测试好不好无关，所以不下结论。",
-				res.Commit.Short),
+			Summary:  summary,
+			Detail:   detail,
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Repro:    reproFor(res, run),

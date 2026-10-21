@@ -1548,6 +1548,12 @@ jest / vitest。要审 `npm run verify` 这种套件，得加一个能驱动任�
 另外 `TestAuditProvesRealTest` 钉住了另一头：**基线是绿的**时候，原来的
 proven 判定一点没变。
 
+「基线检出没做那套准备」这一条另有负对照：`TestAuditComparesLikeWithLike`
+（夹具 `GeneratedInputFixture`）—— 那个仓的包 `//go:embed` 了一个 git 不跟踪的
+文件，**反事实树**因为拷贝了未入库的构建产物能编译，**基线树**（提交自己）
+不能。少了那步准备，基线建不起来 → 判决从 **proven** 掉成
+**pre-existing-failure**（真看守被当成「本来就在的红灯」丢掉了）。
+
 ---
 
 ### 3.42 工具不会驱动 `python -m unittest` 的仓
@@ -1583,6 +1589,81 @@ workbench 套件因为本机 Python 3.9 而那个仓 CI 钉的是 3.12，报 sui
 **环境问题，如实不下结论**。
 
 **负对照**：9 条，全部实测（改坏 → 对应测试变红 → 改回，源文件逐字节一致）。
+
+---
+
+### 3.43 基线跑不起来，被说成「这个红灯本来就在」
+
+**现象**：一个提交被判成 `pre-existing-failure`。报告的 Summary 写着「这个提交
+没法判定：这个红灯本来就在，不是撤掉这次修复造成的」，Hint 写着「这通常意味着
+两件事之一：这个仓的测试套件本来就是红的（或者有 flaky 的测试）……先把套件弄绿，
+再回来审」。
+
+**根因**：基线对照要回答的问题是「**这个红灯是不是本来就在**」。基线**没跑起来**
+的时候，这个问题**没有人回答过** —— 但代码把「基线跑不起来」和「基线跑起来了
+而且是红的」归成了同一件事，两种都写成 `pre-existing-failure`。
+
+**后果**：报告把**套件是绿的**说成了**套件本来就是红的**，并且让读者去修一套没坏
+的测试。坏掉的是**检出**（少了构建需要的东西），不是测试。这跟 3.41 想防的
+是同一类错 —— 把工具没看过的东西说成看过了 —— 只是方向相反：**3.41 是把红的
+说成绿的（ accuse 一个没看过的测试），3.43 是把绿的说成红的（让读者去修一套绿
+的测试）**。
+
+**人工核实**：用一个夹具复现 —— 提交自己嵌了一个 git 不跟踪、工具也不拷贝的
+文件（`meta/version.txt`）。于是：
+
+- **父提交**能编译；
+- **反事实树**（父提交 + 测试补丁）能跑，而且是红的 —— 看守失败（这正是应该的）；
+- **基线**（提交自己）编译不过：`pattern meta/version.txt: no matching files found`。
+
+工具的输出里，「基线编译不过」出现在 Detail 里，但 Summary 和 Hint 说的是另外
+一回事 —— Detail 诚实，另外两句在替工具**没验证过的**结论背书。
+
+**修复**：基线跑不起来，和基线是红的，分开。`baselineOutcome` 记三件事：看守
+集合、基线跑没跑、说明。
+
+| 基线 | 判决 |
+|---|---|
+| 跑了、看守集合是空的 | `pre-existing-failure`（真的本来就在） |
+| 跑了、有看守 | **proven** |
+| **没跑** | **environment**（检出缺东西） |
+
+基线没跑的时候，报告说的是「**没有人回答过**」，并且明确写一句「套件本身可能是
+绿的 —— 坏的是检出，不是测试」，不再替套件认罪。
+
+**负对照**：把 `baselineUnknown` 那一条改回 `VerdictPreExistingFailure`，
+`TestABaselineThatCouldNotRunIsNotAPreExistingRed` 立刻变红 —— 判决变回
+pre-existing-failure，Summary 又开始说「这个红灯本来就在」；改回来，绿。
+
+---
+
+### 3.44 工具说自己「只会驱动 pytest」—— unittest 适配器落地之后这句话没跟着改
+
+**现象**：审计报告里写着「这个工具只会驱动 go test / pytest / jest / vitest，
+跑不了它们」，和「这个工具目前只会跑 Go、Python（pytest）和 Node（jest/vitest）
+的测试」。
+
+**根因**：unittest 适配器（3.42）落地之后，这几处**硬编码**的句子没有跟着改。
+清单写在三个地方，适配器加了一个，三处都还在。
+
+**后果**：这是**关于覆盖率的谎话**。报告的这句话是「我看不到这一部分」的承诺，
+读者靠它决定还要不要自己看。一个用 unittest 的仓读了这句话 → 以为工具没审过
+自己的测试 → 不看了。而工具其实跑了，而且有判决。
+
+**说自己看不到，比说错更糟**：说错，读者自己跑一遍就能发现；说自己看不到，
+读者就**不跑了**。
+
+**修复**：清单只有一份（`adapters.SupportedRunners`），所有提到「工具能驱动什么」
+的句子都由它生成。新适配器不来登记，报告就会跟真实能力脱节 —— 这个错由测试
+钉住，不靠自觉。
+
+**负对照**（两条都实测）：
+
+1. 把 `python -m unittest` 从清单里删掉 → `TestTheToolCanDriveEveryRunnerItClaims`
+   立刻变红（工具明明能驱动 unittest，清单却不承认），detect 和 cli 两处
+   `…NamesUnittest` 也变红。
+2. 把句子改回硬编码 → detect 和 cli 两处 `…NamesEveryClaimedRunner` 立刻变红
+   （句子漏掉了清单里的运行器）。
 
 ---
 
@@ -1932,3 +2013,80 @@ Python 适配器）；被审的 6 个仓里**两个**往前走了（仓库 E 和
 `internal/cli/coverage_test.go`、`docs/DOGFOOD.md`）。工作树里另外那 4 个
 脏文件 + 1 个未跟踪文件**不属于这一轮**，没有进提交 —— 那是另一个 agent
 正在写的东西。
+
+---
+
+### 再晚一轮：基线跑不起来被说成「本来就在」，还有一句关于覆盖率的旧话
+
+**闸门**：代码指纹变了（`6ad1241` → `2e6ff87`），工具代码有未提交的改动。
+被审的 6 个仓**一个都没动**，CI 在 HEAD 上是绿的。
+
+| 检查 | 结果 |
+|---|---|
+| `gofmt -l .` | 空 |
+| `go vet ./...` | 通过 |
+| `go test ./... -count=1` | 全绿 |
+| 6 个仓的静态体检 | **逐条与基线一致**（高危 5 条全是真阳性，见 3.42 / 3.43 的老账） |
+| 审计（仓库 A，最近 20 个提交） | `proven 3 · vacuous 0 · 无测试 4 · 无法判定 6 · 不适用 7`（与基线一致） |
+
+**这一轮和以前的轮次不一样：工作树里有两个 agent 同时在改同一个仓。**
+
+`mavis-masterpiece` 是 `vacuous` 的软链接，另一个会话（`vacuous`）和它的
+worker 子会话在同一个目录里干活。这一轮的头 20 分钟里，
+`internal/counterfactual/audit.go` 的 mtime 一直在动 —— 它正在重写基线对照
+（把「比失败数量」改成「比失败集合」）。
+
+这带来两个后果，都得说清楚：
+
+1. **有一条缺陷被两边独立找到。** 它发现「基线检出没做反事实检出那套准备」，
+   我在同一处发现的是同一件事：反事实树拷贝了未入库的构建产物，基线树没拷 →
+   基线建不起来 → 所有红灯都被当成「本来就在」→ **真看守全被丢掉**。
+   它的修法和我想的一样（基线树也做 `copyUntrackedBuildInputs` +
+   `PrepareWorktree`）。我写的复现 `TestAuditComparesLikeWithLike` +
+   `GeneratedInputFixture` 在它那笔提交里一起进去了（它用 `git add` 扫了
+   整个工作树）。**这份文档只写一遍，功劳算两份。**
+2. **提交必须只带自己的文件。** 这一轮的提交只带 10 个文件，全部是这一轮改的：
+   基线判决 3 个（`internal/counterfactual/audit.go`、`audit_test.go`、
+   `internal/testfixtures/fixtures.go`）+ 覆盖率声明 2 个
+   （`internal/detect/unsupported.go`、`internal/cli/coverage.go`）+
+   新文件 4 个（`internal/adapters/runners.go`、`runners_test.go`、
+   `internal/detect/coverage_statement_test.go`、
+   `internal/cli/coverage_statement_test.go`）+ 本文档。
+
+**找到的两条缺陷**：
+
+1. **基线跑不起来，被说成「这个红灯本来就在」**（3.43）—— 判决从
+   `pre-existing-failure` 改成 `environment`，并且报告明确写「套件本身可能是
+   绿的 —— 坏的是检出，不是测试」。**这条不是误报，是误伤**：它让读者去修一套
+   没坏的测试。
+2. **工具说自己「只会驱动 pytest」**（3.44）—— 覆盖率声明是「我看不到这一部分」
+   的承诺，说自己看不到，读者就**不跑了**。清单收成一份
+   （`adapters.SupportedRunners`），所有句子由它生成。
+
+**负对照**（全部实测，改坏 → 变红 → 改回）：
+
+| 改坏的地方 | 变红的测试 |
+|---|---|
+| `baselineUnknown` 改回 `VerdictPreExistingFailure` | `TestABaselineThatCouldNotRunIsNotAPreExistingRed` |
+| 清单里删掉 `python -m unittest` | `TestTheToolCanDriveEveryRunnerItClaims` + 两处 `…NamesUnittest` |
+| 句子改回硬编码 | detect / cli 两处 `…NamesEveryClaimedRunner` |
+
+**这一轮没有新的高危发现**：仓库 A 的两条 `discards-error`、仓库 C 的两条
+`skipped-test`（私有语料不入库，**真阳性**）都是老结论，逐条与基线一致。
+
+**一条操作教训**：审计和 `go build` / `go test` **不要同时跑**。这一轮有一次
+审计的结论从 `proven 3 · coupled 6` 变成 `proven 0 · coupled 1 · environment 8`
+—— 差得像是把工具改坏了。真相是工具自己的两次运行抢了 Go 的构建缓存：
+
+```
+crypto/internal/fips140/drbg/ctrdrbg.go:10:2: could not import
+crypto/internal/fips140/subtle (open .../go-build/64/64fa2fdee...-d:
+no such file or directory)
+```
+
+38 条这样的错误。**「结论变差」和「机器忙」要分开看**：把机器上的并发构建停掉
+重跑一遍，结论回到 `proven 3 · coupled 6`，与基线逐条一致。
+
+> **怎么分辨**：看证据里有没有 `could not import` / `no such file or directory`
+> 指向 `go-build` 缓存。有 → 是环境，不是工具。**别拿这种结论去改工具** ——
+> 改出来的是一个「修好了假象」的提交。
