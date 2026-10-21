@@ -44,6 +44,9 @@ type Result struct {
 	//
 	// It decides how loudly to report that no test witnessed the change.
 	SourceChange sourceChange
+	// Contradiction explains why the verdict could not be trusted, when
+	// the tool's own output disagrees with its own conclusion.
+	Contradiction string
 }
 
 // smallChangeLines is the number of changed lines below which a commit that
@@ -83,6 +86,9 @@ const (
 	// VerdictNotApplicable means there was nothing to judge, e.g. a commit
 	// that only touched docs.
 	VerdictNotApplicable Verdict = "n/a"
+	// VerdictContradictory means the tool's conclusion and the tool's own
+	// raw output disagree. The tool refuses to conclude in that case.
+	VerdictContradictory Verdict = "contradictory"
 )
 
 // environmentFailurePatterns are build errors that mean "the checkout was
@@ -361,6 +367,13 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	// finding louder: an unanswered question is not evidence.
 	if change, err := a.sourceChange(ctx, sha, res.SourceFiles); err == nil {
 		res.SourceChange = change
+	}
+
+	// The tool arguing with itself. If the conclusion and the raw output
+	// disagree, the tool does not get to pick a winner - it says so.
+	if reason := checkConsistency(run, res.Verdict); reason != "" {
+		res.Verdict = VerdictContradictory
+		res.Contradiction = reason
 	}
 
 	res.Findings = append(res.Findings, verdictFindings(res, run)...)
@@ -670,6 +683,85 @@ func classify(run *runOutcome, isTest func(string) bool) Verdict {
 	return VerdictVacuous
 }
 
+// checkConsistency asks whether the raw output supports the verdict.
+//
+// This is the tool arguing with itself, and it is the most important
+// check in the whole program.
+//
+// The bug that motivated it: the tool reported "36 tests all passed" on a
+// real commit, while its own evidence said "FAIL ... [build failed]". The
+// package under examination had not executed a single test, and the tool
+// accused a test of proving nothing. Nothing in the output flagged the
+// contradiction - the report looked completely normal, and it was wrong.
+//
+// So when the verdict and the output disagree, the tool does not pick a
+// side. It refuses to conclude, and it shows both.
+//
+// The returned string is the reason; an empty string means the verdict
+// holds up.
+func checkConsistency(run *runOutcome, verdict Verdict) string {
+	if run == nil {
+		return ""
+	}
+	r := run.result
+	pass, fail, skip, _ := r.Counts()
+	ranClean := verdict == VerdictProven || verdict == VerdictVacuous
+
+	switch {
+	case ranClean && len(r.BuildErrors) > 0:
+		return "结论说测试套件跑通了，但原始输出里有编译错误 —— 那个包一次都没跑起来"
+	case verdict == VerdictProven && fail == 0:
+		return "结论说有测试变红了，但原始输出里没有失败的测试"
+	case verdict == VerdictVacuous && fail > 0:
+		return "结论说全部通过，但原始输出里有失败的测试"
+	case ranClean && pass+fail+skip == 0:
+		return "结论说测试跑过了，但原始输出里一个测试都没有"
+	}
+	return ""
+}
+
+// reproFor builds the commands that reproduce a finding by hand.
+//
+// A tool that says "trust me" is worth exactly as much as the reader's
+// trust. A tool that says "here is how to check it yourself" can be
+// checked - and a reader who does not want to trust the tool can still
+// get the answer.
+func reproFor(res *Result, run *runOutcome) string {
+	if res == nil {
+		return ""
+	}
+	sha := res.Commit.SHA
+	if len(sha) > 7 {
+		sha = sha[:7]
+	}
+	if sha == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# 1. 把这次提交的代码取出来（在仓库根目录跑）\n")
+	fmt.Fprintf(&b, "mkdir -p /tmp/vac-verify && git archive %s | tar -x -C /tmp/vac-verify\n", sha)
+
+	// Put the source back to the parent's version, keeping the tests.
+	//
+	// The "git show" has to run where the repository is, and the file it
+	// produces belongs in the extracted tree - so the paths are spelled
+	// out rather than left to a "cd" that would break the next step.
+	srcs := pathsOf(res.SourceFiles)
+	if len(srcs) > 0 {
+		fmt.Fprintf(&b, "\n# 2. 只把测试留下，修复退回父提交\n")
+		for _, f := range srcs {
+			fmt.Fprintf(&b, "git show %s^:%s > /tmp/vac-verify/%s\n", sha, f, f)
+		}
+	}
+
+	if run != nil && run.command != "" {
+		fmt.Fprintf(&b, "\n# 3. 跑测试，看它到底会不会红\n")
+		fmt.Fprintf(&b, "cd /tmp/vac-verify && %s\n", run.command)
+	}
+	return b.String()
+}
+
 // verdictFindings converts a verdict into reportable findings.
 func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 	var out []core.Finding
@@ -685,6 +777,7 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 				countFail(run)),
 			File:     testFile,
 			Evidence: run.command,
+			Repro:    reproFor(res, run),
 		})
 		// A proven test is not a finding at all. Mark it and let the
 		// caller filter it out; the report layer counts it as proven.
@@ -727,6 +820,7 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			Detail:   detail,
 			File:     testFile,
 			Evidence: evidenceFor(run),
+			Repro:    reproFor(res, run),
 			Hint: "把断言落在可观察的行为上：断言具体的返回值、错误内容或状态，" +
 				"而不是实现细节或者「没有 panic」",
 		})
@@ -742,6 +836,7 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 				countSkip(run)),
 			File:     testFile,
 			Evidence: evidenceFor(run),
+			Repro:    reproFor(res, run),
 			Hint: "查跳过条件：如果它依赖一个没入库的文件，干净 clone 和 CI 里都会跳。\n" +
 				"让测试语料入库，或者让语料缺失时直接失败而不是跳过",
 		})
@@ -771,6 +866,7 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			Detail:   detail,
 			File:     testFile,
 			Evidence: evidenceFor(run),
+			Repro:    reproFor(res, run),
 			Hint: "这不是错误，是提示：耦合的测试很难单独证明自己。\n" +
 				"可以加一个更靠近行为的测试来覆盖同一个场景",
 		})
@@ -788,8 +884,25 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 				res.Commit.Short),
 			File:     testFile,
 			Evidence: evidenceFor(run),
+			Repro:    reproFor(res, run),
 			Hint: "看证据里的编译错误：缺什么就补什么。" +
 				"本地依赖的，检查一下该目录在不在；生成物的，先构建一次再审",
+		})
+
+	case VerdictContradictory:
+		out = append(out, core.Finding{
+			Kind:     core.KindContradictory,
+			Severity: core.SevCritical,
+			Summary:  "工具自己的结论和它自己的原始输出对不上 —— 这是工具的 bug，不是你的代码的问题",
+			Detail: fmt.Sprintf(
+				"提交 %s 的判定过程出现了自相矛盾：%s。\n"+
+					"这种时候工具没有资格下结论，所以它不下。\n"+
+					"下面是把两边都摆出来 —— 原始输出和它的解读。",
+				res.Commit.Short, res.Contradiction),
+			File:     testFile,
+			Evidence: evidenceFor(run),
+			Repro:    reproFor(res, run),
+			Hint:     "这是工具的问题。请把它当成工具的 bug 报回来，别当成代码的问题。",
 		})
 
 	case VerdictBroken:
@@ -801,6 +914,7 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 				res.Commit.Short),
 			File:     testFile,
 			Evidence: evidenceFor(run),
+			Repro:    reproFor(res, run),
 			Hint:     "先修好这个提交，再谈它有没有被测试覆盖",
 		})
 	}

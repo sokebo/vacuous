@@ -88,6 +88,15 @@ const (
 	// no parent to compare against, a commit that only touched
 	// documentation. It is not a problem, and it is not a pass.
 	KindNotApplicable Kind = "not-applicable"
+	// KindContradictory means the tool's own conclusion disagrees with the
+	// tool's own raw output.
+	//
+	// It is the loudest finding in the whole vocabulary, because it means
+	// the tool itself is broken. A checker that accuses the code when its
+	// own evidence contradicts it is worse than no checker: it produces
+	// confident, specific, wrong accusations, and those cost more to
+	// disprove than to make.
+	KindContradictory Kind = "contradictory"
 	// KindCoupled is inconclusive: the test could not be evaluated because
 	// it depends on the fix at compile time.
 	KindCoupled Kind = "coupled"
@@ -126,6 +135,13 @@ type Finding struct {
 	Evidence string
 	// Hint is the next concrete action, when one exists.
 	Hint string
+	// Repro holds the commands that reproduce the finding by hand, for
+	// anyone who does not want to take the tool's word for it.
+	//
+	// A tool that says "trust me" is worth exactly as much as the reader's
+	// trust. A tool that says "here is how to check it yourself" can be
+	// checked.
+	Repro string
 }
 
 // Location renders "file:line" for display, or an empty string when the

@@ -64,6 +64,8 @@ type jsonFinding struct {
 	Evidence string `json:"evidence"`
 	// Hint is the next concrete action.
 	Hint string `json:"hint"`
+	// Repro holds the commands that reproduce the finding by hand.
+	Repro string `json:"repro"`
 }
 
 // RenderJSON writes the machine-readable report to w.
@@ -114,6 +116,7 @@ func buildJSON(r *core.Report) jsonReport {
 			Location: f.Location(),
 			Evidence: f.Evidence,
 			Hint:     f.Hint,
+			Repro:    f.Repro,
 		})
 	}
 	return doc

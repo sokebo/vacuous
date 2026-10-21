@@ -159,6 +159,11 @@ func writeFinding(w io.Writer, f core.Finding) error {
 			return err
 		}
 	}
+	if f.Repro != "" {
+		if err := writeRepro(w, f.Repro); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -172,6 +177,23 @@ func writeWrapped(w io.Writer, text string) error {
 			continue
 		}
 		if _, err := fmt.Fprintf(w, "%s%s\n", bodyIndent, line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeRepro writes the commands that reproduce a finding by hand.
+//
+// The block is deliberately copy-pasteable and deliberately unformatted: it
+// is something to run, not something to read. A reader who does not trust
+// the tool runs these and sees the same output the tool saw.
+func writeRepro(w io.Writer, repro string) error {
+	if err := writeWrapped(w, "怎么自己验一遍:"); err != nil {
+		return err
+	}
+	for _, line := range strings.Split(strings.TrimRight(repro, "\n"), "\n") {
+		if _, err := fmt.Fprintf(w, "      %s\n", line); err != nil {
 			return err
 		}
 	}
