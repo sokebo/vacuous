@@ -1083,8 +1083,8 @@ fatal: path 'internal/link/engine.go' exists on disk, but not in 'b5f99ab^'
 
 | | 工具看到的 | 旧配方跑出来的 |
 |---|---|---|
-| `alpha/internal/link` 的 FailedBuild | `alpha/internal/storage` | `alpha/internal/link` |
-| 报错 | `package alpha/internal/storage is not in std` | `expected 'package', found 'EOF'` |
+| 仓库 A 的 `internal/link` 的 FailedBuild | 仓库 B 的 `internal/storage` | 仓库 A 的 `internal/link` |
+| 报错 | `package 仓库B/internal/storage is not in std` | `expected 'package', found 'EOF'` |
 
 **后果**：这条配方存在的意义就是「不信我就自己查」。它给的是**另一次实验**，
 读者查出来的东西和工具说的不是一回事 —— 而读者会以为是自己查错了。
@@ -1111,7 +1111,7 @@ cd /tmp/vac-verify && git apply --whitespace=nowarn /tmp/vac-verify-tests.patch
 
 ### 3.32 一致性自检只看了输出尾部 4KB —— 大仓上工具全部不敢下结论
 
-**现象**：在 example 的 `relay-service` 上做反事实审计，8 个提交里冒出
+**现象**：在一个 Go 服务仓上做反事实审计，8 个提交里冒出
 **3 个 `contradictory`**（工具自相矛盾），证据写着「结论说有测试变红了，
 但运行器自己的输出里没有失败」。而同一份证据里的计数是
 **733 通过 · 42 失败** —— 明明有 42 个失败，工具却说自己的输出里没有失败。
@@ -1534,7 +1534,7 @@ CI 里有两个 job：`build`（fmt / vet / build / test -race / 空缓存 test�
 
 - 仓库 A `app_test.go:115` —— `forC, _ := st.EdgesFor("c")` 丢掉错误，
   而断言要的正是「空的」→ 加载失败时断言照样通过。**真阳性。**
-- 仓库 A `cmd/alpha-seed/main.go:91` —— `existing, _ := st.List()` 丢掉错误，
+- 仓库 A `cmd/seed/main.go:91` —— `existing, _ := st.List()` 丢掉错误，
   守着它的 `if len(existing) > 0` 因此不会执行 → 程序接着往一个自己都读不
   出来的库里写。**真阳性。**
 - 仓库 E / F 的 `no-test-for-fix` —— 逐个文件数过，**真阳性**（两个仓

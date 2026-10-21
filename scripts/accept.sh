@@ -42,8 +42,18 @@ CLONE_JOBS=${ACCEPT_CLONE_JOBS:-3}
 PREFETCH=${ACCEPT_PREFETCH:-1}
 # 一个仓里同时审几个提交。并发不改变判定 —— 报告逐字相同这件事有测试钉着。
 CONCURRENCY=${ACCEPT_CONCURRENCY:-4}
-# 哪些仓需要像 CI 那样先备好兄弟仓，见 scripts/accept-setup.tsv。
-SETUP_FILE=${ACCEPT_SETUP_FILE:-${REPO_ROOT}/scripts/accept-setup.tsv}
+# 哪些仓需要像 CI 那样先备好兄弟仓。
+#
+# 先找验收工作目录里的那份（那才是真正有内容的清单），再找仓库里的模板。
+# 真正的那份不进这个仓：里面会有内部模块路径和内部仓名，而这个仓将来要公开。
+SETUP_FILE=${ACCEPT_SETUP_FILE:-}
+if [ -z "${SETUP_FILE}" ]; then
+	if [ -f "${WORK}/accept-setup.tsv" ]; then
+		SETUP_FILE="${WORK}/accept-setup.tsv"
+	else
+		SETUP_FILE="${REPO_ROOT}/scripts/accept-setup.tsv"
+	fi
+fi
 
 mkdir -p "${WORK}"
 LOG="${WORK}/results.tsv"
@@ -220,8 +230,8 @@ apply_setup() {
 		case "${repo}" in ''|'#'*) continue;; esac
 		[ "${repo}" = "${name}" ] || continue
 		any=1
-		# 模块不一定在那个仓的根上。oc-core 在 open-service 的
-		# oc-core/ 子目录下，指错了 go 会说「找不到提供该包的模块」，
+		# 模块不一定在那个仓的根上。有些项目把模块放在子模块目录下，
+		# 子目录下，指错了 go 会说「找不到提供该包的模块」，
 		# 然后每个提交都落成 environment —— 跟没搭环境一样。
 		local mdir="${WORK}/${sdir}"
 		[ -n "${subdir}" ] && [ "${subdir}" != "." ] && mdir="${mdir}/${subdir}"
@@ -369,7 +379,8 @@ PY
 	# FAIL，等于说工具没跑完 —— 而它跑完了，答案是「这个仓没法做反事实」。
 	local ok=PASS
 	local no_runner=0
-	if grep -q "no supported test runner found" "${WORK}/${name}.audit.err" 2>/dev/null; then
+	if grep -qE "no supported test runner found|这个工具现在只会驱动 pytest" \
+		"${WORK}/${name}.audit.err" 2>/dev/null; then
 		no_runner=1
 	fi
 
@@ -436,7 +447,7 @@ done
 # 记下这次要审哪些仓和它们有多少提交，审计阶段直接读这个文件。
 #
 # ACCEPT_REUSE_LIST=1 表示清单已经在了，直接用 —— 每次都去问 API 要提交数
-# 是一次不必要的网络往返（example 那批仓要好几分钟）。
+# 是一次不必要的网络往返（几十个仓要好几分钟）。
 if [ "${PHASE}" != "audit" ] && { [ "${ACCEPT_REUSE_LIST:-0}" != "1" ] || [ ! -s "${REPO_LIST}" ]; }; then
 	: > "${REPO_LIST}.tmp"
 	for name in ${repos}; do

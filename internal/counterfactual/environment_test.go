@@ -22,7 +22,7 @@ import (
 // make, because the reader's next move is to rewrite a test that is fine.
 //
 // The counterfactual on the real repository found this: every commit of
-// relay-service came back "environment" for the wrong reason, and the
+// Go service repository came back "environment" for the wrong reason, and the
 // first version of the fix called them couplings instead.
 
 func moduleLookupDisabled() []string {
