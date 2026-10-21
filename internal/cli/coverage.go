@@ -152,12 +152,12 @@ func noRunnerFinding(root string, files []string) core.Finding {
 			Summary:  "仓库里有测试文件，但没有能跑它们的命令",
 			Detail: fmt.Sprintf(
 				"找到 %d 个测试文件，但没有找到可用的测试运行器"+
-					"（Go 的 go.mod / Python 的 pytest 配置 / Node 的 test script）。\n"+
+					"（Go 的 go.mod / Python 的 pytest 配置或 unittest 套件 / Node 的 test script）。\n"+
 					"测试文件躺在那里，却从来没有被执行过 —— 这跟没有测试是一样的。",
 				tests),
 			Evidence: "找到的测试文件数: " + strconv.Itoa(tests),
-			Hint: "把测试接进一个能跑的入口：go test / pytest / npm test，" +
-				"并且让它在 CI 里真的跑一遍",
+			Hint: "把测试接进一个能跑的入口：go test / pytest / " +
+				"python -m unittest / npm test，并且让它在 CI 里真的跑一遍",
 		}
 
 	default:

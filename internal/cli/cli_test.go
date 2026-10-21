@@ -324,7 +324,15 @@ func TestAuditOnARepoWithNoTestsSaysSo(t *testing.T) {
 	if code != ExitError {
 		t.Fatalf("exit code = %d, want %d", code, ExitError)
 	}
-	if strings.Contains(stderr, "unittest") {
+	// The message must not describe the REPOSITORY as a unittest project.
+	//
+	// Naming unittest in the list of runners the tool can drive is a
+	// different thing, and it has to stay: that list is a promise about
+	// the tool's reach, and a reader who counts themselves out of it
+	// because their runner is missing stops looking at the ones that are
+	// covered. So the check is for the sentence that calls this
+	// repository a unittest project, not for the word.
+	if strings.Contains(stderr, "这个仓的 Python 测试用的是 python -m unittest") {
 		t.Errorf("a repo with no tests must not be described as a unittest project, got: %s", stderr)
 	}
 	if !strings.Contains(stderr, "no supported test runner") {
