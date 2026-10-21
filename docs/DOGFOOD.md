@@ -11,6 +11,28 @@
 - 复核方式：每一条高危发现都回到 git 原始提交、用**工具之外的手段**重新
   验证一遍
 
+**脱敏说明**：这份文档最终会公开，而它描述的几个仓库都是私有的 —— 公开文档里
+不该出现它们的内部结构。所以仓库名、内部路径、外部仓库的 commit SHA 都换成了
+占位符。
+
+| 占位符 | 它是什么 |
+|---|---|
+| 仓库 A | Go · 一个服务仓（反事实审计的主要靶子） |
+| 仓库 B | Go · 一个库仓（带 git hooks 守卫） |
+| 仓库 C | Go · 私有研究仓，7 个独立 module |
+| 仓库 D | 一个公开的文档仓 |
+| 仓库 E | Node · 一个前端仓 |
+| 仓库 F | Node · 一个主题包仓 |
+| 仓库 G | Go · 跨仓协作的 admin 仓 |
+| 仓库 H | Go · 跨仓协作的 relay 仓 |
+| 仓库 I | Python · 一个 harness 仓 |
+| 共享库 S | 仓库 G / H 共同依赖的**同级目录**库 |
+| `⟨sha⟩` | 外部仓库的某个提交 |
+| `<本地路径>` | 本机上的目录 |
+
+对照关系只存在于作者和定时校验任务的配置里。**本仓自己的 commit SHA 没有被
+替换** —— 这个仓要公开，它的提交历史本来就公开。
+
 **基线**（定时校验任务靠它判断「有没有新东西」）：
 
 基线量的是**代码的指纹**，不是「最后一次提交是谁」。原因写在 3.18 里 ——
@@ -28,7 +50,7 @@ scripts/gate.sh check     # 退出码 0=没变 1=变了 2=判不出来
 2. **工作树** —— 改了没提交的东西（`DirtyPaths`，见 3.23）。指纹只量 HEAD，
    核验跑的是工作树里的代码：两者不是一份，就不能报「没变化」。
 3. **被审计仓库的 HEAD** —— 6 个仓，任何一个往前走一步都要重跑。（被审仓库的
-   **工作树**不算：delta 一直有未提交的在制品，算进去闸门就每轮都喊
+   **工作树**不算：仓库 D 一直有未提交的在制品，算进去闸门就每轮都喊
    「有变化」；那种情况由工具自己的审计报成高危。）
 
 机器可读的状态在 `.git/vacuous-gate.state`，**不入库**：它是这份 clone 的
@@ -40,12 +62,12 @@ scripts/gate.sh check     # 退出码 0=没变 1=变了 2=判不出来
 `scripts/gate.sh check`。
 
 ```
-alpha        77444cf
-beta        e41de04
-gamma 7f6f755
-delta   e902251
-epsilon      57b4a54
-zeta  517ecb0
+仓库 A  ⟨sha⟩
+仓库 B  ⟨sha⟩
+仓库 C  ⟨sha⟩
+仓库 D  ⟨sha⟩
+仓库 E  ⟨sha⟩
+仓库 F  ⟨sha⟩
 ```
 
 ---
@@ -54,36 +76,36 @@ zeta  517ecb0
 
 | 仓库 | 结果 | 发现 |
 |---|---|---|
-| alpha | 3 个（高危 2） | 2 × `discards-error`，1 × `skipped-test` |
-| beta | 1 个（严重 1） | 1 × `guard-not-installed` |
-| gamma | 6 个（高危 2） | 2 × `skipped-test`（高危），4 × `skipped-test`（警告） |
-| delta | 1 个（高危 0） | 1 × `skipped-test`（警告） |
-| epsilon | 1 个（高危 1） | 1 × `no-test-for-fix` |
-| zeta | 1 个（高危 1） | 1 × `no-test-for-fix` |
+| 仓库 A | 3 个（高危 2） | 2 × `discards-error`，1 × `skipped-test` |
+| 仓库 B | 1 个（严重 1） | 1 × `guard-not-installed` |
+| 仓库 C | 6 个（高危 2） | 2 × `skipped-test`（高危），4 × `skipped-test`（警告） |
+| 仓库 D | 1 个（高危 0） | 1 × `skipped-test`（警告） |
+| 仓库 E | 1 个（高危 1） | 1 × `no-test-for-fix` |
+| 仓库 F | 1 个（高危 1） | 1 × `no-test-for-fix` |
 
 **6 个仓库里 6 个都有发现。** 这不是巧合，是这类代码的真实状态。
 
-> **delta 这一行变了（2026-10-20 复核）。** 之前记的是
+> **仓库 D 这一行变了（2026-10-20 复核）。** 之前记的是
 > 「2 个（高危 1）：`no-test-for-fix` + `guard-not-installed`（警告）」，
-> 依据是「delta 有 1 个源文件（`scripts/measure_repo.py`）」。
-> **那个前提已经不成立了**：delta 现在是一个 Go 仓（21 个 `.go` 文件、
+> 依据是「仓库 D 有 1 个源文件（`scripts/measure.py`）」。
+> **那个前提已经不成立了**：仓库 D 现在是一个 Go 仓（21 个 `.go` 文件、
 > 3 个测试文件、CI 里跑 `go test -race`），不再是那个只有一段 Python 的仓。
 > 所以 `no-test-for-fix` 消失（它有测试了），`guard-not-installed` 也消失
 > （CI 真的有测试步骤）。剩下的 `skipped-test` 是
-> `internal/collect/collect_test.go:273` 的「建不了符号链接」——
-> 与 gamma 那条同源，是真的合法跳过。
+> `collect/collect_test.go:273` 的「建不了符号链接」——
+> 与 仓库 C 那条同源，是真的合法跳过。
 >
 > 这条记在这里不是为了好看，是因为**过期的记录比没有记录更危险**：照着旧表
 > 去核实会核实一个已经不存在的仓库形状。
 
 ### 逐条核实
 
-**alpha `app_test.go:115` — `discards-error`（高危）**
+**仓库 A `app_test.go:115` — `discards-error`（高危）**
 断言写的是 `len(forC) != 0`，而 `forC` 的错误被 `_` 丢掉了。加载失败时
 `forC` 为空 → `len(forC) != 0` 为假 → 断言通过 → 测试报成功，实际什么都没
 加载到。**真阳性。**
 
-**alpha `cmd/alpha-seed/main.go:91` — `discards-error`（高危）**
+**仓库 A `cmd/seed/main.go:91` — `discards-error`（高危）**
 ```go
 existing, _ := st.List()
 if len(existing) > 0 {
@@ -99,21 +121,21 @@ if len(existing) > 0 {
 **保护性中止**。第一版工具把两者用同一句话描述，这一条因此被说成了
 「断言通过」—— 结论对，解释错。见第 3.7 节。）
 
-**beta `.githooks` — `guard-not-installed`（严重）**
+**仓库 B `.githooks` — `guard-not-installed`（严重）**
 `.githooks/pre-push` 存在且可执行，但 `git config --get core.hooksPath` 没有
 设置 —— 守卫从来没有被装上，一次都没运行过。**真阳性**，且没有任何症状：
 推代码不会变红，出事那天才会发现。
 
-**gamma `commitcorpus_test.go:22/34` — `skipped-test`（高危）**
-跳过条件依赖 `experiments/commit-corpus/commits-sokebo.jsonl` 和
-`prs-sokebo.jsonl`，这两个文件被 `.gitignore` 忽略、不在仓库里。开发机上有，
+**仓库 C `commitcorpus_test.go:22/34` — `skipped-test`（高危）**
+跳过条件依赖 `experiments/corpus/commits-*.jsonl` 和
+`prs-*.jsonl`，这两个文件被 `.gitignore` 忽略、不在仓库里。开发机上有，
 CI 和干净 clone 里没有 → 静默跳过。**真阳性。**
 
-**delta / epsilon / zeta — `no-test-for-fix`（高危）**
-三个仓库都有真实代码、零测试文件。delta 有 1 个源文件
-（`scripts/measure_repo.py`），epsilon 24 个，zeta 3 个。**真阳性。**
+**仓库 D / 仓库 E / 仓库 F — `no-test-for-fix`（高危）**
+三个仓库都有真实代码、零测试文件。仓库 D 有 1 个源文件
+（`scripts/measure.py`），仓库 E 24 个，仓库 F 3 个。**真阳性。**
 
-**delta `.github/workflows/ci.yml` — `guard-not-installed`（警告）**
+**仓库 D `.github/workflows/ci.yml` — `guard-not-installed`（警告）**
 CI 里只有 gitleaks 和 `py_compile` 冒烟，没有任何测试命令。报告明确说
 「只有静态检查，挡不住行为坏掉」—— 没有夸大。**真阳性。**
 
@@ -121,7 +143,7 @@ CI 里只有 gitleaks 和 `py_compile` 冒烟，没有任何测试命令。报�
 
 ## 2. 反事实审计（`--mode audit`）
 
-alpha 最近 20 个提交：
+仓库 A 最近 20 个提交：
 
 ```
 统计: proven 3 · vacuous 0 · 无测试 9 · 无法判定 7
@@ -136,18 +158,18 @@ alpha 最近 20 个提交：
 
 | 提交 | 工具判定 | 人工复核 | 结论 |
 |---|---|---|---|
-| `5e94002` 修 Label 大小写 + 补测试 | **proven** | 撤掉修复后测试变红 | 一致 |
-| `513ef77` 改 15 个停用词，零测试 | **no-test-for-fix** | 改了 `internal/link/engine.go` 的停用词表，`engine_test.go` 里没有对应断言 | 一致 |
-| `94899dc` 新增测试文件，测试引用了修复才引入的符号 | **coupled** | 手工回退 `engine.go` 后编译失败（`undefined: refTokenPat`） | 一致 |
+| `⟨sha⟩` 修 Label 大小写 + 补测试 | **proven** | 撤掉修复后测试变红 | 一致 |
+| `⟨sha⟩` 改 15 个停用词，零测试 | **no-test-for-fix** | 改了 `link/engine.go` 的停用词表，`engine_test.go` 里没有对应断言 | 一致 |
+| `⟨sha⟩` 新增测试文件，测试引用了修复才引入的符号 | **coupled** | 手工回退 `engine.go` 后编译失败（`undefined: 那个新符号`） | 一致 |
 
-`94899dc` 的独立复核用的是工具之外的路径：
+`⟨sha⟩` 的独立复核用的是工具之外的路径：
 
 ```bash
 WT=$(mktemp -d /tmp/vacverify.XXXXXX)
-cd /Users/dev/work/alpha && git archive 94899dc | tar -x -C "$WT"
-cd "$WT" && go test ./internal/link/            # 绿（带修复）
-cd /Users/dev/work/alpha && git show 94899dc^:internal/link/engine.go > "$WT/internal/link/engine.go"
-cd "$WT" && go test ./internal/link/            # FAIL: undefined: refTokenPat → 强耦合
+cd <仓库 A 的本地路径> && git archive ⟨sha⟩ | tar -x -C "$WT"
+cd "$WT" && go test ./link/            # 绿（带修复）
+cd <仓库 A 的本地路径> && git show ⟨sha⟩^:link/engine.go > "$WT/link/engine.go"
+cd "$WT" && go test ./link/            # FAIL: undefined: 那个新符号 → 强耦合
 ```
 
 ---
@@ -158,11 +180,11 @@ cd "$WT" && go test ./internal/link/            # FAIL: undefined: refTokenPat �
 
 ### 3.1 编译失败被当成「测试仍然绿」—— 最危险的一个
 
-**现象**：alpha `94899dc` 最初被判成 **vacuous**（高危），报告写着
+**现象**：仓库 A `⟨sha⟩` 最初被判成 **vacuous**（高危），报告写着
 「撤掉修复后 36 个测试全部通过」，而同一份报告的证据栏里明明写着
-`FAIL alpha/internal/link [build failed]` 和 `undefined: refTokenPat`。
+`FAIL 仓库 A/link [build failed]` 和 `undefined: 那个新符号`。
 
-**根因**：测试跑的是整个模块（`./...`）。`internal/link` 编译不过，
+**根因**：测试跑的是整个模块（`./...`）。`link` 编译不过，
 旁边 20 个包照常通过；全局计数里「失败数 = 0」，于是被判成「仍然绿」。
 **一个根本没跑起来的测试，被算成了通过。**
 
@@ -178,7 +200,7 @@ cd "$WT" && go test ./internal/link/            # FAIL: undefined: refTokenPat �
 
 ### 3.2 仓库没有测试运行器 → 直接报错退出
 
-**现象**：`epsilon`、`zeta`、`delta` 跑 `--mode check` 只得到一行
+**现象**：仓库 E、仓库 F、仓库 D 跑 `--mode check` 只得到一行
 `no supported test runner found`，退出码 2，什么发现都没有。
 
 **根因**：CLI 在做任何检查之前就要求适配器。但静态体检读的是文件，
@@ -190,7 +212,7 @@ cd "$WT" && go test ./internal/link/            # FAIL: undefined: refTokenPat �
 
 ### 3.3 只加测试的提交被扣上「空洞」
 
-**现象**：alpha `0d857d1`（`test(storage): cover encrypted store`）被判成
+**现象**：仓库 A `⟨sha⟩`（`test(storage): cover encrypted store`）被判成
 vacuous —— 高危指控，说这个提交加的 21 个测试什么都没证明。
 
 **根因**：这个提交只改了 `CHANGELOG.md` 和 `store_test.go`，**没改任何代码**。
@@ -201,7 +223,7 @@ vacuous —— 高危指控，说这个提交加的 21 个测试什么都没证�
 
 ### 3.4 改了注释和空白的提交被要求补测试
 
-**现象**：alpha `e2d22b7`（`fix(bench): 修 vet 报错（冗余换行）`）被判
+**现象**：仓库 A `⟨sha⟩`（`fix(bench): 修 vet 报错（冗余换行）`）被判
 「改了代码但没有测试」。实际上它只是把 `fmt.Println("...\n")` 改成
 `fmt.Print("...\n\n")`，输出完全一样。
 
@@ -211,8 +233,8 @@ vacuous —— 高危指控，说这个提交加的 21 个测试什么都没证�
 
 ### 3.5 「2026-10」被当成了文件路径
 
-**现象**：gamma 多出 3 条高危 `skipped-test`，说跳过条件依赖
-`internal/ledger/2026-10` 和 `internal/collect/me@example.com`。
+**现象**：仓库 C 多出 3 条高危 `skipped-test`，说跳过条件依赖
+`ledger/2026-10` 和 `collect/me@example.com`。
 
 **根因**：这两个都不是文件 —— 前者是月份键，后者是邮箱身份。工具把
 **任何字符串字面量**都当成了路径候选。
@@ -231,7 +253,7 @@ vacuous —— 高危指控，说这个提交加的 21 个测试什么都没证�
 **修复**：绝对路径只在其真的位于仓库内部时才参与解析，否则直接放弃。
 
 ### 3.7 「断言被架空」和「守卫被跳过」被混成一件事
-**现象**：alpha `cmd/alpha-seed/main.go:91` 被描述成
+**现象**：仓库 A `cmd/seed/main.go:91` 被描述成
 「错误被丢掉，断言却要求它是空的 —— 加载失败时这条断言照样通过」。
 
 **根因**：那里根本没有断言。`if len(existing) > 0 { ...; return }` 是一段
@@ -263,8 +285,8 @@ vacuous —— 高危指控，说这个提交加的 21 个测试什么都没证�
 
 ### 3.9 源码文件被塞给了测试运行器
 
-**现象**：在真实 Python 仓库（harness）上跑反事实审计时，命令是
-`pytest ... src/deepseek_harness/api.py tests/test_client.py` —— 源码文件
+**现象**：在真实 Python 仓库（仓库 I）上跑反事实审计时，命令是
+`pytest ... src/<pkg>/api.py tests/test_client.py` —— 源码文件
 也传给了 pytest。pytest 会把 `api.py` 当测试模块收集，于是报了一条
 `ImportError while importing test module api.py`。
 
@@ -296,14 +318,14 @@ job 要的平台」。只有 linux/amd64 那个 job 才真跑一遍。
 
 ---
 
-`delta` 的工作树里有一份 gamma 源码的 untracked 副本
+仓库 D 的工作树里有一份 仓库 C 源码的 untracked 副本
 （`cmd/`、`go.mod`、`internal/`，逐字节相同）。这是**正在进行中的开发工作**，
 不是数据泄漏。
 
 它对 dogfood 数据有一个实际影响：那份多出来的 `go.mod` 让 Go 适配器认领了
-delta，于是「这个仓库零测试」这条发现消失了 —— 工具看的是磁盘上真实存在
-的东西，它没有说错，是仓库的状态变了。上面的 delta 数据取自一份
-**干净 clone**（commit 33ffb44），以免正在进行的开发影响基线。
+仓库 D，于是「这个仓库零测试」这条发现消失了 —— 工具看的是磁盘上真实存在
+的东西，它没有说错，是仓库的状态变了。上面的 仓库 D 数据取自一份
+**干净 clone**（commit ⟨sha⟩），以免正在进行的开发影响基线。
 
 顺带验证了一件事：**工具不会往调用方仓库里写任何东西**。它的全部写操作只有
 两处 —— 把生成物目录（dist/build/out/vendor/node_modules/static/public）复制进
@@ -312,12 +334,12 @@ delta，于是「这个仓库零测试」这条发现消失了 —— 工具看�
 
 ### 3.11 本地 replace 依赖被判成「测试和修复耦合」
 
-**现象**：在 example 的两个真实 Go 仓上跑审计，全部提交都判成
+**现象**：在外部组织的那两个真实 Go 仓（仓库 G / H）上跑审计，全部提交都判成
 `coupled（无法判定：测试和修复耦合在一起，拆不开）`。
 
 **根因**：那两个仓的 `go.mod` 里有
-`replace github.com/example/shared-lib => ../shared` —— 依赖一个**同级
-目录**。开发者的机器上有这个目录（软链到 `../shared-lib`），CI 里
+`replace example.com/shared => ../shared` —— 依赖一个**同级
+目录**。开发者的机器上有这个目录（软链到共享库 S 的真实目录），CI 里
 也是 checkout 出来再 `ln -sfn` 建链。
 
 而反事实 worktree 建在临时目录下，旁边没有 `../shared` → 编译失败 →
@@ -388,8 +410,8 @@ delta，于是「这个仓库零测试」这条发现消失了 —— 工具看�
 
 ### 3.14 编译错误在测试文件里 vs 在源码文件里，含义是相反的
 
-**现象**：在 admin-service 上审一个提交，编译错误全在**非测试文件**里
-（`standardized.go` 引用了 shared 新增的 Seedance API），工具却判成
+**现象**：在 仓库 G 上审一个提交，编译错误全在**非测试文件**里
+（`standardized.go` 引用了 shared 新增的 某视频模型 API），工具却判成
 「测试和修复耦合」。
 
 **根因**：`classify` 只看「有没有编译错误」，不看错误**在哪**。
@@ -409,7 +431,7 @@ delta，于是「这个仓库零测试」这条发现消失了 —— 工具看�
 **现象**：CI 的做法是
 
 ```
-go mod edit -replace github.com/example/shared-lib="$GITHUB_WORKSPACE/_shared"
+go mod edit -replace example.com/shared="$GITHUB_WORKSPACE/_shared"
 go mod tidy
 ```
 
@@ -502,7 +524,7 @@ replace example.com/x => example.com/x v1.0.0
 绝对路径**必须**继承 —— CI 注入的就是绝对路径：
 
 ```
-go mod edit -replace github.com/example/shared-lib="$GITHUB_WORKSPACE/_shared"
+go mod edit -replace example.com/shared="$GITHUB_WORKSPACE/_shared"
 ```
 
 这一条有专门的测试守着（「绝对目录目标仍然被继承」），防止修过头把真正要
@@ -575,7 +597,7 @@ scripts/gate.sh record -yes            # 少写了 -target
 | 动作 | 结果 |
 |---|---|
 | `record -yes`（不带 `-target`） | 拒绝，退出码 2，状态文件一个字节没动，名单还是 6 个 |
-| `record -yes` 只写 5 个 | 拒绝，退出码 2，点名 `zeta` |
+| `record -yes` 只写 5 个 | 拒绝，退出码 2，点名 仓库 F |
 | `record -yes` 写全 6 个 | 成功，退出码 0 |
 | `record -yes --force` 只写 1 个 | 允许，并把丢掉的 5 个名字打出来 |
 
@@ -649,7 +671,7 @@ NO CHANGE
   就是 3.18 那个自毁的毛病换个姿势复发。
 - **被 `.gitignore` 忽略的文件不算数**：编译产物、覆盖率文件、临时目录，
   它们每天都在那儿，触发就等于闸门永远在响。
-- **只看工具自己的仓库，不看被审仓库的工作树**：delta 的工作树里一直有
+- **只看工具自己的仓库，不看被审仓库的工作树**：仓库 D 的工作树里一直有
   用户正在开发的未提交源码，把它算进去，闸门就每一轮都喊「有变化」——
   正是 3.18 的病根。被审仓库的工作树由工具自己的审计去报（那种情况会被
   报成高危，见任务说明里的「已知情况」）。**这条是有意的取舍，不是漏掉。**
@@ -685,8 +707,8 @@ exit=1
 
 ### 3.20 一行改动也能被判成「高危：这个测试什么都没测到」
 
-**现象**：修完 3.19 之后，gamma（7 个 module，一直没被审过）第一次能审了，
-审出来 1 条**高危**的 `vacuous-test`，指着 `internal/collect/collect_test.go`。
+**现象**：修完 3.19 之后，仓库 C（7 个 module，一直没被审过）第一次能审了，
+审出来 1 条**高危**的 `vacuous-test`，指着 `collect/collect_test.go`。
 
 人工核实之后：**这是误伤**。
 
@@ -726,7 +748,7 @@ exit=1
 |---|---|---|
 | 小改动降级 | `TestAuditDoesNotAccuseATinyChange`（夹具：一行版本号 + 碰了测试文件） | `TestAuditDetectsVacuousTest`（真的空洞测试仍然是高危） |
 
-真实仓库复核：同一条 gamma 的发现，从「高危」变成「警告」，措辞也换成
+真实仓库复核：同一条 仓库 C 的发现，从「高危」变成「警告」，措辞也换成
 了实话。
 
 ---
@@ -762,8 +784,8 @@ exit=1
 **这个工具的全部意义是「判决必须来自真的执行」。这里判决来自一次根本没发生
 的执行。**
 
-**为什么一直没人发现**：6 个被审仓里 alpha / beta / epsilon / zeta 都是
-单 module，gamma 有 7 个 module 但只跑过 `--mode check`。而**这个仓
+**为什么一直没人发现**：6 个被审仓里 仓库 A / 仓库 B / 仓库 E / 仓库 F 都是
+单 module，仓库 C 有 7 个 module 但只跑过 `--mode check`。而**这个仓
 自己**有 4 个嵌套 module（testdata 夹具）—— 也就是说，CI 里那个
 `vacuous --mode audit --fail-on critical` 的 self-check job，**从第一天起就
 是装饰品**：它审的每一笔提交都是 environment，INFO 级，`--fail-on critical`
@@ -850,17 +872,17 @@ exit=1
 
 ---
 
-## 4. 在 example 两个真实仓库上的验证
+## 4. 在两个跨仓协作的真实仓库上验证
 
-`admin-service`（685+ 提交，22 个测试文件）和 `relay-service`
+仓库 G（685+ 提交，22 个测试文件）和 仓库 H
 （785+ 提交，78 个测试文件）—— 都是 Go 仓，都用 `replace` 指向一个同级目录。
 
 **静态体检**（修完 3.12 之后）：
 
 | 仓 | 结果 |
 |---|---|
-| admin-service | **0 条发现** —— 它的 `ci.yml` 确实跑 `go test` |
-| relay-service | 1 条警告 —— `internal/search/google_test.go` 的 Google API 集成测试在没 key 时跳过（合法） |
+| 仓库 G | **0 条发现** —— 它的 `ci.yml` 确实跑 `go test` |
+| 仓库 H | 1 条警告 —— `search/google_test.go` 的 Google API 集成测试在没 key 时跳过（合法） |
 
 **反事实审计**（12 个提交，12.7 秒）：
 
@@ -871,10 +893,10 @@ exit=1
 
 **唯一那条高危发现是真的**，已人工核实：
 
-> 提交 `74ad83c6`（2026-10-19）改了 `internal/channelops/standardized.go` 的
+> 提交 `⟨sha⟩`（2026-10-19）改了 `channelops/standardized.go` 的
 > 进度逻辑（`progress == 0 && status == completed → 100`）和一个函数签名，
 > **没有带任何测试**。commit message 写的是
-> 「update logic for seedance **manual test**」——
+> 「update logic for 某视频模型 —— **manual test**」——
 > 靠手动验证代替测试。
 
 coupled 那 4 条也是真的：测试调用了这次修复改过签名的函数，撤掉修复就
@@ -888,24 +910,24 @@ environment 那 3 条是 shared 库往前走了一步、父提交那份代码跟
 2026-10-20 复核这两个修复时，**没有**直接采信文档里的结论，而是把 CI 的
 做法原样搭出来做了一次 A/B。
 
-搭法（复刻 `admin-service` 的 `origin/develop`）：
+搭法（复刻 仓库 G 的 `origin/develop`）：
 
 ```bash
 # 1. admin 检出到 origin/develop —— 这一版提交在仓库里的 go.mod 没有 replace
-git clone --no-checkout <admin> /tmp/example/admin-service
-cd /tmp/example/admin-service
+git clone --no-checkout <admin> /tmp/shared-verify/admin
+cd /tmp/shared-verify/admin
 git fetch origin '+refs/remotes/origin/*:refs/remotes/upstream/*'
 git checkout upstream/develop
 
 # 2. shared 检出到同一个 revision
-git clone --no-checkout <shared> /tmp/example/shared-lib
-cd /tmp/example/shared-lib
+git clone --no-checkout <shared> /tmp/shared-verify/shared
+cd /tmp/shared-verify/shared
 git fetch origin '+refs/remotes/origin/*:refs/remotes/upstream/*'
 git checkout upstream/develop
 
 # 3. 照 CI 的做法注入 replace（CI 里是 go mod edit -replace 绝对路径）
-cd /tmp/example/admin-service
-go mod edit -replace github.com/example/shared-lib=/tmp/example/shared-lib
+cd /tmp/shared-verify/admin
+go mod edit -replace example.com/shared=/tmp/shared-verify/shared
 ```
 
 **A/B 结果**（同样 8 个提交）：
@@ -928,23 +950,23 @@ go mod edit -replace github.com/example/shared-lib=/tmp/example/shared-lib
 
 ## 5. Python 适配器在真实仓库上的验证
 
-`harness`（本地唯一的 Python 仓，有 `pytest.ini` 和 6 个真测试文件）
+仓库 I（本地唯一的 Python 仓，有 `pytest.ini` 和 6 个真测试文件）
 是 Python 反事实路径的第一个真实靶子。
 
 ```bash
-cd /Users/dev/work/harness
-vacuous --mode audit --commit 6896fd1545
+cd <仓库 I 的本地路径>
+vacuous --mode audit --commit ⟨sha⟩
 ```
 
-`6896fd1545 fix(python): report run finish reason` 同时改了
-`src/deepseek_harness/api.py` 和 `tests/test_client.py` —— 正是 fix+test 的形状。
+`⟨sha⟩ fix(python): report run finish reason` 同时改了
+`src/<pkg>/api.py` 和 `tests/test_client.py` —— 正是 fix+test 的形状。
 
 判定 **coupled**：撤掉修复后，测试文件 import 不到这次修复才引入的
 `RunResult`。这是方法本身的边界（见 README「这个方法做不到什么」），
 工具给的答案是诚实的。
 
 **Node 适配器仍然没有真实靶子** —— 本地四个 Node 仓
-（epsilon / zeta / kobo-mascot / mascot）都没有配测试运行器，
+（仓库 E / 仓库 F / kobo-mascot / mascot）都没有配测试运行器，
 `package.json` 里 `scripts` 是空的。所以 Node 的反事实路径**只有夹具测试
 覆盖，从未在真实仓库上跑通**。这是剩下的最大空白。
 
@@ -983,17 +1005,17 @@ CI 里有两个 job：`build`（fmt / vet / build / test -race / 空缓存 test�
 
 - **n = 1 的仓**：6 个仓库、约 120 次运行。所有「真阳性」的结论都是人工
   逐条核实的，但样本量摆在这里，说不上统计显著。
-- **耦合判定的精度**：`94899dc` 判对了，但那是唯一一个手工拆开验证过的
+- **耦合判定的精度**：`⟨sha⟩` 判对了，但那是唯一一个手工拆开验证过的
   耦合案例。7 条 coupled 里其余 6 条没有逐一复核。
-- **coupled 的成因没有分类**：alpha 那 7 条 coupled 里，大部分是「测试引用了
+- **coupled 的成因没有分类**：仓库 A 那 7 条 coupled 里，大部分是「测试引用了
   这次修复才引入的符号」—— 撤掉修复后测试编译不过。这在源码层面无法拆开，
   是这个方法本身的边界，不是工具的缺陷。但工具目前只给一个笼统的 coupled，
   没有区分「测试用了新 API」和「别的原因编译不过」。
-- **Python / Node 适配器的真实仓库验证**：Python 已经在 harness 上
+- **Python / Node 适配器的真实仓库验证**：Python 已经在 仓库 I 上
   跑通（见第 4 节）。**Node 仍然没有靶子** —— 本地四个 Node 仓都没配测试
   运行器，所以 jest / vitest 的反事实路径只有夹具测试覆盖，从未在真实仓库上
   跑通。这是最大的已知空白。
-- **多 module 场景**：gamma 有 7 个独立 module。**修 3.19 之前它其实
+- **多 module 场景**：仓库 C 有 7 个独立 module。**修 3.19 之前它其实
   根本没被审过** —— 根 module 的测试一次都没跑过，审出来的是夹具的结论。
   修完之后它第一次能审了（`proven 2 · vacuous 1 · 无测试 7 · 无法判定 28`），
   但里面 25 条 environment 说明这套反事实在「一堆小 module 的实验仓」上很吃力：
