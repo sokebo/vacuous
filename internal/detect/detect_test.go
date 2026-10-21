@@ -309,10 +309,28 @@ jobs:
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
+	// The rule is about the REPOSITORY: "does any workflow run the tests".
+	// So the finding belongs to the repository, not to one workflow.
+	//
+	// Asserting on the location rather than on the wording is deliberate:
+	// a test that checks for a phrase in a summary silently stops checking
+	// anything the moment somebody rewords the sentence. That is how a
+	// negative control turns into decoration.
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "测试步骤") {
-			t.Fatalf("a workflow that never was a test pipeline must not be reported: %+v", f)
+		if f.File != ".github/workflows" {
+			t.Errorf("the finding must be about the repository, not about one workflow: %+v", f)
 		}
+	}
+	// And the repository here really has no test-running workflow, so the
+	// rule has to fire.
+	var found bool
+	for _, f := range findings {
+		if f.File == ".github/workflows" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a repository whose CI never runs tests must be reported: %+v", findings)
 	}
 }
 
