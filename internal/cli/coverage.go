@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sokebo/vacuous/internal/core"
+	"github.com/sokebo/vacuous/internal/detect"
 )
 
 // This file answers a question the tool used to refuse to answer.
@@ -93,17 +94,24 @@ func testCount(files []string) int {
 
 // noRunnerFinding describes a repository that has no test runner.
 //
-// The three cases are genuinely different and get different answers:
+// The cases are genuinely different and get different answers:
 //
 //   - code but no tests: the repository is unprotected. HIGH.
 //   - tests but no runner: the tests exist but nobody wired them up. WARN.
+//   - its own check command: the checks exist, this tool cannot drive
+//     them. INFO - the repository is not empty, the report is blind.
 //   - neither: there is simply nothing here to test. INFO.
 func noRunnerFinding(root string, files []string) core.Finding {
 	src := sourceCount(files)
 	tests := testCount(files)
+	// The repository may run its own checks. "No test file the tool
+	// recognises" is not the same as "no checks" - and the difference
+	// decides what the reader does next: write tests, or ask for an
+	// adapter.
+	harness := detect.HarnessCommands(root)
 
 	switch {
-	case src > 0 && tests == 0:
+	case src > 0 && tests == 0 && len(harness) == 0:
 		return core.Finding{
 			Kind:     core.KindNoTestForFix,
 			Severity: core.SevHigh,
@@ -117,6 +125,9 @@ func noRunnerFinding(root string, files []string) core.Finding {
 			Hint: "先给最关键的那条路径补一个测试。" +
 				"不需要全套 —— 一个能在改坏时变红的测试就够了",
 		}
+
+	case len(harness) > 0:
+		return harnessFinding(harness, src, tests)
 
 	case tests > 0:
 		return core.Finding{
@@ -142,5 +153,42 @@ func noRunnerFinding(root string, files []string) core.Finding {
 				"静态检查已经跑完了，但反事实审计在这里无事可做。",
 			Hint: "如果这个仓库以后会有代码，记得先把测试跑起来",
 		}
+	}
+}
+
+// harnessFinding describes a repository that runs its own checks, which
+// this tool cannot drive.
+//
+// The severity is INFO on purpose. The repository is not unprotected - it
+// runs its own checks. What the report cannot say is whether those checks
+// actually guard the fixes. That is a hole in the report, not a defect in
+// the repository, and reporting it as a defect is how a tool earns
+// --no-verify.
+func harnessFinding(harness []detect.HarnessCommand, src, tests int) core.Finding {
+	var lines, evidence []string
+	for _, h := range harness {
+		lines = append(lines, "  npm run "+h.Script+" → "+h.Command)
+		evidence = append(evidence, h.Files...)
+	}
+
+	detail := []string{
+		"仓库里有 " + strconv.Itoa(src) + " 个源文件、" + strconv.Itoa(tests) +
+			" 个工具能识别的测试文件，但找到了 " + strconv.Itoa(len(harness)) +
+			" 个这个工具跑不了的验证命令：",
+	}
+	detail = append(detail, lines...)
+	detail = append(detail,
+		"这个工具只会驱动 go test / pytest / jest / vitest，跑不了它们。",
+		"所以这份报告没有覆盖到这些检查 —— 不是这个仓没有检查，是我没看。",
+	)
+
+	return core.Finding{
+		Kind:     core.KindUnsupportedTests,
+		Severity: core.SevInfo,
+		Summary:  "这个仓有自己的验证命令，但这个工具跑不了它们",
+		Detail:   strings.Join(detail, "\n"),
+		Evidence: strings.Join(evidence, "\n"),
+		Hint: "想让它们也进这份报告，需要给工具加一个能驱动这条命令的适配器。" +
+			"在那之前，这条命令到底守住了什么，得你自己用反事实的办法验",
 	}
 }
