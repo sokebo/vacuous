@@ -36,7 +36,13 @@ touch "${LOG}"
 
 # 私有仓需要 GOPRIVATE；本地 replace 依赖需要 GOPROXY=direct。
 export GOPRIVATE="${GOPRIVATE:-github.com/*/*}"
-export GOPROXY="${GOPROXY:-direct}"
+# Offline by default.
+#
+# The module cache on the machine is already warm, and the network is not
+# reliable: a build that tries to reach the proxy hangs in SYN_SENT and
+# never times out. "module lookup disabled" is a loud, quick failure; a
+# hang is neither.
+export GOPROXY="${GOPROXY:-off}"
 export GOFLAGS="${GOFLAGS:--mod=mod}"
 
 log() { printf '%s\n' "$*" >&2; }
