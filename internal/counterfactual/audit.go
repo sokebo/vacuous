@@ -90,6 +90,18 @@ const (
 	// not vacuous. And nothing is missing from the checkout — so it is
 	// not an environment problem.
 	VerdictSuiteCrash Verdict = "suite-crash"
+	// VerdictPreExistingFailure means the counterfactual was red, but the
+	// same suite is red with the fix in place too.
+	//
+	// The counterfactual can only say "something is red without the fix".
+	// The baseline says whether removing the fix is what made it red. When
+	// the suite is red either way, the red is not evidence about this fix
+	// — it was already there, or the test is flaky.
+	//
+	// Without this verdict the tool would accuse a test of guarding a fix
+	// it never watched. That is the most expensive mistake available to
+	// it: the reader's next move is to delete a test that was fine.
+	VerdictPreExistingFailure Verdict = "pre-existing-failure"
 	// VerdictNotApplicable means there was nothing to judge, e.g. a commit
 	// that only touched docs.
 	VerdictNotApplicable Verdict = "n/a"
@@ -136,6 +148,12 @@ var environmentFailurePatterns = []string{
 	"dial tcp",
 	"i/o timeout",
 	"connection refused",
+	// The go.mod asks for a newer Go than this machine has, and the
+	// newer one cannot be fetched. Observed on a public repository whose
+	// go.mod requires a toolchain that has not been released yet. The
+	// test is fine; the machine simply cannot build this commit.
+	"toolchain not available",
+	"go.mod requires go >=",
 }
 
 // isEnvironmentFailure reports whether build errors point at an incomplete
@@ -567,6 +585,17 @@ type runOutcome struct {
 	// contradiction explains why the verdict could not be trusted, when
 	// the runner's own output disagrees with the counts.
 	contradiction string
+	// preExisting says the red in the counterfactual was already there
+	// with the fix in place.
+	//
+	// The counterfactual answers "is anything red without the fix". It
+	// does not answer "did removing the fix make it red". A suite that is
+	// red already, or a flaky test, answers the first question and
+	// silently lies about the second - and the tool would then accuse a
+	// test of guarding a fix it never watched.
+	preExisting bool
+	// preExistingDetail explains the baseline run in one sentence.
+	preExistingDetail string
 }
 
 // runCounterfactual builds the "fix removed, test kept" tree and runs the
@@ -673,12 +702,86 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 		result.BuildErrors = append(result.BuildErrors, copyErr.Error())
 	}
 
-	return &runOutcome{
+	out := &runOutcome{
 		command:     result.Command,
 		script:      plan.Script,
 		result:      result,
 		failureTail: tailOf(result, 40),
-	}, nil
+	}
+
+	// A red counterfactual only means "something is red without the fix".
+	// It does not mean "the fix is what made it red" - the suite may have
+	// been red already, or the test may be flaky. Claiming a test guards
+	// a fix on that basis is a false accusation, and it is the most
+	// expensive kind this tool can make.
+	//
+	// The baseline settles it: run the same scope with the fix back in
+	// place. Baseline green and counterfactual red means the red is the
+	// fix's. Baseline red too means the red was there before, and this
+	// commit cannot be judged.
+	if countFailures(result) > 0 {
+		preExisting, detail := a.baselineAlsoRed(ctx, sha, target, plan)
+		if preExisting {
+			out.preExisting = true
+			out.preExistingDetail = detail
+		}
+	}
+
+	return out, nil
+}
+
+// baselineAlsoRed runs the same scope with the fix in place and reports
+// whether the suite is red there too.
+//
+// The commit's own tree is the baseline: it is the parent plus the fix plus
+// the tests. Anything red in it was red before the fix was removed, so the
+// counterfactual's red cannot be attributed to the removal.
+//
+// It returns (true, detail) when the baseline is red as well, and
+// (false, "") when the baseline is green - which means the counterfactual's
+// red really is the fix's.
+//
+// A baseline that cannot be run at all counts as red. The question is
+// "was the suite already red", and a baseline that did not run cannot
+// answer it. That direction is the safe one: the tool says "cannot tell"
+// instead of claiming a test guards something it never saw.
+func (a *Auditor) baselineAlsoRed(ctx context.Context, sha string, target core.TestTarget, plan core.Plan) (bool, string) {
+	wt, err := a.worktree.Create(ctx, sha)
+	if err != nil {
+		return true, "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
+	}
+	defer wt.Remove()
+
+	basePlan, err := a.adapter.Plan(ctx, core.PlanRequest{Root: wt.Path(), Target: target})
+	if err != nil {
+		return true, "基线建不出测试命令（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
+	}
+	basePlan.Dir = wt.Path()
+
+	runCtx := ctx
+	if a.runTimeout != nil {
+		runCtx = a.runTimeout()
+	}
+	result, err := a.adapter.Run(runCtx, basePlan)
+	if err != nil {
+		return true, "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"
+	}
+	if len(result.BuildErrors) > 0 {
+		return true, "基线（带着修复的同一个提交）编译不过，所以无法确认这个红灯是不是这次修复造成的"
+	}
+	if countFailures(result) == 0 {
+		return false, ""
+	}
+	return true, fmt.Sprintf(
+		"带着修复的同一个提交（%s）里，同样的测试也是红的（%d 个失败）—— "+
+			"这个红灯本来就在，不是撤掉这次修复造成的，所以这里下不了结论",
+		shortSHA(sha), countFailures(result))
+}
+
+// countFailures counts the failing tests in a run.
+func countFailures(res core.RunResult) int {
+	_, fail, _, _ := res.Counts()
+	return fail
 }
 
 // classify turns a run into a verdict.
@@ -717,6 +820,11 @@ func classify(run *runOutcome, isTest func(string) bool) Verdict {
 func verdictFrom(run *runOutcome, isTest func(string) bool) Verdict {
 	if run == nil {
 		return VerdictNotApplicable
+	}
+	// A red that was already there with the fix in place tells us nothing
+	// about this fix. That outranks every other reading of the run.
+	if run.preExisting {
+		return VerdictPreExistingFailure
 	}
 	r := run.result
 	// A suite that could not even build cannot witness anything. It is
@@ -931,6 +1039,26 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 	testFile := firstPath(res.TestFiles)
 
 	switch res.Verdict {
+	case VerdictPreExistingFailure:
+		out = append(out, core.Finding{
+			Kind:     core.KindPreExistingFailure,
+			Severity: core.SevInfo,
+			Summary:  "这个提交没法判定：这个红灯本来就在，不是撤掉这次修复造成的",
+			Detail: fmt.Sprintf(
+				"撤掉修复后有 %d 个测试变红。%s\n"+
+					"所以这一次实验分不出「撤掉修复让测试变红」和「这套测试本来就是红的」—— "+
+					"这里不下结论。\n"+
+					"要判定，得先让这个仓的测试在带着修复的时候也是绿的。",
+				countFail(run), run.preExistingDetail),
+			File:     testFile,
+			Evidence: run.command,
+			Repro:    reproFor(res, run),
+			Hint: "这通常意味着两件事之一：这个仓的测试套件本来就是红的（或者有 flaky 的测试），" +
+				"或者这个提交之前的某个提交就已经弄红了一部分测试。\n" +
+				"先把套件弄绿，再回来审 —— 在套件本身有红灯的时候，" +
+				"「测试在看守修复」这句话是没有依据的",
+		})
+
 	case VerdictProven:
 		out = append(out, core.Finding{
 			Kind:     core.KindVacuousTest, // placeholder replaced below

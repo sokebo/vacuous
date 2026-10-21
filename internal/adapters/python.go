@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -16,12 +17,33 @@ import (
 	"github.com/sokebo/vacuous/internal/core"
 )
 
-// Python drives a pytest suite.
+// pythonMode says which runner the adapter drives.
+type pythonMode int
+
+const (
+	// modePytest drives the project with pytest.
+	//
+	// It is the zero value on purpose: an adapter that was never asked to
+	// detect anything still builds a pytest command, which is what it did
+	// before the standard library's unittest became drivable.
+	modePytest pythonMode = iota
+	// modeUnittest drives the project with the standard library's
+	// unittest: `python -m unittest discover`.
+	modeUnittest
+)
+
+// Python drives a pytest or a unittest suite.
 type Python struct {
 	// root is the project root. Detect records it so ScopeFor can find the
 	// test files that sit next to a changed file. Without it the adapter
 	// declines to narrow a run instead of guessing.
 	root string
+	// mode says which runner this project uses.
+	//
+	// It is decided once, by Detect, and only read afterwards. The engine
+	// audits several commits at the same time through one adapter, so
+	// anything that changed while a run was in flight would be a race.
+	mode pythonMode
 }
 
 // NewPython returns a Python adapter.
@@ -30,9 +52,34 @@ func NewPython() *Python { return &Python{} }
 // Name identifies the adapter.
 func (p *Python) Name() string { return "python" }
 
-// Detect reports whether root looks like a Python project with pytest.
+// Detect reports whether root looks like a Python project this tool can
+// drive.
+//
+// pytest comes first. A project that configures pytest is a pytest project,
+// and driving it any other way would run a different suite than the one its
+// developers run.
+//
+// A project that does not configure pytest is still a Python project when it
+// holds tests that the standard library's unittest can run. Saying "no
+// supported test runner found" about such a repository is not true in the
+// way a reader takes it: it sounds like the project has no tests. It has
+// tests; the tool simply could not run them. Now it can.
 func (p *Python) Detect(root string) bool {
 	p.root = root
+	if p.detectPytest(root) {
+		p.mode = modePytest
+		return true
+	}
+	if len(UnittestSuites(root)) > 0 {
+		p.mode = modeUnittest
+		return true
+	}
+	p.mode = modePytest
+	return false
+}
+
+// detectPytest reports whether root configures pytest.
+func (p *Python) detectPytest(root string) bool {
 	for _, name := range []string{"pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg"} {
 		if !fileExists(filepath.Join(root, name)) {
 			continue
@@ -68,6 +115,9 @@ func (p *Python) IsTestPath(path string) bool {
 // human-readable output: the XML says which cases were skipped and which
 // errored, in a form that does not change with pytest's formatting.
 func (p *Python) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, error) {
+	if p.mode == modeUnittest {
+		return p.planUnittest(req)
+	}
 	// Args[0] is the program to run, so the whole argv starts with python.
 	args := []string{"python3", "-m", "pytest", "-v", "--tb=short", "-p", "no:cacheprovider"}
 
@@ -115,6 +165,9 @@ func (p *Python) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, err
 // and the whole suite runs: a scope that misses a relevant test would turn
 // a vacuous test into a proven one.
 func (p *Python) ScopeFor(changedNonTestFiles []string) []string {
+	if p.mode == modeUnittest {
+		return p.scopeForUnittest(changedNonTestFiles)
+	}
 	if p.root == "" || len(changedNonTestFiles) == 0 {
 		return nil
 	}
@@ -167,6 +220,12 @@ func (p *Python) testFilesIn(dir string) []string {
 
 // Run executes a pytest plan.
 func (p *Python) Run(ctx context.Context, plan core.Plan) (core.RunResult, error) {
+	// A plan that names unittest suites is a unittest plan. The decision
+	// travels with the plan, so a run never has to guess which runner it
+	// is looking at.
+	if len(unittestSuitesFromEnv(plan.Env)) > 0 {
+		return p.runUnittest(ctx, plan)
+	}
 	args := plan.Args
 	if len(args) == 0 {
 		return core.RunResult{}, fmt.Errorf("python adapter: empty plan")
@@ -257,6 +316,791 @@ func pythonProgram(args []string) string {
 		}
 	}
 	return "python3"
+}
+
+// ---------------------------------------------------------------------------
+// unittest
+// ---------------------------------------------------------------------------
+//
+// The standard library's unittest has no machine-readable output. It prints
+// what it did as text, on stderr, one line per test:
+//
+//	test_foo (tests.test_bar.TestBaz.test_foo) ... ok
+//	test_foo (tests.test_bar.TestBaz.test_foo) ... FAIL
+//	test_foo (tests.test_bar.TestBaz.test_foo) ... ERROR
+//	test_foo (tests.test_bar.TestBaz.test_foo) ... skipped 'no fixture'
+//
+// and closes with a summary:
+//
+//	Ran 42 tests in 1.234s
+//
+//	OK
+//	FAILED (failures=1, errors=1, skipped=2)
+//
+// Everything below turns that text into the same vocabulary the other
+// adapters speak, and refuses to guess when the text says something the
+// tool cannot account for.
+
+// unittestSuitesEnv is the environment variable that carries the list of
+// test suites a plan runs.
+//
+// It travels with the plan rather than with the adapter, because the plan
+// is what a Run executes, and the suite list is a property of the checkout,
+// not of the adapter. The Go adapter carries its module list the same way.
+const unittestSuitesEnv = "VACUOUS_PYTHON_SUITES"
+
+// unittestSuitesFromEnv reads the suite list out of a plan's environment.
+func unittestSuitesFromEnv(planEnv []string) []string {
+	for _, kv := range planEnv {
+		if strings.HasPrefix(kv, unittestSuitesEnv+"=") {
+			v := strings.TrimPrefix(kv, unittestSuitesEnv+"=")
+			if v == "" {
+				return nil
+			}
+			return strings.Split(v, ",")
+		}
+	}
+	return nil
+}
+
+// unittestPattern is the file pattern the suites are collected with.
+//
+// It is the pattern the projects themselves use, and matching it matters:
+// a different pattern collects a different set of files, and a suite that
+// collects more than the project runs would report failures the project
+// never sees.
+const unittestPattern = "test_*.py"
+
+// unittestArgs builds the command that runs one suite.
+//
+// The working directory is the repository root, not the suite's directory.
+// The project's own CI runs the suite from the root, and the imports the
+// tests make are relative to the root; running them from anywhere else
+// breaks the very imports that decide whether a test can run at all.
+//
+// The discovery root (-t) is the directory the suite's modules are named
+// relative to. unittest names a module relative to that directory, so
+// getting it wrong does not only mislabel the results: it decides which
+// directory is on the import path.
+func unittestArgs(root, suite string) []string {
+	return []string{
+		"python3", "-m", "unittest", "discover", "-v",
+		"-s", suite,
+		"-t", unittestTopDir(root, suite),
+		"-p", unittestPattern,
+	}
+}
+
+// unittestTopDir returns the directory a suite's test modules are named
+// relative to.
+//
+// unittest imports a suite's test modules as packages when the suite
+// directory holds an __init__.py, and as plain modules when it does not.
+// The directory that decides this is the one that goes on the import path,
+// so it is the one the project's own discovery command would have used.
+//
+// The rule that reproduces it:
+//
+//   - A suite that is not a package is its own discovery root. Its modules
+//     are imported flat, from the suite's own directory.
+//   - A suite that is a package, whose parent is a package too, is
+//     discovered from the parent: the suite is imported as
+//     "<name>.test_module", and the parent's directory is what goes on the
+//     import path.
+//
+// The second case is the one that matters. A suite that imports a helper
+// from its parent directory - which is what a shared bootstrap module is -
+// cannot run when the suite's own directory is the discovery root: the
+// helper is one directory up and nobody put it on the path.
+func unittestTopDir(root, suite string) string {
+	slashed := filepath.ToSlash(suite)
+	if !fileExists(filepath.Join(root, filepath.FromSlash(slashed), "__init__.py")) {
+		return slashed
+	}
+	parent := filepath.ToSlash(filepath.Dir(filepath.FromSlash(slashed)))
+	if parent == "." || parent == "" {
+		return slashed
+	}
+	if !fileExists(filepath.Join(root, filepath.FromSlash(parent), "__init__.py")) {
+		return slashed
+	}
+	return parent
+}
+
+// planUnittest builds the commands that drive the project's unittest suites.
+//
+// A repository can hold several test suites, each in its own directory, and
+// unittest discovers one directory at a time. So does this: one command per
+// suite, and Run merges the results.
+//
+// The suites are computed from the checkout that is about to be tested, not
+// from the repository the adapter was pointed at: the experiment runs
+// against a worktree of the parent commit, and that worktree is what holds
+// the tests.
+func (p *Python) planUnittest(req core.PlanRequest) (core.Plan, error) {
+	suites := UnittestSuites(req.Root)
+	if len(suites) == 0 {
+		return core.Plan{}, fmt.Errorf(
+			"python adapter: no unittest suite found under %s", req.Root)
+	}
+
+	keep := p.unittestSuitesToRun(req.Root, suites, req.Target)
+	if len(keep) == 0 {
+		keep = suites
+	}
+
+	args := unittestArgs(req.Root, keep[0])
+	env := []string{
+		"PYTHONDONTWRITEBYTECODE=1",
+		"NO_COLOR=1",
+		unittestSuitesEnv + "=" + strings.Join(keep, ","),
+	}
+
+	return core.Plan{
+		Adapter:     p.Name(),
+		Args:        args,
+		Dir:         req.Root,
+		Env:         env,
+		Description: "python3 -m unittest discover -v -s " + keep[0],
+	}, nil
+}
+
+// unittestSuitesToRun picks the suites a run should cover.
+//
+// The suites near the changed files are computed in the checkout that is
+// about to be tested, not in the repository the adapter detected: the
+// experiment runs against a worktree of the parent commit, and that
+// worktree is the one that holds the tests. A commit that moved its tests
+// into a new directory is the case where the two layouts differ.
+//
+// The scope the engine asked for is added to that set rather than
+// subtracted from it. The scope was computed against another checkout, and
+// a suite it does not name may still be the one that holds the test that
+// guards the fix.
+func (p *Python) unittestSuitesToRun(root string, suites []string, target core.TestTarget) []string {
+	near, complete := unittestSuitesNear(suites, root, target.Files)
+	if !complete {
+		// A changed file that no suite is near means the mapping is
+		// incomplete, so every suite runs. That is the expensive answer,
+		// and it is the right one: a scope that misses a relevant suite
+		// would turn a vacuous test into a proven one.
+		return suites
+	}
+
+	keep := map[string]bool{}
+	for _, s := range near {
+		keep[s] = true
+	}
+	for _, s := range strings.Fields(target.PkgPattern) {
+		for _, suite := range suites {
+			if suite == s {
+				keep[suite] = true
+			}
+		}
+	}
+
+	var out []string
+	for _, suite := range suites {
+		if keep[suite] {
+			out = append(out, suite)
+		}
+	}
+	return out
+}
+
+// unittestSuitesNear returns the suites near the changed files, and whether
+// every changed file found one.
+//
+// The second value is the important one. When a changed file is near no
+// suite at all, the mapping is incomplete and the caller must not narrow.
+func unittestSuitesNear(suites []string, root string, files []string) ([]string, bool) {
+	if len(files) == 0 {
+		return suites, true
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range files {
+		dir := filepath.Dir(filepath.ToSlash(f))
+		if dir == "" {
+			dir = "."
+		}
+		near := false
+		for _, suite := range suites {
+			if !unittestSuiteNear(unittestTopDir(root, suite), suite, dir) {
+				continue
+			}
+			near = true
+			if !seen[suite] {
+				seen[suite] = true
+				out = append(out, suite)
+			}
+		}
+		if !near {
+			return nil, false
+		}
+	}
+	return out, true
+}
+
+// scopeForUnittest maps the changed files onto the suites that could be
+// affected by them.
+//
+// A suite is near a changed file when the two sit in the same tree: the
+// file is inside the suite, the suite's discovery root is inside the
+// file's directory, or the file's directory is inside the suite's
+// discovery root.
+//
+// A changed file that no suite is near means the mapping is incomplete, so
+// the scope is empty and every suite runs. That is the expensive answer,
+// and it is the right one: a scope that misses a relevant suite would turn
+// a vacuous test into a proven one.
+func (p *Python) scopeForUnittest(changedNonTestFiles []string) []string {
+	if p.root == "" || len(changedNonTestFiles) == 0 {
+		return nil
+	}
+	suites := UnittestSuites(p.root)
+	if len(suites) == 0 {
+		return nil
+	}
+	near, complete := unittestSuitesNear(suites, p.root, changedNonTestFiles)
+	if !complete {
+		// This change cannot be narrowed safely.
+		return nil
+	}
+	sort.Strings(near)
+	return near
+}
+
+// unittestSuiteNear reports whether a suite is close enough to a changed
+// directory to be worth running.
+func unittestSuiteNear(top, suite, dir string) bool {
+	// The changed file lives inside the suite's own directory.
+	if dir == suite || strings.HasPrefix(dir, suite+"/") {
+		return true
+	}
+	// The changed file lives inside the suite's discovery root.
+	if top != "." && (dir == top || strings.HasPrefix(dir, top+"/")) {
+		return true
+	}
+	// The suite's discovery root lives inside the changed file's directory:
+	// the change is in the tree the suite covers.
+	if dir == "." {
+		return true
+	}
+	return top == dir || strings.HasPrefix(top, dir+"/")
+}
+
+// unittestSuiteResult is what one suite's run produced.
+type unittestSuiteResult struct {
+	outcomes    []core.TestOutcome
+	suiteErrors []string
+	exitCode    int
+	durationMS  int64
+	// command is the command line that ran the suite.
+	command string
+	// raw is the runner's complete output. The failure check needs all of
+	// it: a tail would miss the failure on a long run and catch it on a
+	// short one, and a check that fires at random is worse than none.
+	raw string
+}
+
+// runUnittest runs every suite the plan names and merges the results.
+//
+// A repository that keeps its tests in several directories has several
+// suites. Running only one of them would let a broken suite hide behind a
+// green one, which is exactly the kind of quiet pass this tool exists to
+// catch.
+func (p *Python) runUnittest(ctx context.Context, plan core.Plan) (core.RunResult, error) {
+	suites := unittestSuitesFromEnv(plan.Env)
+	if len(suites) == 0 {
+		return core.RunResult{}, fmt.Errorf("python adapter: the plan names no unittest suite")
+	}
+
+	merged := core.RunResult{Command: plan.Command()}
+	var raw strings.Builder
+	var commands []string
+	for _, suite := range suites {
+		res := p.runUnittestSuite(ctx, plan, suite)
+		merged.Outcomes = append(merged.Outcomes, res.outcomes...)
+		merged.SuiteErrors = append(merged.SuiteErrors, res.suiteErrors...)
+		if res.exitCode != 0 {
+			merged.ExitCode = res.exitCode
+		}
+		merged.DurationMS += res.durationMS
+		raw.WriteString(res.raw)
+		commands = append(commands, res.command)
+	}
+
+	// The command the report shows has to be the whole story. A reader who
+	// is told "one discover command ran" about a repository with seven
+	// suites would conclude that six suites were never touched.
+	if len(commands) > 0 {
+		merged.Command = strings.Join(commands, " && ")
+	}
+
+	merged.RawOutput = tailOf([]byte(raw.String()), 4000)
+	merged.RawFailed = core.MentionsFailure(raw.String())
+
+	sort.SliceStable(merged.Outcomes, func(i, j int) bool {
+		if merged.Outcomes[i].File != merged.Outcomes[j].File {
+			return merged.Outcomes[i].File < merged.Outcomes[j].File
+		}
+		return merged.Outcomes[i].Name < merged.Outcomes[j].Name
+	})
+	return merged, nil
+}
+
+// runUnittestSuite runs one suite and parses what it printed.
+func (p *Python) runUnittestSuite(ctx context.Context, plan core.Plan, suite string) unittestSuiteResult {
+	args := unittestArgs(plan.Dir, suite)
+	// The program comes from the plan, so a caller can point the run at
+	// another interpreter. The rest of the command is rebuilt per suite:
+	// each suite has its own directory, and its own discovery root.
+	prog := ""
+	if len(plan.Args) > 0 {
+		prog = plan.Args[0]
+	}
+	if prog == "" {
+		prog = pythonProgram(args)
+	}
+
+	cmd := exec.CommandContext(ctx, prog, args[1:]...)
+	cmd.Dir = plan.Dir
+	cmd.Env = append(os.Environ(), plan.Env...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	start := time.Now()
+	runErr := cmd.Run()
+	elapsed := time.Since(start)
+
+	out := unittestSuiteResult{
+		exitCode:   exitCodeOf(runErr),
+		durationMS: elapsed.Milliseconds(),
+		command:    core.JoinCommand(args),
+	}
+
+	// unittest writes its report to stderr. Some wrappers redirect it, so
+	// stdout is the fallback - but only when stderr says nothing, because
+	// stdout holds whatever the tests printed, and a test that prints the
+	// word FAIL would make a green run look red.
+	output := stderr.String()
+	if strings.TrimSpace(output) == "" {
+		output = stdout.String()
+	}
+	out.raw = output
+
+	parsed := parseUnittestOutput(plan.Dir, unittestTopDir(plan.Dir, suite), output)
+	out.outcomes = parsed.outcomes
+	out.suiteErrors = parsed.suiteErrors
+	out.suiteErrors = append(out.suiteErrors, unittestExitErrors(out.exitCode, output, runErr)...)
+	return out
+}
+
+// unittestExitErrors turns a runner's exit code into what it means.
+//
+// The codes are not the pytest codes:
+//
+//	0  everything passed
+//	1  a test did not pass
+//	>1 the command could not be run: a usage error, an internal error
+//
+// The third case is not a failing test. Reporting it as one would accuse a
+// test of something the runner itself did, and it would turn "the tool
+// asked the wrong question" into "your test is broken".
+func unittestExitErrors(exitCode int, output string, runErr error) []string {
+	switch {
+	case exitCode == 0 || exitCode == 1:
+		// The suite ran. What it said is in the parsed results.
+		return nil
+	case exitCode > 1:
+		return []string{fmt.Sprintf("unittest exited %d: %s",
+			exitCode, truncate(strings.TrimSpace(output), 2000))}
+	default:
+		reason := strings.TrimSpace(output)
+		if runErr != nil {
+			reason = strings.TrimSpace(runErr.Error() + " " + reason)
+		}
+		return []string{fmt.Sprintf("unittest could not be started (exit code %d): %s",
+			exitCode, truncate(reason, 2000))}
+	}
+}
+
+// unittestVerboseLine matches one line of verbose output.
+//
+// The description comes first and the state last, and the two are separated
+// by " ... ". The state is one of a handful of words, so a line that does
+// not end in one of them is not a result line at all - and a line the tool
+// cannot account for is a line the tool does not record.
+var unittestVerboseLine = regexp.MustCompile(
+	`^(.*?)\s*\.\.\.\s+(ok|FAIL|ERROR|skipped .*|expected failure|unexpected success)$`)
+
+// unittestSummaryLine matches the line that closes the run.
+var unittestSummaryLine = regexp.MustCompile(`^(OK|FAILED)\s*(?:\((.*)\))?$`)
+
+// unittestRanLine matches the "Ran 42 tests in 1.234s" line.
+var unittestRanLine = regexp.MustCompile(`^Ran (\d+) tests? in `)
+
+// unittestCount matches one "failures=1" pair of the summary line.
+var unittestCount = regexp.MustCompile(`(\w+)=(\d+)`)
+
+// unittestFailedTest marks the placeholder unittest uses for a module that
+// could not be imported.
+//
+// The placeholder is a test of its own, so a module that failed to load
+// shows up in the output like any other test. Treating it as a failing test
+// would be a lie twice over: the test never ran, and the failure was in
+// loading the file, not in the behaviour it was written to check.
+const unittestFailedTest = "_FailedTest"
+
+// unittestResult is what one suite's output says.
+type unittestResult struct {
+	outcomes    []core.TestOutcome
+	suiteErrors []string
+	// counts is what the per-line scan found.
+	failures int
+	errors   int
+	skipped  int
+	// ran is what the runner said it ran.
+	ran int
+	// reported is what the summary line said.
+	reportedFailures int
+	reportedErrors   int
+	reportedSkipped  int
+	haveSummary      bool
+}
+
+// parseUnittestOutput reads what one suite printed.
+//
+// The rules that decide the verdict:
+//
+//   - Only the four states unittest actually prints are recorded: ok, FAIL,
+//     ERROR and skipped. Anything else is left unrecorded, because a test
+//     the tool cannot name is a test the tool cannot report on.
+//
+//   - A module that failed to load is a crashed suite, not a failing test.
+//     It goes into the suite errors, where the engine reads it as "this
+//     suite did not run" rather than "this test went red".
+//
+//   - The summary line is cross-checked against the per-line counts. When
+//     they disagree, the parse is wrong, and the tool says so instead of
+//     concluding anything from it: a mis-parse that reads a failing run as
+//     a green one is the worst mistake this tool could make.
+func parseUnittestOutput(root, top, output string) unittestResult {
+	var res unittestResult
+
+	// The reason each unloadable module gave. It lives in the failures
+	// section, which comes after the results, so it is read first.
+	loadErrors := unittestLoadErrors(output)
+
+	// The header of the test being reported. unittest prints the test's
+	// name and id on one line, and the description on the next one when
+	// the test has a docstring - so the state can arrive on a line of its
+	// own, and the header is what says which test it belongs to.
+	pending := ""
+
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimSpace(line)
+
+		// The failures section holds tracebacks, not results. Its
+		// separator is the only place a line of equals signs appears.
+		if strings.HasPrefix(trimmed, "=====") {
+			break
+		}
+
+		if m := unittestVerboseLine.FindStringSubmatch(line); m != nil {
+			desc, state := m[1], m[2]
+			name, id := splitUnittestDesc(desc)
+			if id == "" {
+				// The state belongs to the test whose header came
+				// before it.
+				name, id = splitUnittestDesc(pending)
+			}
+			pending = ""
+			if id == "" {
+				// There is no way to tell which test this is. A
+				// result without a name is not a result.
+				continue
+			}
+			res.record(root, top, name, id, state, loadErrors)
+			continue
+		}
+
+		if isUnittestHeader(trimmed) {
+			pending = trimmed
+		}
+	}
+
+	res.readSummary(output)
+	res.crossCheck()
+	return res
+}
+
+// unittestLoadErrors reads why each unloadable module failed.
+//
+// The reason is the last line of the traceback: the exception itself. A
+// reader who is told "the test module could not be imported" and nothing
+// else has to go and look; a reader who is told "the test module could not
+// be imported: SyntaxError: ..." knows what to fix.
+func unittestLoadErrors(output string) map[string]string {
+	out := map[string]string{}
+	lines := strings.Split(output, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "ERROR: ") {
+			continue
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(line, "ERROR: "))
+		if j := strings.Index(name, " ("); j >= 0 {
+			name = name[:j]
+		}
+		detail := ""
+		for j := i + 1; j < len(lines); j++ {
+			t := strings.TrimSpace(lines[j])
+			if t == "" {
+				break
+			}
+			if strings.HasPrefix(t, "---") {
+				continue
+			}
+			detail = t
+		}
+		if detail != "" {
+			out[name] = detail
+		}
+	}
+	return out
+}
+
+// splitUnittestDesc splits "name (module.Class)" into its two halves.
+//
+// The name is the test method; the id is where the test lives.
+func splitUnittestDesc(desc string) (name, id string) {
+	desc = strings.TrimSpace(desc)
+	if i := strings.Index(desc, " ("); i >= 0 && strings.HasSuffix(desc, ")") {
+		return desc[:i], desc[i+2 : len(desc)-1]
+	}
+	return desc, ""
+}
+
+// isUnittestHeader reports whether a line is the header of a test.
+//
+// The header is the test's name and id in parentheses. It is what a state
+// on its own line refers to.
+func isUnittestHeader(line string) bool {
+	if line == "" || strings.Contains(line, " ... ") {
+		return false
+	}
+	name, id := splitUnittestDesc(line)
+	return name != "" && id != "" && !strings.Contains(name, " ")
+}
+
+// unittestStatus maps a state unittest printed onto vacuous's vocabulary.
+//
+// It is a variable rather than a plain function so the negative-control
+// test can swap in a broken mapping and watch the suite notice the
+// difference.
+//
+// A skipped test is a skip, never a pass. A test that did not run proves
+// nothing, and pretending otherwise is the exact failure this tool hunts
+// for.
+var unittestStatus = func(state string) core.TestStatus {
+	switch state {
+	case "ok":
+		return core.StatusPass
+	case "FAIL", "ERROR":
+		return core.StatusFail
+	case "skipped":
+		return core.StatusSkip
+	}
+	return core.StatusUnknown
+}
+
+// record files one parsed state.
+func (r *unittestResult) record(root, top, name, id, state string, loadErrors map[string]string) {
+	if strings.Contains(id, unittestFailedTest) {
+		// The module could not be loaded. The name is the module it
+		// could not load, which is what a reader needs to see.
+		file := unittestModuleFile(root, top, name)
+		where := file
+		if where == "" {
+			where = name
+		}
+		reason := ""
+		if detail, ok := loadErrors[name]; ok {
+			reason = ": " + detail
+		}
+		r.errors++
+		r.suiteErrors = append(r.suiteErrors,
+			fmt.Sprintf("%s: the test module could not be imported%s", where, reason))
+		return
+	}
+
+	keyword, message := unittestState(state)
+	switch keyword {
+	case "ok":
+		r.outcomes = append(r.outcomes, unittestOutcome(root, top, name, id, unittestStatus("ok"), message))
+	case "FAIL":
+		r.failures++
+		r.outcomes = append(r.outcomes, unittestOutcome(root, top, name, id, unittestStatus("FAIL"), message))
+	case "ERROR":
+		r.errors++
+		r.outcomes = append(r.outcomes, unittestOutcome(root, top, name, id, unittestStatus("ERROR"), message))
+	case "skipped":
+		r.skipped++
+		r.outcomes = append(r.outcomes, unittestOutcome(root, top, name, id, unittestStatus("skipped"), message))
+	default:
+		// "expected failure" and "unexpected success" are states this
+		// tool does not record. They are not failures, and calling them
+		// something else would put a number in the report that the
+		// runner never said.
+	}
+}
+
+// unittestState splits the state unittest printed into its keyword and the
+// text that came with it.
+//
+// A skip carries its reason: "skipped 'no fixture'". The reason is worth
+// keeping - it says why the test did not run, which is usually the whole
+// story.
+func unittestState(state string) (keyword, message string) {
+	if strings.HasPrefix(state, "skipped") {
+		return "skipped", strings.TrimSpace(strings.TrimPrefix(state, "skipped"))
+	}
+	return state, ""
+}
+
+// unittestOutcome turns one reported test into an outcome.
+func unittestOutcome(root, top, name, id string, status core.TestStatus, message string) core.TestOutcome {
+	file := unittestModuleFile(root, top, id)
+	out := core.TestOutcome{
+		Name:    name,
+		File:    file,
+		Status:  status,
+		Message: message,
+	}
+	if file != "" {
+		out.Name = file + "::" + name
+	}
+	return out
+}
+
+// unittestModuleFile maps a dotted module path onto the file that holds it.
+//
+// The module name is relative to the discovery root: a discovery under
+// "workbench/tests" names a test "voc_tests.test_crawler" and the file is
+// "workbench/tests/voc_tests/test_crawler.py". Getting this wrong does not
+// only mislabel a result - it puts the report's file links in the wrong
+// place, which is the same as putting them nowhere.
+//
+// The name may also carry the class and the method, so the longest prefix
+// that names a real file wins.
+func unittestModuleFile(root, top, module string) string {
+	if root == "" || module == "" {
+		return ""
+	}
+	parts := strings.Split(module, ".")
+	for _, base := range []string{top, "."} {
+		for i := len(parts); i > 0; i-- {
+			cand := filepath.Join(root, filepath.FromSlash(base),
+				filepath.FromSlash(strings.Join(parts[:i], "/"))+".py")
+			if fileExists(cand) {
+				return relToRoot(root, cand)
+			}
+			// The module may be a package of its own, with the test
+			// file inside it.
+			if i < len(parts) {
+				inner := filepath.Join(root, filepath.FromSlash(base),
+					filepath.FromSlash(strings.Join(parts[:i], "/")),
+					parts[i]+".py")
+				if fileExists(inner) {
+					return relToRoot(root, inner)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// readSummary reads the numbers the runner closed the run with.
+func (r *unittestResult) readSummary(output string) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if m := unittestRanLine.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			r.ran = atoiOrZero(m[1])
+		}
+		m := unittestSummaryLine.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		r.haveSummary = true
+		for _, kv := range unittestCount.FindAllStringSubmatch(m[2], -1) {
+			switch kv[1] {
+			case "failures":
+				r.reportedFailures = atoiOrZero(kv[2])
+			case "errors":
+				r.reportedErrors = atoiOrZero(kv[2])
+			case "skipped":
+				r.reportedSkipped = atoiOrZero(kv[2])
+			}
+		}
+	}
+}
+
+// crossCheck compares what the runner said with what the scan found.
+//
+// A disagreement means the parse is wrong. It is reported as a crashed
+// suite, because a wrong parse must not end in a verdict: reading a
+// failing run as a green one is the worst mistake this tool could make,
+// and reading a green run as a failing one is the second worst.
+func (r *unittestResult) crossCheck() {
+	if !r.haveSummary {
+		r.suiteErrors = append(r.suiteErrors,
+			"unittest printed no summary line: the output could not be parsed")
+		return
+	}
+	if r.ran > 0 && len(r.outcomes) == 0 && r.errors == 0 {
+		r.suiteErrors = append(r.suiteErrors,
+			fmt.Sprintf("unittest ran %d tests but none of them could be read", r.ran))
+		return
+	}
+	if r.ran == 0 {
+		r.suiteErrors = append(r.suiteErrors,
+			"unittest collected no test at all: the suite did not run")
+		return
+	}
+	mismatch := []string{}
+	if r.failures != r.reportedFailures {
+		mismatch = append(mismatch, fmt.Sprintf("failures: read %d, runner said %d",
+			r.failures, r.reportedFailures))
+	}
+	if r.errors != r.reportedErrors {
+		mismatch = append(mismatch, fmt.Sprintf("errors: read %d, runner said %d",
+			r.errors, r.reportedErrors))
+	}
+	if r.skipped != r.reportedSkipped {
+		mismatch = append(mismatch, fmt.Sprintf("skipped: read %d, runner said %d",
+			r.skipped, r.reportedSkipped))
+	}
+	if len(mismatch) > 0 {
+		r.suiteErrors = append(r.suiteErrors,
+			"unittest's own numbers and the parsed results disagree ("+
+				strings.Join(mismatch, "; ")+"): the output could not be read reliably")
+	}
+}
+
+// atoiOrZero parses a small non-negative number.
+func atoiOrZero(s string) int {
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
 }
 
 // junitCounter keeps the report paths of concurrent plans apart.

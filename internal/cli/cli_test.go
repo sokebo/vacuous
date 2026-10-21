@@ -281,14 +281,19 @@ func Add(a, b int) int {
 	}
 }
 
-// TestAuditOnAUnittestProjectSaysWhatIsMissing proves the error tells the
-// truth about which situation this is.
+// TestAuditOnAUnittestProjectRunsItsSuite proves the tool drives a project
+// whose tests use python -m unittest.
 //
-// "这个仓有测试，但工具只会驱动 pytest" and "这个仓压根没有测试" lead the
-// reader to opposite next steps. A project that uses python -m unittest has
-// tests; the tool simply cannot drive them yet. Saying "no supported test
-// runner found" about it reads like the project has no tests at all.
-func TestAuditOnAUnittestProjectSaysWhatIsMissing(t *testing.T) {
+// This test used to assert the opposite: that the audit refuses to run and
+// says "the tool only drives pytest". That limitation is gone - a unittest
+// project is a Python project with tests, and the tool now runs it. The
+// assertion was pinned to the limitation, so it had to go with it.
+//
+// The point it was protecting still stands: the tool must not confuse "this
+// project has tests it cannot drive" with "this project has no tests". The
+// other half of that rule is TestAuditOnARepoWithNoTestsSaysSo, which is
+// still here.
+func TestAuditOnAUnittestProjectRunsItsSuite(t *testing.T) {
 	m := testfixtures.NewRepo(t)
 	m.Write(t, "main.py", "print('hi')\n")
 	m.Write(t, "workbench/tests/test_thing.py",
@@ -297,14 +302,13 @@ func TestAuditOnAUnittestProjectSaysWhatIsMissing(t *testing.T) {
 
 	code, _, stderr := runCLI(t, "--mode", "audit", m.Dir)
 
-	if code != ExitError {
-		t.Fatalf("exit code = %d, want %d", code, ExitError)
+	if code == ExitError {
+		t.Fatalf("the tool refused to drive a unittest project: %s", stderr)
 	}
-	if !strings.Contains(stderr, "unittest") {
-		t.Errorf("expected the error to name unittest, got: %s", stderr)
-	}
-	if !strings.Contains(stderr, "workbench/tests") {
-		t.Errorf("expected the error to name the suite it found, got: %s", stderr)
+	// The old refusal said which framework it could not drive. That
+	// message must be gone for a project the tool CAN drive.
+	if strings.Contains(stderr, "unittest") {
+		t.Errorf("the tool still refuses to drive unittest projects: %s", stderr)
 	}
 }
 

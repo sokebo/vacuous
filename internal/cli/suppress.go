@@ -235,17 +235,18 @@ func kindTokens(rest string) []string {
 
 // knownKinds are the finding kinds a suppression comment can name.
 var knownKinds = map[string]bool{
-	string(core.KindVacuousTest):       true,
-	string(core.KindSkippedTest):       true,
-	string(core.KindDiscardsError):     true,
-	string(core.KindGuardNotInstalled): true,
-	string(core.KindGuardNotPortable):  true,
-	string(core.KindNoTestForFix):      true,
-	string(core.KindCoupled):           true,
-	string(core.KindEnvironment):       true,
-	string(core.KindSuiteCrash):        true,
-	string(core.KindNoTestRunner):      true,
-	string(core.KindNotApplicable):     true,
+	string(core.KindVacuousTest):        true,
+	string(core.KindSkippedTest):        true,
+	string(core.KindDiscardsError):      true,
+	string(core.KindGuardNotInstalled):  true,
+	string(core.KindGuardNotPortable):   true,
+	string(core.KindNoTestForFix):       true,
+	string(core.KindCoupled):            true,
+	string(core.KindEnvironment):        true,
+	string(core.KindSuiteCrash):         true,
+	string(core.KindPreExistingFailure): true,
+	string(core.KindNoTestRunner):       true,
+	string(core.KindNotApplicable):      true,
 }
 
 // isKnownKind reports whether a word names a finding kind.

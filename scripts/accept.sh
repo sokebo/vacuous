@@ -413,6 +413,11 @@ if [ "${1:-}" = "--local" ]; then
 		name=$(basename "${dir}")
 		[ -d "${dir}/.git" ] || { log "跳过 ${name}（不是 git 仓）"; continue; }
 		total=$(cd "${dir}" && git rev-list --count HEAD 2>/dev/null || echo 0)
+		# 本地克隆也一样要预热依赖：审计是离线的，依赖不在缓存里的话，
+		# 每个提交都落成 environment —— 跑完了，但一条结论都没有。
+		apply_setup "${dir}"
+		prefetch_deps "${dir}"
+		prepare_node_deps "${dir}"
 		accept_one "${name}" "${dir}" "${total}"
 	done
 	echo "结果: ${LOG}"
@@ -467,7 +472,8 @@ if [ "${PHASE}" = "clone" ]; then
 	#
 	# 不用 xargs：仓库名和提交数要一起传进去，xargs 的参数位置不好控。
 	# 也不用 wait -n：macOS 的 /bin/bash 是 3.2，没有这个内建。
-	# 这里等最老的那个 job，等它完了再放新的进来 —— 滚动窗口，够用。
+	# 用 wait_any：等**任意一个**结束就放下一个进来 —— 等最老的那个的话，
+	# 一个 300MB 的大仓能把整条队列堵住。
 	log "开始克隆（并行 ${CLONE_JOBS}）"
 	setup_siblings
 	job_pids=()
