@@ -1137,10 +1137,32 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 
 	switch res.Verdict {
 	case VerdictPreExistingFailure:
+		// Two different facts live here, and they deserve different
+		// weight.
+		//
+		// The first: the red in the counterfactual was already there.
+		// That means the experiment cannot tell whether removing the
+		// fix made anything red - so no verdict. That is information.
+		//
+		// The second: the baseline - this commit's own tree, fix and
+		// tests together - has a red suite. That is a fact about the
+		// commit, and it is the state that used to be unreachable: the
+		// counterfactual only ever ran the "fix removed" side, so
+		// "red even with the fix" could never come out.
+		//
+		// Whether the commit CAUSED that red is a different question -
+		// the parent's state is not known. So the finding says what is
+		// true and points at what to check.
+		// 走到这个分支，基线一定跑过了（基线没跑起来是另一个判定），
+		// 而且是红的 —— 反事实里红的那几个，基线里都红。
+		// 「这个提交所在的那棵树，套件本身就是红的」因此是一个事实，
+		// 而不只是脚注。
+		severity := core.SevWarn
+		summary := "这个提交上，测试套件本身就是红的 —— 这次改动没有测试能作证"
 		out = append(out, core.Finding{
 			Kind:     core.KindPreExistingFailure,
-			Severity: core.SevInfo,
-			Summary:  "这个提交没法判定：这个红灯本来就在，不是撤掉这次修复造成的",
+			Severity: severity,
+			Summary:  summary,
 			Detail: fmt.Sprintf(
 				"撤掉修复后有 %d 个测试变红。%s\n"+
 					"所以这一次实验分不出「撤掉修复让测试变红」和「这套测试本来就是红的」—— "+
