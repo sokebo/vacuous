@@ -125,8 +125,21 @@ fi
 ORG=${1:?用法: scripts/accept.sh <org> | --local <目录> ...}
 shift
 
-repos=$(gh repo list "${ORG}" --limit 100 --json name,diskUsage \
-	--jq '.[] | "\(.name)\t\(.diskUsage)"' | sort -t$'\t' -k2 -rn | cut -f1)
+# 先跑 ACCEPT_FIRST 里点名的仓（按列表顺序），再跑剩下的（按体积从大到小）。
+#
+# 为什么要这个顺序：验收的价值在「有测试运行器的仓上反事实能不能跑通」。
+# 一个 300MB、连测试都没有的静态站排在最后 —— 它当然也能验完，但网络再慢也
+# 不该先卡在最没用的那个上。
+all_repos=$(gh repo list "${ORG}" --limit 100 --json name,diskUsage \
+	--jq '.[] | "\(.name)\t\(.diskUsage)"' | sort -t$'\t' -k2 -rn | cut -f1 | tr '\n' ' ')
+
+repos=""
+for r in ${ACCEPT_FIRST:-}; do
+	case " ${all_repos} " in *" ${r} "*) repos="${repos} ${r}";; esac
+done
+for r in ${all_repos}; do
+	case " ${repos} " in *" ${r} "*) ;; *) repos="${repos} ${r}";; esac
+done
 
 for name in $repos; do
 	if grep -q "^${name}	" "${LOG}" 2>/dev/null; then
