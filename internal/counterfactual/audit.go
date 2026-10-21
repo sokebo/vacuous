@@ -81,6 +81,15 @@ const (
 	// artefact, a submodule, a vendored directory. It says nothing about
 	// the test, and blaming the test for it would be wrong.
 	VerdictEnvironment Verdict = "environment"
+	// VerdictSuiteCrash means a test suite crashed before it could run a
+	// single case: an import that failed, a beforeAll that threw, a
+	// runner that died.
+	//
+	// It is its own verdict because it is neither of the two verdicts
+	// that could have taken its place. The test did not pass — so it is
+	// not vacuous. And nothing is missing from the checkout — so it is
+	// not an environment problem.
+	VerdictSuiteCrash Verdict = "suite-crash"
 	// VerdictNotApplicable means there was nothing to judge, e.g. a commit
 	// that only touched docs.
 	VerdictNotApplicable Verdict = "n/a"
@@ -106,6 +115,27 @@ var environmentFailurePatterns = []string{
 	// developer's environment, not a coupling between the test and the
 	// fix, and saying otherwise blames the test for the environment.
 	"replacement directory",
+	// Go could not resolve a module. The dependency is simply not
+	// available where the run happened — the machine's module cache, a
+	// vendored copy, a reachable proxy. None of that has anything to do
+	// with whether the test watches the fix, and calling it "coupled"
+	// would tell the reader "your test depends on the fix", which is a
+	// false accusation made by a tool that simply could not build.
+	//
+	// These strings are what `go` prints when GOPROXY=off and the module
+	// is not in the cache, and when the module graph does not provide a
+	// package at all. The audit runs offline on purpose, so this is the
+	// shape most builds fail in.
+	"module lookup disabled",
+	"no required module provides package",
+	"missing go.sum entry",
+	"cannot find module",
+	"module ... found, but does not contain package",
+	// The run could not reach a module proxy or a VCS host. Same
+	// category: the environment, not the test.
+	"dial tcp",
+	"i/o timeout",
+	"connection refused",
 }
 
 // isEnvironmentFailure reports whether build errors point at an incomplete
@@ -524,6 +554,12 @@ func pathExt(path string) string {
 type runOutcome struct {
 	// command is the test command that was run.
 	command string
+	// script is the test command the project itself declares, when the
+	// adapter found one.
+	//
+	// It is shown next to the command that ran, so a reader can tell
+	// whether the adapter ran what the project runs.
+	script string
 	// result is the parsed run.
 	result core.RunResult
 	// failureTail is the tail of the output when something failed.
@@ -622,7 +658,14 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 	if err != nil {
 		return nil, fmt.Errorf("run tests: %w", err)
 	}
-	result.Command = plan.Command()
+	// The adapter knows which command it actually ran. It may differ
+	// from the plan's: an adapter that falls back to a wider run when
+	// the narrow one comes back green ran the wider command, and the
+	// report has to name that one - it is the command that reproduces
+	// the evidence.
+	if result.Command == "" {
+		result.Command = plan.Command()
+	}
 
 	if copyErr != nil {
 		// The copy failed, so the tree is not the project. Say so, instead
@@ -631,7 +674,8 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 	}
 
 	return &runOutcome{
-		command:     plan.Command(),
+		command:     result.Command,
+		script:      plan.Script,
 		result:      result,
 		failureTail: tailOf(result, 40),
 	}, nil
@@ -710,6 +754,28 @@ func verdictFrom(run *runOutcome, isTest func(string) bool) Verdict {
 
 	pass, fail, skip, _ := r.Counts()
 
+	// A suite that crashed is not a build error. The other suites in the
+	// run still executed, and what they say counts.
+	//
+	// A crash with nothing else in the run is inconclusive: the test
+	// file could not load, so it witnessed nothing — but it did not pass
+	// either, and calling that "vacuous" would accuse a test file that
+	// is simply broken.
+	if len(r.SuiteErrors) > 0 {
+		// The reason still decides. A crash caused by something the
+		// checkout was missing is an environment problem, whatever it
+		// looks like.
+		if isEnvironmentFailure(r.SuiteErrors) {
+			return VerdictEnvironment
+		}
+		if fail > 0 {
+			// Other suites went red. The crash belongs to one file and
+			// the red light to another, and the red light is evidence.
+			return VerdictProven
+		}
+		return VerdictSuiteCrash
+	}
+
 	// Nothing executed. The test was present but did not run, so it
 	// witnessed nothing. This is the silent-skip case and it is the most
 	// dangerous one, because the suite still reported success.
@@ -757,9 +823,13 @@ func checkConsistency(run *runOutcome, verdict Verdict) string {
 		return ""
 	}
 
-	mentionsFailure := strings.Contains(raw, "FAIL") ||
-		strings.Contains(raw, "build failed") ||
-		strings.Contains(raw, "panic:")
+	// The failure marker has to be looked for in the runner's COMPLETE
+	// output, which is what RawFailed records. Searching the tail
+	// instead is how this tool used to report "my verdict contradicts my
+	// own output" on repositories whose test output was longer than the
+	// tail: the passing packages filled the window and pushed the
+	// failure marker out of it.
+	mentionsFailure := run.result.RawFailed
 
 	switch verdict {
 	case VerdictProven:
@@ -964,6 +1034,25 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 				"可以加一个更靠近行为的测试来覆盖同一个场景",
 		})
 
+	case VerdictSuiteCrash:
+		out = append(out, core.Finding{
+			Kind:     core.KindSuiteCrash,
+			Severity: core.SevWarn,
+			Summary:  "测试套件没有跑起来 —— 它一个用例都没执行，所以什么都没证明",
+			Detail: fmt.Sprintf(
+				"提交 %s 的测试跑起来了，但有套件在加载阶段就崩了："+
+					"import 报错、beforeAll 抛异常、或者运行器自己挂了；"+
+					"也可能是运行器根本没有产出报告 —— 比如它一个测试文件都没收集到。\n"+
+					"这些套件一次用例都没执行 —— 它们既没有看守这个修复，也不能证明它们看守了。\n"+
+					"这跟「环境缺东西」是两回事：环境问题是检出的代码缺了构建需要的东西，"+
+					"套件没跑起来是这个测试文件自己跑不起来。所以这里不下结论。",
+				res.Commit.Short),
+			File:     testFile,
+			Evidence: evidenceFor(run),
+			Repro:    reproFor(res, run),
+			Hint:     "先让这个测试文件自己能跑起来（修 import、把 beforeAll 里的副作用挪走），再审这个提交",
+		})
+
 	case VerdictEnvironment:
 		out = append(out, core.Finding{
 			Kind:     core.KindEnvironment,
@@ -1011,6 +1100,9 @@ func evidenceFor(run *runOutcome) string {
 	if run.command != "" {
 		b.WriteString("命令: " + run.command + "\n")
 	}
+	if run.script != "" {
+		b.WriteString("项目自己的测试命令: " + run.script + "\n")
+	}
 	if run.failureTail != "" {
 		b.WriteString(run.failureTail)
 	} else {
@@ -1046,8 +1138,11 @@ func countSkip(run *runOutcome) int {
 
 // tailOf returns the tail of a run's output, for evidence.
 func tailOf(r core.RunResult, lines int) string {
-	if len(r.BuildErrors) > 0 {
-		return strings.Join(r.BuildErrors, "\n")
+	var parts []string
+	parts = append(parts, r.BuildErrors...)
+	parts = append(parts, r.SuiteErrors...)
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
 	}
 	return ""
 }

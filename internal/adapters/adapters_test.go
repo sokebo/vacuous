@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/sokebo/vacuous/internal/core"
+	"github.com/sokebo/vacuous/internal/testfixtures"
 )
 
 // copyFixture copies a fixture project into a temporary directory.
@@ -582,20 +583,5 @@ func requirePytest(t *testing.T) {
 // fixture is checked in, the runner is whatever the machine has.
 func requireNodeRunner(t *testing.T, root string) {
 	t.Helper()
-	// npx only looks in the project's own node_modules, so that is where
-	// jest has to be.
-	if fileExists(filepath.Join(root, "node_modules", ".bin", "jest")) {
-		return
-	}
-	shared := filepath.Join(os.Getenv("HOME"), ".cache", "vacuous-testtools", "node", "node_modules")
-	if fileExists(filepath.Join(shared, ".bin", "jest")) {
-		if err := os.Symlink(shared, filepath.Join(root, "node_modules")); err != nil {
-			t.Fatalf("link the shared jest installation: %v", err)
-		}
-		return
-	}
-	if _, err := exec.LookPath("jest"); err == nil {
-		return
-	}
-	t.Skip("jest is not installed; run: npm i --prefix ~/.cache/vacuous-testtools/node jest")
+	testfixtures.NodeRunner(t, root)
 }

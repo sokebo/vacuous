@@ -40,15 +40,51 @@ func (n *Node) Detect(root string) bool {
 	return name != ""
 }
 
+// nodeTestDirs are the directory names that hold tests.
+//
+// A file in one of them is a test even when its name says nothing about
+// it: "test/helpers.mjs" is a test file. Treating it as source means
+// the tool never runs it, never narrows to it, and never notices that
+// it is the thing standing between the code and a regression.
+var nodeTestDirs = map[string]bool{
+	"test":  true,
+	"tests": true,
+	"spec":  true,
+}
+
+// nodeTestExts are the extensions of a JavaScript or TypeScript file.
+//
+// The list is the one the runners themselves load. A file in a test
+// directory with an extension no runner touches - a .json fixture, a
+// .md note - is not a test file.
+var nodeTestExts = map[string]bool{
+	".js": true, ".cjs": true, ".mjs": true, ".jsx": true,
+	".ts": true, ".cts": true, ".mts": true, ".tsx": true,
+}
+
 // IsTestPath reports whether path is a Node test file.
+//
+// Three shapes count: a name that says so ("sum.test.ts"), a file under
+// a __tests__ directory, and a JavaScript or TypeScript file under a
+// test, tests or spec directory.
+//
+// The third shape is the one that was missing. A project that puts its
+// tests in test/ and names them "helpers.mjs" or "checkout.spec.js"
+// had every one of them classified as source code, so the tool narrowed
+// away from them, ran something else, and reported a verdict about
+// tests it never executed.
 func (n *Node) IsTestPath(p string) bool {
 	sl := filepath.ToSlash(p)
 	base := path.Base(sl)
 	if strings.Contains(base, ".test.") || strings.Contains(base, ".spec.") {
 		return true
 	}
-	for _, seg := range strings.Split(filepath.ToSlash(filepath.Dir(sl)), "/") {
+	ext := strings.ToLower(path.Ext(base))
+	for _, seg := range strings.Split(path.Dir(sl), "/") {
 		if seg == "__tests__" {
+			return true
+		}
+		if nodeTestDirs[seg] && nodeTestExts[ext] {
 			return true
 		}
 	}
@@ -61,6 +97,10 @@ func (n *Node) IsTestPath(p string) bool {
 // jest calls a test that did not run "pending" and vitest calls it
 // "skipped"; both mean the same thing here: the test did not run, so it
 // proves nothing.
+//
+// The runner comes from the project's own test script, and the script
+// itself is carried along in the plan so the report can show what the
+// project runs next to what was actually run.
 func (n *Node) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, error) {
 	pkg, err := readNodePackage(req.Root)
 	if err != nil {
@@ -70,52 +110,77 @@ func (n *Node) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, error
 	if name == "" {
 		return core.Plan{}, fmt.Errorf("node adapter: package.json has no test script")
 	}
-	_ = script
 
-	runner := n.detectRunner(req.Root)
+	runner := nodeRunner(script, pkg.manifest)
+
 	// Args[0] is the program to run, so the whole argv starts with npx.
-	args := []string{"npx", "--no-install", runner}
+	base := []string{"npx", "--no-install", runner}
 	switch runner {
 	case "vitest":
-		args = append(args, "run", "--reporter=json")
+		base = append(base, "run", "--reporter=json")
 	default:
-		args = append(args, "--json")
+		base = append(base, "--json")
 	}
 
 	// A package pattern wins over a file list: a file list here holds the
 	// changed files, and the changed files include source files. Handing a
 	// source file to jest makes it collect that file as a test suite, and
 	// the failure that comes back says nothing about the test.
+	var narrowed []string
 	switch {
 	case req.Target.PkgPattern != "":
-		args = append(args, strings.Fields(req.Target.PkgPattern)...)
+		narrowed = strings.Fields(req.Target.PkgPattern)
 	case len(req.Target.Files) > 0:
 		for _, f := range req.Target.Files {
 			if n.IsTestPath(f) {
-				args = append(args, f)
+				narrowed = append(narrowed, f)
 			}
 		}
 	}
 
+	args := append(append([]string{}, base...), narrowed...)
 	args = append(args, req.ExtraArgs...)
 
-	return core.Plan{
+	plan := core.Plan{
 		Adapter:     n.Name(),
 		Args:        args,
 		Dir:         req.Root,
 		Env:         []string{"CI=1", "NO_COLOR=1", "FORCE_COLOR=0"},
-		Description: "npx " + runner + " (" + name + ")",
-	}, nil
+		Description: fmt.Sprintf("npx %s (package.json %s 脚本: %q)", runner, name, script),
+		Script:      script,
+	}
+
+	if len(narrowed) > 0 {
+		// The wide run: the same suite without the narrowing. It is what
+		// the adapter falls back to when the narrowed run comes back
+		// green, because a subset that stays green says nothing about
+		// the suite.
+		plan.FullArgs = append(append([]string{}, base...), req.ExtraArgs...)
+	}
+
+	return plan, nil
 }
 
-// detectRunner picks between jest and vitest.
-func (n *Node) detectRunner(root string) string {
-	data, err := os.ReadFile(filepath.Join(root, "package.json"))
-	if err == nil {
-		s := string(data)
-		if strings.Contains(s, "\"vitest\"") {
-			return "vitest"
-		}
+// nodeRunner picks the runner the project's own test script names.
+//
+// The script is the truth. A project whose package.json says
+// "vitest run" runs vitest, whatever else sits in its devDependencies.
+//
+// The manifest is only the fallback, for a script that does not name a
+// runner at all. Guessing from the manifest text alone picks the wrong
+// runner for every project that has both installed - and the wrong
+// runner crashes on the first file, which says nothing about the code
+// under review and reads as "the environment is broken".
+func nodeRunner(script, manifest string) string {
+	s := strings.ToLower(script)
+	switch {
+	case strings.Contains(s, "vitest"):
+		return "vitest"
+	case strings.Contains(s, "jest"):
+		return "jest"
+	}
+	if strings.Contains(manifest, "\"vitest\"") {
+		return "vitest"
 	}
 	return "jest"
 }
@@ -178,8 +243,48 @@ func (n *Node) testFilesIn(dir string) []string {
 }
 
 // Run executes a jest or vitest plan.
+//
+// A narrowed plan is not the whole answer. When the narrowed run comes
+// back green, the whole suite runs as well: the fix may be guarded by a
+// test that does not sit next to the changed file, and a verdict about
+// the subset would call a guarded fix unguarded. That is a false
+// negative, and it is the dangerous kind - the report says "no test
+// watched this" about a test that was watching it the whole time.
 func (n *Node) Run(ctx context.Context, plan core.Plan) (core.RunResult, error) {
-	args := plan.Args
+	res, err := n.runOnce(ctx, plan, plan.Args)
+	if err != nil {
+		return res, err
+	}
+
+	// A red light in the narrowed run already answers the question.
+	if len(plan.FullArgs) == 0 || hasFailure(res) {
+		return res, nil
+	}
+
+	wide, err := n.runOnce(ctx, plan, plan.FullArgs)
+	if err != nil {
+		return res, err
+	}
+	if hasFailure(wide) {
+		// Something in the suite went red without the fix. That is the
+		// evidence the narrowed run could not see.
+		return wide, nil
+	}
+
+	// The whole suite is green too. The narrowed run stays the answer:
+	// it is the focused experiment, and it still holds what the wide run
+	// lost - a test file that was never collected, a suite that crashed.
+	return res, nil
+}
+
+// hasFailure reports whether a run produced a failing test.
+func hasFailure(res core.RunResult) bool {
+	_, fail, _, _ := res.Counts()
+	return fail > 0
+}
+
+// runOnce runs one command and parses the report it produced.
+func (n *Node) runOnce(ctx context.Context, plan core.Plan, args []string) (core.RunResult, error) {
 	if len(args) == 0 {
 		return core.RunResult{}, fmt.Errorf("node adapter: empty plan")
 	}
@@ -214,12 +319,16 @@ func (n *Node) Run(ctx context.Context, plan core.Plan) (core.RunResult, error) 
 		report, err = decodeNodeReport(stderr.Bytes())
 	}
 	if err != nil {
+		// No report at all. The runner either crashed or collected
+		// nothing; either way it is a statement about the run, not about
+		// the checkout, so it is recorded as a crashed suite rather than
+		// as a build failure.
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = strings.TrimSpace(stdout.String())
 		}
-		res.BuildErrors = append(res.BuildErrors,
-			fmt.Sprintf("cannot read the node test report: %v: %s", err, truncate(msg, 2000)))
+		res.SuiteErrors = append(res.SuiteErrors,
+			fmt.Sprintf("运行器没有产出可解析的报告: %v: %s", err, truncate(msg, 2000)))
 		return res, nil
 	}
 
@@ -227,8 +336,14 @@ func (n *Node) Run(ctx context.Context, plan core.Plan) (core.RunResult, error) 
 		file := nodeTestFile(root, suite.Name)
 		if len(suite.AssertionResults) == 0 {
 			// The suite failed without reporting a single case: the file
-			// itself could not be loaded. That is a build error.
-			res.BuildErrors = append(res.BuildErrors,
+			// itself could not be loaded - an import that failed, a
+			// beforeAll that threw.
+			//
+			// This is not a build error. A build error says the checkout
+			// was missing something; a crash says this test file cannot
+			// run. Filing the second under the first's name makes the
+			// report blame the machine for a broken test file.
+			res.SuiteErrors = append(res.SuiteErrors,
 				fmt.Sprintf("%s: %s", file, truncate(firstNonEmpty(suite.Message, "test suite failed"), 2000)))
 			continue
 		}
@@ -243,8 +358,10 @@ func (n *Node) Run(ctx context.Context, plan core.Plan) (core.RunResult, error) 
 		}
 	}
 
-	if res.ExitCode != 0 && res.ExitCode != 1 && len(res.BuildErrors) == 0 {
-		res.BuildErrors = append(res.BuildErrors, fmt.Sprintf("node test runner exited %d", res.ExitCode))
+	if res.ExitCode != 0 && res.ExitCode != 1 && len(res.SuiteErrors) == 0 {
+		// The runner died with a code of its own. That is a crashed run,
+		// not a test failure and not a build failure.
+		res.SuiteErrors = append(res.SuiteErrors, fmt.Sprintf("node test runner exited %d", res.ExitCode))
 	}
 
 	sort.SliceStable(res.Outcomes, func(i, j int) bool {
@@ -319,6 +436,11 @@ func nodeTestFile(root, p string) string {
 // nodePackage is the part of package.json this adapter cares about.
 type nodePackage struct {
 	Scripts map[string]string `json:"scripts"`
+	// manifest is the raw text of package.json.
+	//
+	// It is kept because a script does not always name the runner, and
+	// the manifest is the next place to look.
+	manifest string
 }
 
 // readNodePackage reads package.json.
@@ -331,6 +453,7 @@ func readNodePackage(root string) (nodePackage, error) {
 	if err := json.Unmarshal(b, &pkg); err != nil {
 		return pkg, fmt.Errorf("cannot parse package.json: %w", err)
 	}
+	pkg.manifest = string(b)
 	return pkg, nil
 }
 

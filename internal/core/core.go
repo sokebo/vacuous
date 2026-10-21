@@ -118,6 +118,17 @@ const (
 	// Filing them under one name makes the report say "the test is
 	// coupled" when the truth is "we could not run the test".
 	KindEnvironment Kind = "environment"
+	// KindSuiteCrash means a test suite crashed before it could run a
+	// single case: an import that failed, a beforeAll that threw, a
+	// runner that died mid-file.
+	//
+	// It is a separate kind from KindEnvironment because the two are
+	// statements about different things. A suite crash is a statement
+	// about the test file: it cannot even load. An environment problem
+	// is a statement about the machine: the checkout was missing
+	// something. Filing them under one name makes the report blame the
+	// developer's laptop for a test file with a broken import.
+	KindSuiteCrash Kind = "suite-crash"
 )
 
 // Finding is one observation. Every detector in vacuous emits these and
@@ -221,6 +232,15 @@ type RunResult struct {
 	// the suite never ran, which is categorically different from a test
 	// failing: it invalidates the run rather than failing it.
 	BuildErrors []string
+	// SuiteErrors holds suites that crashed before reporting a single
+	// case: an import that failed, a beforeAll that threw, a runner that
+	// died.
+	//
+	// It is separate from BuildErrors on purpose. A build error says the
+	// checkout was incomplete; a suite crash says this test file could
+	// not run. One is a statement about the environment, the other about
+	// the code, and the report has to be able to tell them apart.
+	SuiteErrors []string
 	// ExitCode is the runner's exit status.
 	ExitCode int
 	// Command is the command line that was run, for the report.
@@ -231,9 +251,53 @@ type RunResult struct {
 	// parser, so it is the only thing that can contradict the counts.
 	// Without it, a tool that mis-parses a failing run as a passing one
 	// has no way to notice.
+	//
+	// It may be a TAIL of the output, kept for a human to read. Do not
+	// use it to decide anything: a tail is not the output.
 	RawOutput string
+	// RawFailed says whether the runner's COMPLETE output mentions a
+	// failure.
+	//
+	// It is a separate field on purpose. The consistency check asks
+	// "does the text the runner printed show a failure" - and the answer
+	// has to come from all of that text. An earlier version of this tool
+	// looked for the marker in a 4KB tail of the output, and on a
+	// repository with a few hundred tests the tail was nothing but
+	// passing packages: the failure marker had been pushed out of it, and
+	// the tool reported "my verdict contradicts my own output" on runs
+	// that were perfectly consistent. The check was right; the window it
+	// looked through was too small.
+	//
+	// An adapter that captures no output at all leaves this false, and
+	// the check is skipped for that run - there is nothing to contradict.
+	RawFailed bool
 	// DurationMS is the wall time of the whole run.
 	DurationMS int64
+}
+
+// failureMarkers are the strings that mean "the runner reported a failure".
+//
+// They live here so that the adapters and the engine agree on what counts
+// as a failure. The adapter scans the complete output once and records the
+// answer; the engine compares its own verdict against that answer.
+var failureMarkers = []string{
+	"FAIL",
+	"build failed",
+	"panic:",
+}
+
+// MentionsFailure reports whether the runner's output says a test failed.
+//
+// The whole output has to be scanned. A window into the middle of it will
+// miss the failure on some runs and catch it on others, and a check that
+// fires at random is worse than no check at all.
+func MentionsFailure(output string) bool {
+	for _, m := range failureMarkers {
+		if strings.Contains(output, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // Counts tallies outcomes by status.
