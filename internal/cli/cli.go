@@ -179,6 +179,11 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 
 	rep := &core.Report{RepoRoot: root, Project: repoName(root)}
 
+	// A comment in the source can silence a finding: see the suppressor. It
+	// is the difference between a gate people keep and a gate people work
+	// around.
+	sup := newSuppressor(root)
+
 	// The adapter is only needed by the counterfactual audit, which has to
 	// actually run a test suite. The static checks read files, so they work
 	// in any repository - including the ones with no test runner at all,
@@ -210,6 +215,9 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 			return nil, err
 		}
 		for _, f := range append(append(skipped, discarded...), guards...) {
+			if !sup.allows(f) {
+				continue
+			}
 			rep.Add(f)
 		}
 		if adapter == nil {
@@ -265,6 +273,9 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 		}
 	}
 
+	// A comment in the source can silence a finding here too.
+	sup := newSuppressor(repo.Root())
+
 	for _, sha := range shas {
 		res, err := auditor.AuditCommit(ctx, sha)
 		if err != nil {
@@ -292,6 +303,9 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 		}
 		for _, f := range res.Findings {
 			if f.Kind == "proven-test" {
+				continue
+			}
+			if !sup.allows(f) {
 				continue
 			}
 			rep.Add(f)

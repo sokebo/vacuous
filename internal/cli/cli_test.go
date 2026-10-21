@@ -129,3 +129,40 @@ func TestStaticChecksRunWithoutARunner(t *testing.T) {
 		t.Errorf("exit code = %d, want %d", code, ExitFindings)
 	}
 }
+
+// TestSuppressionCommentSilencesAFinding is the end-to-end guard.
+//
+// The point of the suppressor is that a person can look at a finding, agree
+// that it is on purpose, and write down why - right where the code is.
+// Without that, a gate with any false positives gets worked around.
+func TestSuppressionCommentSilencesAFinding(t *testing.T) {
+	repo := testfixtures.NewRepo(t)
+	repo.Write(t, "go.mod", "module example.com/suppress\n\ngo 1.26\n")
+	repo.Write(t, "a.go", `package fixture
+
+func load() ([]string, error) { return nil, nil }
+`)
+	repo.Write(t, "a_test.go", `package fixture
+
+import "testing"
+
+func TestLoad(t *testing.T) {
+	items, _ := load() // vacuous:ignore 这一行是有意的
+	if len(items) != 0 {
+		t.Fatal("expected none")
+	}
+}
+`)
+	repo.Init(t)
+
+	code, stdout, stderr := runCLI(t, "--mode", "check", repo.Dir)
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+	if strings.Contains(stdout, "discards-error") {
+		t.Errorf("the finding should have been silenced by the comment:\n%s", stdout)
+	}
+	if code != ExitOK {
+		t.Errorf("exit code = %d, want %d (nothing left to report)", code, ExitOK)
+	}
+}
