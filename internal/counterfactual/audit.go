@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sokebo/vacuous/internal/adapters"
 	"github.com/sokebo/vacuous/internal/core"
 )
 
@@ -547,7 +548,23 @@ var sourceExtensions = map[string]bool{
 // An adapter may know better — a Go module's .go files are code, but a
 // .go file under a documentation directory may not be. The adapter's
 // opinion wins when it has one.
+//
+// A testdata directory is never code, whoever the adapter is. It holds the
+// bytes the tests need, not behaviour the repository ships, and a commit
+// that only edits one has changed nothing that a test could watch. The
+// check comes first because the fact is stronger than any adapter's
+// opinion about it: no runner in any language treats a testdata directory
+// as the project's own source.
+//
+// The Go adapter keeps the same rule in its own answer, so that a direct
+// caller of Go.IsSourcePath gets the right answer too. In this path that
+// makes the adapter's copy unreachable. The redundancy is deliberate: both
+// copies ask the same function, so they cannot drift, and an adapter that
+// forgot the rule would not be able to make the tool accuse a data file.
 func (a *Auditor) isSource(path string) bool {
+	if adapters.IsTestDataPath(path) {
+		return false
+	}
 	type classifier interface{ IsSourcePath(string) bool }
 	if c, ok := a.adapter.(classifier); ok {
 		return c.IsSourcePath(path)

@@ -10,6 +10,14 @@ import "strings"
 // "foottest.go" is not, a Python adapter knows about "conftest.py" — and the
 // adapters override whatever this returns.
 //
+// Nothing here decides anything. The path that decides is
+// internal/counterfactual/audit.go: it asks the adapter's IsTestPath and
+// IsSourcePath, and the adapters ask adapters.IsTestDataPath. A note in
+// docs/DOGFOOD.md once pointed the other way - at this file - and sent the
+// next round of work to a function no verdict has ever come from. The
+// heuristic stays because core.FileChange.IsTest is part of the frozen data
+// model, but it is not the judge.
+//
 // What this heuristic must not do is guess too generously: a source file
 // that looks like a test would send the counterfactual engine down the
 // wrong path, and a test file that looks like source would hide the very

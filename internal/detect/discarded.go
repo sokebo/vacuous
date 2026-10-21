@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sokebo/vacuous/internal/adapters"
 	"github.com/sokebo/vacuous/internal/core"
 )
 
@@ -44,6 +45,21 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 	var out []core.Finding
 	for _, rel := range files {
 		if !strings.HasSuffix(rel, ".go") {
+			continue
+		}
+		// A testdata directory holds test DATA, not test code.
+		//
+		// The Go toolchain ignores those directories outright, so a file
+		// inside one is never compiled, never run, and never counted by
+		// coverage. Reporting the shape here would accuse a file that no
+		// Go program can ever execute, and hand the owner a prescription
+		// ("do not throw the error away") for a file that cannot run.
+		//
+		// Note that this check deliberately scans more than the test
+		// files: the same shape in ordinary source code is worth knowing
+		// about too. So the filter here is the testdata rule, not the
+		// is-test rule.
+		if adapters.IsTestDataPath(rel) {
 			continue
 		}
 		abs := filepath.Join(repoRoot, rel)
