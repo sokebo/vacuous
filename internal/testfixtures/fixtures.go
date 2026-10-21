@@ -93,6 +93,20 @@ func (r *Repo) Git(t *testing.T, args ...string) string {
 func (r *Repo) Init(t *testing.T) {
 	t.Helper()
 	r.Git(t, "init", "-q", "-b", "main")
+	// Turn off the automatic garbage collection.
+	//
+	// `git commit` schedules `git gc --auto`, and it runs in the
+	// BACKGROUND. The fixture's directory lives in a t.TempDir(), and the
+	// test framework removes that directory the moment the test ends - so
+	// the collector can still be writing into .git while the directory is
+	// being taken away. The result is a cleanup error that says
+	// "directory not empty", in a test that has nothing to do with
+	// garbage collection.
+	//
+	// It showed up as a CI failure about once in ten runs, on a test
+	// that passes every time locally. These repositories are tiny and
+	// thrown away; collecting them is pure waste.
+	r.Git(t, "config", "gc.auto", "0")
 	r.Git(t, "add", "-A")
 	r.Git(t, "commit", "-q", "-m", "initial commit")
 }
