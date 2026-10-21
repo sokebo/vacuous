@@ -1,0 +1,31 @@
+# 验收环境准备清单
+#
+# 有些仓在「干净克隆」里根本编译不过 —— 它们的 CI 会先检出几个兄弟仓，
+# 再用 go mod edit -replace 把依赖指向那些兄弟仓：
+#
+#     go mod edit -replace github.com/example/shared-lib=$WORKSPACE/_shared
+#
+# 没有这一步，反事实检出（它来自提交态的 go.mod）就建不起来，工具只能报
+# environment —— 每一个提交都是「没法判定」，等于什么都没验。
+#
+# 这个文件把 CI 的那一步抄到这里，让验收脚本把同样的环境搭出来。
+#
+# 格式（制表符分隔）：
+#     仓<TAB>被替换的模块<TAB>兄弟仓目录名<TAB>clone 地址<TAB>分支<TAB>模块在仓里的相对路径
+#
+# 最后一列是**模块在那个仓里的位置**，不是仓根。oc-core 就是这么来的：
+# 仓是 example-org/open-service，模块在它的 oc-core/ 子目录下
+# （CI 里写的是 $GITHUB_WORKSPACE/_open-service/oc-core）。
+# 指错了 go 会说「找不到提供该包的模块」，然后每个提交都落成 environment ——
+# 这正是本文件存在的理由，不能含糊。
+#
+# 兄弟仓的目录名放在 ${ACCEPT_WORK} 下面。工具会把调用方工作树里的这些
+# replace 继承进反事实检出（internal/adapters/go_local.go 的
+# inheritLocalReplaces），所以这一步做完，审计才有得跑。
+#
+# 2026-10-21 实测：relay-service 的 HEAD 引用了 shared v1.27.0 里不存在的
+# relaymode.SeedanceVideoGenerations —— 提交态的 go.mod 钉的是已发布版本，
+# 符号只在 develop 分支上。不搭这个环境，20 个提交全是 environment。
+relay-service	github.com/example/shared-lib	_shared	git@github.com:example/shared-lib.git	develop	.
+relay-service	github.com/example-org/open-service/oc-core	_open-service	git@github.com:example-org/open-service.git	main	oc-core
+admin-service	github.com/example/shared-lib	_shared	git@github.com:example/shared-lib.git	develop	.
