@@ -366,32 +366,159 @@ func unittestSuitesFromEnv(planEnv []string) []string {
 	return nil
 }
 
-// unittestPattern is the file pattern the suites are collected with.
+// The two file patterns Python projects name their tests with.
 //
-// It is the pattern the projects themselves use, and matching it matters:
-// a different pattern collects a different set of files, and a suite that
-// collects more than the project runs would report failures the project
-// never sees.
-const unittestPattern = "test_*.py"
+// Both conventions are in use, and the tool counts both as tests
+// everywhere else - so the runner has to be able to collect both. A
+// repository whose tests are named "thing_test.py" used to get a suite
+// that collected nothing at all, and the report said the suite never ran
+// - the reader was sent to fix an import that was never broken.
+//
+// A single pattern that matched both ("*test*.py") would also match
+// files that are not tests - contest.py, latest.py - and importing them
+// would produce import errors the project never sees.
+const (
+	unittestPrefixPattern = "test_*.py"
+	unittestSuffixPattern = "*_test.py"
+)
 
-// unittestArgs builds the command that runs one suite.
+// unittestRootSuite is how the repository root is named in the suite list.
 //
-// The working directory is the repository root, not the suite's directory.
-// The project's own CI runs the suite from the root, and the imports the
-// tests make are relative to the root; running them from anywhere else
-// breaks the very imports that decide whether a test can run at all.
+// It is "." because that is what a relative path looks like, and because
+// one vocabulary for both shapes keeps the suite list readable.
+const unittestRootSuite = "."
+
+// unittestRuns builds the commands that run one suite.
 //
-// The discovery root (-t) is the directory the suite's modules are named
-// relative to. unittest names a module relative to that directory, so
-// getting it wrong does not only mislabel the results: it decides which
-// directory is on the import path.
-func unittestArgs(root, suite string) []string {
-	return []string{
-		"python3", "-m", "unittest", "discover", "-v",
-		"-s", suite,
-		"-t", unittestTopDir(root, suite),
-		"-p", unittestPattern,
+// A suite is a directory that holds Python test files, and the commands
+// run exactly those files - the ones in that directory, and no others.
+//
+// "Exactly those files" is the whole point. unittest's discovery walks
+// into the package directories below the directory it is given, so a
+// suite that holds a package directory collects that package's tests as
+// well - and such a package is a suite of its own, which the tool also
+// runs. The same test then runs twice, and it runs twice under a
+// different import path, which is worse than running twice: a test that
+// imports a helper from its own directory cannot be imported when the
+// repository root is what is on the path, and the tool would report an
+// import error for a test that passes perfectly well.
+//
+// The root suite is where this bites hardest, because the root is the
+// top of the tree: every package below it gets swept in. So the root's
+// own test files are named one by one, and the packages below it are
+// left to the suites that own them.
+//
+// The working directory is the repository root, not the suite's
+// directory. The project's own CI runs the suite from the root, and the
+// imports the tests make are relative to the root; running them from
+// anywhere else breaks the very imports that decide whether a test can
+// run at all.
+func unittestRuns(root, suite string) [][]string {
+	if suite == unittestRootSuite {
+		return [][]string{unittestRootArgs(root)}
 	}
+	top := unittestTopDir(root, suite)
+	dir := filepath.Join(root, filepath.FromSlash(suite))
+	var out [][]string
+	for _, pattern := range unittestPatterns(dir) {
+		out = append(out, []string{
+			"python3", "-m", "unittest", "discover", "-v",
+			"-s", suite,
+			"-t", top,
+			"-p", pattern,
+		})
+	}
+	return out
+}
+
+// unittestRootArgs builds the command that runs the root's own test files.
+//
+// The files are named one by one rather than discovered, for the reason
+// unittestRuns gives: discovery from the root reaches into every package
+// below it. Naming them keeps the root's suite to the root's own tests.
+//
+// The working directory is the repository root, and the modules are
+// named the way the root sees them - flat, by file name - which is what
+// "python -m unittest module" expects. The root is already on the
+// import path because that is where the command runs.
+func unittestRootArgs(root string) []string {
+	args := []string{"python3", "-m", "unittest", "-v"}
+	return append(args, unittestRootModules(root)...)
+}
+
+// unittestRootModules lists the root's own test modules.
+//
+// The module name of a file in the root is its name without the ".py".
+func unittestRootModules(root string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		base := e.Name()
+		if !isPythonTestFile(base) {
+			continue
+		}
+		out = append(out, strings.TrimSuffix(base, ".py"))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// unittestPatterns returns the patterns that collect every test file in a
+// directory.
+//
+// A directory can hold both conventions, and then one pattern is not
+// enough: whichever one is left out is a test file the tool would never
+// run, and a test file that never runs guards nothing. So both patterns
+// are used, and the suite runs once for each.
+func unittestPatterns(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var prefix, suffix bool
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		base := e.Name()
+		if !strings.HasSuffix(base, ".py") {
+			continue
+		}
+		if strings.HasPrefix(base, "test_") {
+			prefix = true
+		}
+		if strings.HasSuffix(base, "_test.py") {
+			suffix = true
+		}
+	}
+	var out []string
+	if prefix {
+		out = append(out, unittestPrefixPattern)
+	}
+	if suffix {
+		out = append(out, unittestSuffixPattern)
+	}
+	return out
+}
+
+// isPythonTestFile reports whether a file name is a Python test file.
+//
+// Two conventions are in use - "test_thing.py" and "thing_test.py" -
+// and the tool counts both as tests when it looks at a repository. The
+// runner has to agree with that, or the two halves of the tool disagree
+// about what a test is: the counter would say the repository has tests,
+// and the runner would collect none of them.
+func isPythonTestFile(base string) bool {
+	if !strings.HasSuffix(base, ".py") {
+		return false
+	}
+	return strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py")
 }
 
 // unittestTopDir returns the directory a suite's test modules are named
@@ -452,7 +579,13 @@ func (p *Python) planUnittest(req core.PlanRequest) (core.Plan, error) {
 		keep = suites
 	}
 
-	args := unittestArgs(req.Root, keep[0])
+	runs := unittestRuns(req.Root, keep[0])
+	if len(runs) == 0 {
+		return core.Plan{}, fmt.Errorf(
+			"python adapter: no runnable command for the suite %q under %s",
+			keep[0], req.Root)
+	}
+	args := runs[0]
 	env := []string{
 		"PYTHONDONTWRITEBYTECODE=1",
 		"NO_COLOR=1",
@@ -464,7 +597,7 @@ func (p *Python) planUnittest(req core.PlanRequest) (core.Plan, error) {
 		Args:        args,
 		Dir:         req.Root,
 		Env:         env,
-		Description: "python3 -m unittest discover -v -s " + keep[0],
+		Description: core.JoinCommand(args),
 	}, nil
 }
 
@@ -577,6 +710,18 @@ func (p *Python) scopeForUnittest(changedNonTestFiles []string) []string {
 // unittestSuiteNear reports whether a suite is close enough to a changed
 // directory to be worth running.
 func unittestSuiteNear(top, suite, dir string) bool {
+	// The root suite is near everything. A test at the top of the tree
+	// can import and exercise anything below it, so a change anywhere
+	// can be the thing it would catch.
+	//
+	// Leaving it out of the narrowing would be the expensive-looking but
+	// wrong answer: the root test would not run, its failure would not be
+	// seen, and a commit that the root test actually guards would come
+	// back as "vacuous" - the tool accusing a test of proving nothing
+	// when it proves exactly that. Narrowing must never cost a witness.
+	if suite == unittestRootSuite {
+		return true
+	}
 	// The changed file lives inside the suite's own directory.
 	if dir == suite || strings.HasPrefix(dir, suite+"/") {
 		return true
@@ -623,15 +768,16 @@ func (p *Python) runUnittest(ctx context.Context, plan core.Plan) (core.RunResul
 	var raw strings.Builder
 	var commands []string
 	for _, suite := range suites {
-		res := p.runUnittestSuite(ctx, plan, suite)
-		merged.Outcomes = append(merged.Outcomes, res.outcomes...)
-		merged.SuiteErrors = append(merged.SuiteErrors, res.suiteErrors...)
-		if res.exitCode != 0 {
-			merged.ExitCode = res.exitCode
+		for _, res := range p.runUnittestSuite(ctx, plan, suite) {
+			merged.Outcomes = append(merged.Outcomes, res.outcomes...)
+			merged.SuiteErrors = append(merged.SuiteErrors, res.suiteErrors...)
+			if res.exitCode != 0 {
+				merged.ExitCode = res.exitCode
+			}
+			merged.DurationMS += res.durationMS
+			raw.WriteString(res.raw)
+			commands = append(commands, res.command)
 		}
-		merged.DurationMS += res.durationMS
-		raw.WriteString(res.raw)
-		commands = append(commands, res.command)
 	}
 
 	// The command the report shows has to be the whole story. A reader who
@@ -644,6 +790,8 @@ func (p *Python) runUnittest(ctx context.Context, plan core.Plan) (core.RunResul
 	merged.RawOutput = tailOf([]byte(raw.String()), 4000)
 	merged.RawFailed = core.MentionsFailure(raw.String())
 
+	merged.Outcomes = dedupeOutcomes(merged.Outcomes)
+
 	sort.SliceStable(merged.Outcomes, func(i, j int) bool {
 		if merged.Outcomes[i].File != merged.Outcomes[j].File {
 			return merged.Outcomes[i].File < merged.Outcomes[j].File
@@ -653,9 +801,49 @@ func (p *Python) runUnittest(ctx context.Context, plan core.Plan) (core.RunResul
 	return merged, nil
 }
 
+// dedupeOutcomes drops outcomes that name the same test twice.
+//
+// The same test can be collected twice: unittest's discovery walks into
+// the package directories below a suite, and a package that holds tests
+// is a suite of its own. The test then runs under both names, and the
+// report would count it twice.
+//
+// A name that repeats is one test. A red must never be swallowed, so
+// when the same test came back in two different states, the failing one
+// is the one that counts.
+func dedupeOutcomes(outcomes []core.TestOutcome) []core.TestOutcome {
+	index := map[string]int{}
+	var out []core.TestOutcome
+	for _, o := range outcomes {
+		i, seen := index[o.Name]
+		if !seen {
+			index[o.Name] = len(out)
+			out = append(out, o)
+			continue
+		}
+		if o.Status == core.StatusFail && out[i].Status != core.StatusFail {
+			out[i] = o
+		}
+	}
+	return out
+}
+
 // runUnittestSuite runs one suite and parses what it printed.
-func (p *Python) runUnittestSuite(ctx context.Context, plan core.Plan, suite string) unittestSuiteResult {
-	args := unittestArgs(plan.Dir, suite)
+//
+// A suite can need more than one command: a directory that holds both
+// test naming conventions is collected once per convention, so that no
+// test file is left behind.
+func (p *Python) runUnittestSuite(ctx context.Context, plan core.Plan, suite string) []unittestSuiteResult {
+	runs := unittestRuns(plan.Dir, suite)
+	out := make([]unittestSuiteResult, 0, len(runs))
+	for _, args := range runs {
+		out = append(out, p.runUnittestCommand(ctx, plan, suite, args))
+	}
+	return out
+}
+
+// runUnittestCommand runs one command and parses what it printed.
+func (p *Python) runUnittestCommand(ctx context.Context, plan core.Plan, suite string, args []string) unittestSuiteResult {
 	// The program comes from the plan, so a caller can point the run at
 	// another interpreter. The rest of the command is rebuilt per suite:
 	// each suite has its own directory, and its own discovery root.
@@ -1302,6 +1490,18 @@ func firstNonEmpty(values ...string) string {
 //
 // A suite counts when it holds Python test files and nothing in it says
 // pytest. The directories are returned relative to root.
+//
+// The repository root counts too. A project that keeps its tests next to
+// its code - test_thing.py at the top level - is a unittest project, and
+// the tool can drive it: the root's own test files are run by name, one
+// by one. Skipping the root made the tool blind to that layout: the
+// same tests, moved one directory down, were found; at the top level they
+// vanished, and the tool reported "no supported test runner found" about a
+// repository whose tests run perfectly well.
+//
+// The root is returned as "." because that is what a relative path looks
+// like, and because one vocabulary for both shapes keeps the suite list
+// readable.
 func UnittestSuites(root string) []string {
 	if root == "" {
 		return nil
@@ -1365,12 +1565,11 @@ func UnittestSuites(root string) []string {
 		if relErr != nil {
 			return nil
 		}
-		if rel == "." {
-			return nil
-		}
-		switch filepath.Base(path) {
-		case ".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "__pycache__":
-			return filepath.SkipDir
+		if rel != "." {
+			switch filepath.Base(path) {
+			case ".git", "node_modules", "vendor", "dist", "build", ".venv", "venv", "__pycache__":
+				return filepath.SkipDir
+			}
 		}
 		if underPytest(rel) {
 			return filepath.SkipDir
@@ -1395,11 +1594,7 @@ func dirHoldsPythonTests(dir string) bool {
 		if e.IsDir() {
 			continue
 		}
-		base := e.Name()
-		if !strings.HasSuffix(base, ".py") {
-			continue
-		}
-		if strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py") {
+		if isPythonTestFile(e.Name()) {
 			return true
 		}
 	}
