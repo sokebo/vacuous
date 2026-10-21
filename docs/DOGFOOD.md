@@ -1735,6 +1735,133 @@ pre-existing-failure，Summary 又开始说「这个红灯本来就在」；改�
 
 ---
 
+### 3.46 仓库根目录的 unittest 套件，工具根本看不见
+
+**现象**：一个把测试放在仓库根目录的项目（`test_thing.py` 和代码并排），
+工具说 `no supported test runner found`，退出码 2；`--mode check` 则报
+「仓库里有测试文件，但没有能跑它们的命令」（警告级）。
+
+**根因**：`UnittestSuites` 遍历目录时遇到**仓库根目录**就直接跳过
+（`if rel == "." { return nil }`）。根目录被跳过了 → 根目录里的测试文件
+不算一个套件 → 适配器不接管这个仓 → 工具说自己跑不了。
+
+这段跳过是 `b4fa616` 留下的，**比 unittest 适配器（3.42）还早** —— 当时
+「根目录」确实没有意义，后来它有了：**根目录里的测试文件是平铺的模块**，
+`python -m unittest` 点名就能跑。
+
+**后果**：**漏报**。工具对一个测试跑得好好的仓说「没有能跑的运行器」，
+读者要么去装一个不需要的东西，要么以为这个仓没测试。同一套测试往下挪
+一层就能被认出来 —— 这正是「工具的毛病出在遍历的细节上」的样本。
+
+**修复**：根目录也算一个套件，用 `"."` 表示。根目录里的测试文件按**模块名**
+一个一个点名跑（原因见 3.47）。
+
+**负对照**（实测）：把 `rel == "."` 的跳过放回去 →
+`TestUnittestSuitesFindsTheRootSuite` 立刻变红。
+
+---
+
+### 3.47 从根目录跑套件，会把底下的包一起拖进来 —— 误伤
+
+**现象**：根目录有 `test_root.py`；`sub/` 是一个包（有 `sub/__init__.py`）；
+`sub/test_sub.py` 里写的是 `from helper import VALUE`，而 `helper.py` 在
+`sub/` 里。工具跑根目录的测试 → 报
+`ModuleNotFoundError: No module named 'helper'` → 套件崩了 → 判决
+「这个套件没有跑起来」。
+
+**根因**：`unittest discover -s .` **会走进起点下面的包目录**（实测：只递归
+进含 `__init__.py` 的目录）。于是根套件把 `sub` 的测试也收进来了 ——
+而 `sub` 本身就是一个套件，工具也会单独跑它。两件事叠在一起：
+
+1. 同一个测试跑了两遍；
+2. **import 路径变了**。`from helper import ...` 只有在 `sub/` 自己挂在
+   import 路径上时才成立 —— 那是项目跑它的方式。从根目录跑，挂在路径上的
+   是仓库根，于是 import 失败。
+
+**后果**：**误伤**。一个健康的仓，工具报它「测试套件没跑起来」，还附一条
+「先修 import」的提示 —— 而 import 根本没坏。读者去改一个没坏的测试。
+
+**修复**：根套件不用 discovery，改为**按模块名点名**跑根目录自己的文件
+（`python3 -m unittest -v test_root`）。底下的包交给拥有它们的套件去跑。
+
+子目录的套件仍然用 discovery —— 那里 import 路径和项目一致，discovery 是
+对的。代价是「套件里套着包」时那个测试仍会跑两遍：**判决不受影响**（同一个
+测试状态一样），但**计数**会多。合并结果时按测试名去重，且**红灯优先**
+（同一个测试两副面孔时，失败的那副算数）。
+
+**负对照**（实测）：
+
+| 改坏的地方 | 变红的用例 |
+|---|---|
+| 根套件改回 `discover -s .` | `TestTheRootSuiteRunsOnlyItsOwnTestFiles`、`TestTheRootSuiteDoesNotDragInThePackagesBelowIt`、`TestARunOfARootLevelSuiteDragsInNothing` |
+| 运行层绕开 `unittestRuns`（接线断开） | `TestARunOfARootLevelSuiteDragsInNothing`、`TestARunCountsATestOnce` |
+| 合并时不去重 | `TestARunCountsATestOnce` |
+| 根套件不再「处处都在」 | `TestTheRootSuiteIsNearEveryChange` |
+
+> 最后一条是复核时才发现的洞：`unittestSuiteNear` 里「根套件离任何改动都近」
+> 这条规则**一条负对照都没有**。它坏了不会让任何测试变红 —— 而它坏了的
+> 后果是「根目录的测试不再跑」，工具会把一个**真的在看守修复**的测试判成
+> 「空洞」。
+
+---
+
+### 3.48 `thing_test.py` 这种命名的测试文件，工具「数得出来、跑不起来」
+
+**现象**：一个只有 `foo_test.py` 的仓 → 适配器接管了，但 discover 的
+pattern 是 `test_*.py` → 一个文件都没收集到 → 报告说
+「测试套件没有跑起来 —— 它一个用例都没执行」，并附一条「先修 import」的提示。
+
+**根因**：**两份**「什么算 Python 测试文件」的判断：
+
+| 地方 | 认 `test_*.py` | 认 `*_test.py` |
+|---|---|---|
+| `dirHoldsPythonTests`（套件发现） | ✅ | ✅ |
+| `testCount`（静态体检） | ✅ | ✅ |
+| discover 的 `-p` pattern | ✅ | ❌ |
+
+计数器说「这个仓有测试」，跑的去只认另一种命名。
+
+**后果**：**漏报**（方向是安全的那个）。工具不下结论，但它把读者送去修一个
+没坏的 import。根目录这一条还更糟一点：工具接管了这个仓，`--mode check`
+于是**什么都不说** ——「有测试但没人跑」这条警告被消掉了。
+
+**修复**：pattern 按目录里实际存在的命名选；两种都有就**跑两遍**，一遍一种
+（少哪一种，那个命名的测试文件就一次都没跑过 —— 一次都没跑过的测试，什么
+都看守不了）。
+
+**负对照**（实测）：
+
+| 改坏的地方 | 变红的用例 |
+|---|---|
+| pattern 硬编码回 `test_*.py` | `TestThePatternCoversTheSuffixConvention`、`TestASuffixNamedTestFileIsActuallyRun` |
+| 混合目录只跑一种命名 | `TestThePatternCoversBothConventions`、`TestASuiteWithBothConventionsRunsTwice` |
+
+---
+
+### 3.49 运行器清单可以静默缩水 —— 复核发现的假负对照
+
+**现象**：把 `adapters.SupportedRunners` 里的 `"go test"` 和 `"jest"` 删掉 →
+**全部测试仍然全绿**。
+
+**根因**：`internal/adapters/runners_test.go` 里的每一条测试都是**拿清单
+和它自己比**（自指）。`TestTheToolClaimsNoRunnerItCannotDrive` 检查的是
+「清单里没有工具驱动不了的运行器」—— 这拦得住**多**，拦不住**少**。
+
+**后果**：清单是「工具能驱动什么」的唯一出处，3.44 之后所有提到覆盖率的
+句子都由它生成。清单悄悄少一项 → 报告开始说「你的一部分测试我没覆盖」
+—— 而工具明明能覆盖。**谎话的方向是「说自己看不到」**，比说错更糟：
+说自己看不到，读者就不自己跑了。
+
+**修复**：补一条「清单必须恰好是这五项」的用例。
+
+**负对照**（实测）：删掉 `"go test"` 和 `"jest"` →
+`TestTheClaimedRunnersAreExactlyTheOnesTheToolDrives` 立刻变红。
+
+> 这条和 3.44 是同一个病根的另一半：3.44 修的是「句子和清单脱节」，
+> 这条修的是「清单自己会跑」。
+
+---
+
 ## 4. 两次独立复核
 
 这个项目最大的风险不是「查不出问题」，是「查错了还说得很有把握」。
@@ -2158,3 +2285,68 @@ no such file or directory)
 > **怎么分辨**：看证据里有没有 `could not import` / `no such file or directory`
 > 指向 `go-build` 缓存。有 → 是环境，不是工具。**别拿这种结论去改工具** ——
 > 改出来的是一个「修好了假象」的提交。
+
+---
+
+### 再一轮：根目录的 unittest 套件，以及一句还在骗人的清单
+
+**闸门**：代码指纹变了（`a4b6129` → `3e03b87`）。被审的 6 个仓**一个都没动**，
+CI 在 HEAD 上是绿的。
+
+| 检查 | 结果 |
+|---|---|
+| `gofmt -l .` | 空 |
+| `go vet ./...` | 通过 |
+| `go test ./... -count=1` | 全绿 |
+| 6 个仓的静态体检 | **逐条与基线一致**（alpha 3 · beta 1 · gamma 7 · delta 1 · epsilon 1 · zeta 1） |
+| 审计（仓库 A，最近 20 个提交） | `proven 3 · vacuous 0 · 无测试 4 · 无法判定 6 · 不适用 7`（与基线一致） |
+
+**这一轮最重要的一句话**：6 个仓「逐条与基线一致」这个结论**本身是需要被怀疑
+的**（3.40 的教训）。三个真缺陷**全部**是从「看起来一致」的地方挖出来的 ——
+它们在受审的 6 个仓里一个都不显形，因为那些仓一个 Python 测试都没有。
+
+**找到的四条缺陷**（详见 3.46 – 3.49）：
+
+| # | 缺陷 | 方向 |
+|---|---|---|
+| 3.46 | 根目录的 unittest 套件工具根本看不见 | 漏报 |
+| 3.47 | 从根目录跑套件会把底下的包拖进来 → **假 import 报错** | **误伤** |
+| 3.48 | `*_test.py` 命名的测试「数得出来、跑不起来」 | 漏报 |
+| 3.49 | 运行器清单可以静默缩水（复核发现的假负对照） | 谎话 |
+
+3.47 是这一轮唯一的**误伤**：一个健康的仓，工具报它「测试套件没跑起来」，
+还附一条「先修 import」的提示 —— 而 import 根本没坏。
+
+**负对照**（全部实测：改坏 → 变红 → 改回）：
+
+| 改坏的地方 | 变红的用例 |
+|---|---|
+| 根目录重新被排除 | `TestUnittestSuitesFindsTheRootSuite` |
+| 根套件改回 `discover -s .` | `TestTheRootSuiteRunsOnlyItsOwnTestFiles` + `TestTheRootSuiteDoesNotDragInThePackagesBelowIt` + `TestARunOfARootLevelSuiteDragsInNothing` |
+| pattern 硬编码回 `test_*.py` | `TestThePatternCoversTheSuffixConvention` + `TestASuffixNamedTestFileIsActuallyRun` |
+| 混合目录只跑一种命名 | `TestThePatternCoversBothConventions` + `TestASuiteWithBothConventionsRunsTwice` |
+| 合并时不去重 | `TestARunCountsATestOnce` |
+| 根套件不再「处处都在」 | `TestTheRootSuiteIsNearEveryChange` |
+| 清单里删掉 `go test` / `jest` | `TestTheClaimedRunnersAreExactlyTheOnesTheToolDrives` |
+| CLI 清单改回手写 | `TestTheNoRunnerMessageNamesEveryRunnerTheToolCanDrive` |
+| 恢复「只会驱动 pytest」 | `TestTheUnittestMessageDoesNotSayTheToolCannotDriveUnittest` |
+
+**两条关于负对照本身的教训**（都是这一轮现场撞上的）：
+
+1. **测函数 ≠ 测接线。** 「同一个测试只算一次」这条规则，第一版只测了
+   `dedupeOutcomes` 这个函数：把**调用**删掉，测试照样全绿 —— 而报告里的
+   计数还是错的。改成**驱动一次真实运行**、看报告里实际握着的结果，才算
+   钉住。函数级的用例留着有用，但它**不能替代表述规则的那条**。
+2. **一条规则一个用例，包括「为什么它重要」。** 「根套件离任何改动都近」
+   这条规则本来一条负对照都没有：它坏了不会让任何测试变红，而它坏了的后果
+   是「根目录的测试不再跑」→ 工具会把一个**真的在看守修复**的测试判成
+   「空洞」。**误伤。**
+
+**顺手改掉的一处既有断言**：`internal/cli/cli_test.go` 里那条
+「没有测试的仓不许被说成 unittest 项目」，原来判断的是「消息里有没有
+`unittest` 这个词」。修好 3.44 之后清单里本来就有 `python -m unittest`
+—— 那是**工具能驱动什么**，不是**这个仓是什么**。断言改成精确判断
+「有没有把*这个仓*说成 unittest 项目」，原意一点没丢。
+
+**这一轮没有新的高危发现**：受审 6 个仓的高危发现全部人工核实过，和基线
+逐条一致，一条不多一条不少。
