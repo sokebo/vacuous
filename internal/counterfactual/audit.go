@@ -760,6 +760,27 @@ func checkConsistency(run *runOutcome, verdict Verdict) string {
 // trust. A tool that says "here is how to check it yourself" can be
 // checked - and a reader who does not want to trust the tool can still
 // get the answer.
+//
+// The commands rebuild **the same tree the tool tested**. That is the
+// whole point. The counterfactual tree is "the parent commit, plus the
+// test-side changes, minus the fix"; reconstructing it any other way
+// produces a different experiment, and a different experiment produces a
+// different answer - at which point the recipe is worse than no recipe,
+// because the reader would be checking something else.
+//
+// Two ways to get it wrong, both of which this function used to do:
+//
+//   - Start from the commit and put the parent's source files back. A file
+//     the commit *created* has no parent version: `git show` fails, and
+//     the shell's `>` truncates the file to zero bytes. The tree then
+//     holds a zero-byte source file where the tool had no file at all.
+//   - Start from the commit and revert only the "source" files. The
+//     commit may also have changed go.mod, a lock file, a config file -
+//     and the tool's tree has the *parent's* version of those. Reverting
+//     only the source files leaves the commit's go.mod in place, which is
+//     a different build.
+//
+// So: archive the parent, then apply the test-side patch. Nothing else.
 func reproFor(res *Result, run *runOutcome) string {
 	if res == nil {
 		return ""
@@ -773,27 +794,45 @@ func reproFor(res *Result, run *runOutcome) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "# 1. 把这次提交的代码取出来（在仓库根目录跑）\n")
-	fmt.Fprintf(&b, "mkdir -p /tmp/vac-verify && git archive %s | tar -x -C /tmp/vac-verify\n", sha)
+	fmt.Fprintf(&b, "# 1. 取父提交的代码 —— 反事实实验的起点\n")
+	fmt.Fprintf(&b, "mkdir -p /tmp/vac-verify && git archive %s^ | tar -x -C /tmp/vac-verify\n", sha)
 
-	// Put the source back to the parent's version, keeping the tests.
-	//
-	// The "git show" has to run where the repository is, and the file it
-	// produces belongs in the extracted tree - so the paths are spelled
-	// out rather than left to a "cd" that would break the next step.
-	srcs := pathsOf(res.SourceFiles)
-	if len(srcs) > 0 {
-		fmt.Fprintf(&b, "\n# 2. 只把测试留下，修复退回父提交\n")
-		for _, f := range srcs {
-			fmt.Fprintf(&b, "git show %s^:%s > /tmp/vac-verify/%s\n", sha, f, f)
-		}
+	// Put the tests back in, and nothing else. The fix stays out because
+	// the parent does not have it - including the files the commit
+	// created, which the parent simply does not contain.
+	tests := pathsOf(res.TestFiles)
+	if len(tests) > 0 {
+		fmt.Fprintf(&b, "\n# 2. 只把测试打进去，修复留在外面\n")
+		fmt.Fprintf(&b, "git diff --no-color --no-ext-diff --binary %s^ %s -- %s > /tmp/vac-verify-tests.patch\n",
+			sha, sha, shellPaths(tests))
+		fmt.Fprintf(&b, "cd /tmp/vac-verify && git apply --whitespace=nowarn /tmp/vac-verify-tests.patch\n")
 	}
+
+	// One honest caveat: the tool also stages the caller's untracked
+	// build inputs and the neighbouring directories that `replace`
+	// directives point at. A repository that needs them needs them here
+	// too - CI usually shows how.
+	fmt.Fprintf(&b, "\n# (工具还会摆进未入库的构建产物和 replace 指向的同级目录；\n")
+	fmt.Fprintf(&b, "#  你的仓库需要它们时，照 CI 的做法自己摆进来。)\n")
 
 	if run != nil && run.command != "" {
 		fmt.Fprintf(&b, "\n# 3. 跑测试，看它到底会不会红\n")
 		fmt.Fprintf(&b, "cd /tmp/vac-verify && %s\n", run.command)
 	}
 	return b.String()
+}
+
+// shellPaths renders paths as shell arguments, each one quoted.
+//
+// A path with a space in it would otherwise split into two arguments and
+// the patch would come out empty - silently, which is the worst way for a
+// reproduction recipe to fail.
+func shellPaths(paths []string) string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, "'"+strings.ReplaceAll(p, "'", `'\''`)+"'")
+	}
+	return strings.Join(out, " ")
 }
 
 // verdictFindings converts a verdict into reportable findings.

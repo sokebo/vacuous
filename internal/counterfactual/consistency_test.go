@@ -120,11 +120,18 @@ func TestClassifyAndConsistencyAgreeOnAHealthyRun(t *testing.T) {
 // A tool that prints commands which do not run is worse than a tool that
 // prints nothing, because the reader will trust the promise and lose the
 // check.
+//
+// The tree the recipe builds is the parent's, with the tests patched in -
+// the same tree the tool tested. See repro_test.go for the end-to-end
+// guard that actually runs these commands.
 func TestReproForProducesRunnableCommands(t *testing.T) {
 	res := &Result{
 		Commit: core.CommitInfo{SHA: "abcdef1234567890"},
 		SourceFiles: []core.FileChange{
 			{Path: "internal/pkg/thing.go"},
+		},
+		TestFiles: []core.FileChange{
+			{Path: "internal/pkg/thing_test.go"},
 		},
 	}
 	run := &runOutcome{command: "go test ./internal/pkg/..."}
@@ -132,8 +139,11 @@ func TestReproForProducesRunnableCommands(t *testing.T) {
 	repro := reproFor(res, run)
 
 	for _, want := range []string{
-		"git archive abcdef1",
-		"git show abcdef1^:internal/pkg/thing.go > /tmp/vac-verify/internal/pkg/thing.go",
+		// The parent, not the commit: the counterfactual starts there.
+		"git archive abcdef1^",
+		// The tests go in as a patch; the fix stays out.
+		"git diff --no-color --no-ext-diff --binary abcdef1^ abcdef1",
+		"git apply --whitespace=nowarn",
 		"cd /tmp/vac-verify && go test ./internal/pkg/...",
 	} {
 		if !strings.Contains(repro, want) {
