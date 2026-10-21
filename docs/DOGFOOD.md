@@ -2631,6 +2631,7 @@ cd /tmp/verify && python3 -m unittest discover -v -s scripts -t scripts -p 'test
 **闸门**：代码指纹变了（`515b709` → `822c1f8`），三个新提交
 （`proven` 端到端手工复现、「带着修复也是红的」现在是一条能抓人的发现、
 清掉文档里剩下的内部标识）。6 个被审仓库**一个都没动**，CI 最近 3 次全绿。
+轮次结束时基线重记为 `4496c8f` / `c9aaaca`，再 `check` 回到 NO CHANGE。
 
 | 检查 | 结果 |
 |---|---|
