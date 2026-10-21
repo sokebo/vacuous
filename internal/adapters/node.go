@@ -75,6 +75,9 @@ var nodeTestExts = map[string]bool{
 // tests it never executed.
 func (n *Node) IsTestPath(p string) bool {
 	sl := filepath.ToSlash(p)
+	if IsDependencyPath(sl) {
+		return false
+	}
 	base := path.Base(sl)
 	if strings.Contains(base, ".test.") || strings.Contains(base, ".spec.") {
 		return true
