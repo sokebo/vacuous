@@ -183,9 +183,14 @@ prefetch_deps() {
 		# 网络开着预热一次；仓库是私有的模块靠 GOPROXY 的 direct 兜底。
 		(
 			cd "${mdir}" || exit 0
+			# `go mod download` 不带参数只下「构建主模块用得到的那部分」。
+			# 实测它会把某些依赖留在缓存外（只留一个 .lock 文件），
+			# 之后离线构建就报 "module lookup disabled by GOPROXY=off" ——
+			# 表现成「这个仓判不出来」，看着像工具的问题，其实是环境没备好。
+			# `all` 下整个模块图，少不了。
 			GOFLAGS=-mod=mod GOPROXY="https://goproxy.cn,direct" \
 				GONOPROXY=none GONOSUMDB=none \
-				with_timeout 900 go mod download
+				with_timeout 1800 go mod download all
 		) >/dev/null 2>&1
 	done
 	return 0
