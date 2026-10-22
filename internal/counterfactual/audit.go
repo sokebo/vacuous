@@ -59,6 +59,44 @@ type Result struct {
 // same volume it uses for a 300-line feature stops being read.
 const smallChangeLines = 2
 
+// loudChangeLines is the number of changed lines at which a commit that
+// shipped no test is loud enough to fail a build.
+//
+// The number counts lines that really changed - comments and whitespace do
+// not count, and neither does the re-alignment gofmt does when a struct
+// block grows a field. Ten of those lines is a behaviour change big enough
+// that a test was reasonably expected: a new branch, a new field that
+// changes what a caller sees, a rewritten condition.
+//
+// Below it, a missing test is a warning. That is the deliberate asymmetry:
+// a missing test that nobody complains about is cheap, but a build that
+// blocks on something a developer considers a tweak is the thing that makes
+// people add --no-verify - and a tool that gets bypassed protects nobody.
+//
+// The asymmetry follows the same rule the tool applies everywhere else:
+// rather miss a gap than accuse wrongly.
+const loudChangeLines = 10
+
+// changeSeverity picks how loudly to report a commit that changed behaviour
+// and shipped no test.
+//
+// Three bands, smallest first:
+//
+//   - a change of at most smallChangeLines lines: a warning. It is often a
+//     rename or a message string.
+//   - a change of less than loudChangeLines lines: also a warning, but one
+//     worth reading.
+//   - a change of loudChangeLines lines or more: a finding that can fail a
+//     build.
+func changeSeverity(biggestFile int) core.Severity {
+	switch {
+	case biggestFile >= loudChangeLines:
+		return core.SevHigh
+	default:
+		return core.SevWarn
+	}
+}
+
 // Verdict is the conclusion of one counterfactual experiment.
 type Verdict string
 
@@ -1658,6 +1696,15 @@ func (a *Auditor) treeHasTests(ctx context.Context, sha string) (bool, int, erro
 // it does everywhere else: a one-line change is often a rename or a
 // message string, and demanding a test of it at the same volume as a
 // 300-line feature is how a tool teaches people to ignore it.
+//
+// This finding is the one place where the loud band is NOT the loud one
+// used for "no test watches this behaviour". The difference is what the
+// finding is about. "No test watches this behaviour" is a judgement about
+// one change: a small change can reasonably go untested, so the size
+// decides. "This tree has no tests at all" is a statement about the
+// repository: it has no test infrastructure, and no size of change would
+// make that acceptable. It also fires at most once per repository - the
+// moment the first test lands, it never fires again.
 func noTestAtAllFinding(res *Result, tracked int) core.Finding {
 	severity := core.SevHigh
 	if res.SourceChange.biggestFile <= smallChangeLines {
@@ -1693,10 +1740,7 @@ func noTestAtAllFinding(res *Result, tracked int) core.Finding {
 // how a tool teaches people to ignore it. A small change gets a warning;
 // a real one gets a finding that can fail a build.
 func noTestForFixFinding(res *Result, run *runOutcome) core.Finding {
-	severity := core.SevHigh
-	if res.SourceChange.biggestFile <= smallChangeLines {
-		severity = core.SevWarn
-	}
+	severity := changeSeverity(res.SourceChange.biggestFile)
 	pass, fail, skip, _ := run.result.Counts()
 	return core.Finding{
 		Kind:     core.KindNoTestForFix,
