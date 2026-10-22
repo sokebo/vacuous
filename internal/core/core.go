@@ -92,6 +92,20 @@ const (
 	// report from reading as "no problems", when the truth is "no problems
 	// in the part I could see".
 	KindUnsupportedTests Kind = "unsupported-tests"
+	// KindUncommittedChanges means the report describes code that is not
+	// committed yet.
+	//
+	// The static checks read the files in the working tree, so a file with
+	// uncommitted changes is analysed in its modified state. A finding
+	// anchored to such a file therefore describes code that exists on the
+	// developer's disk and not in the repository - which is not wrong, but
+	// is worth saying out loud: the finding may be about work in progress.
+	//
+	// It is a caveat on the report rather than a defect in the code, so it
+	// is a warning and never a high-severity finding. Making it loud
+	// enough to fail a run would punish the ordinary state of a
+	// developer's machine.
+	KindUncommittedChanges Kind = "uncommitted-changes"
 	// KindNotApplicable means there was nothing to judge - a commit with
 	// no parent to compare against, a commit that only touched
 	// documentation. It is not a problem, and it is not a pass.

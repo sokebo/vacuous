@@ -241,10 +241,12 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 		if err != nil {
 			return nil, err
 		}
+		var checkFindings []core.Finding
 		for _, f := range append(append(skipped, discarded...), guards...) {
 			if !sup.allows(f) {
 				continue
 			}
+			checkFindings = append(checkFindings, f)
 			rep.Add(f)
 		}
 		if adapter == nil {
@@ -252,6 +254,11 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 		}
 		// Say out loud which tests the report does not cover.
 		for _, f := range detect.UnsupportedTests(root, files) {
+			rep.Add(f)
+		}
+		// Say out loud which of these findings describe code that is not
+		// committed yet.
+		if f, ok := uncommittedFinding(root, checkFindings); ok {
 			rep.Add(f)
 		}
 	}
