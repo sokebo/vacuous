@@ -797,3 +797,45 @@ func TestAuditDoesNotAccuseADeduplication(t *testing.T) {
 		t.Errorf("the summary must say the commit changed no behaviour, got: %q", found.Summary)
 	}
 }
+
+// vacuousFinding returns the vacuous-test finding of an audit.
+func vacuousFinding(t *testing.T, res *Result) *core.Finding {
+	t.Helper()
+	for i := range res.Findings {
+		if res.Findings[i].Kind == core.KindVacuousTest {
+			return &res.Findings[i]
+		}
+	}
+	t.Fatalf("expected a vacuous-test finding, got: %+v", res.Findings)
+	return nil
+}
+
+// TestAuditDoesNotCallADeletedMethodADeduplication is the same rule for a
+// method.
+//
+// The removed method's name used to come back as the literal string "func",
+// which matches every method in the repository. Deleting a method - one of
+// the most common changes a commit makes - was therefore reported as a
+// deduplication, and the real finding was quietly dropped.
+func TestAuditDoesNotCallADeletedMethodADeduplication(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.DeletedMethodFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	found := vacuousFinding(t, res)
+	if strings.Contains(found.Summary, "行为没变") {
+		t.Errorf("the report must not claim the commit changed no behaviour: "+
+			"no method called Helper is left in the tree. got: %q", found.Summary)
+	}
+	if found.Severity != core.SevWarn {
+		t.Errorf("severity = %v, want %v - this change has no test watching it, "+
+			"and that is worth saying", found.Severity, core.SevWarn)
+	}
+}

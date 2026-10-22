@@ -1496,10 +1496,21 @@ func parentOf(sha string) string { return sha + "^" }
 // commit removed a copy of something that lives in another file". The second
 // one is a deduplication, and the tree does not behave differently after it.
 //
-// Found on a real public repository: a commit that deleted two flag-set
-// helpers from one file - helpers that had been moved to another file in an
-// earlier commit - was reported as a HIGH-severity "this test is vacuous".
-// The commit changed no behaviour whatsoever.
+// The match is on the function's name, so it is a heuristic and not a proof.
+// Two functions can share a name and do different things. The rule errs
+// towards staying quiet: a deduplication that is mistaken for a real change
+// costs the reader one finding, while a real change mistaken for a
+// deduplication costs them the finding AND tells them a falsehood - "this
+// change changed no behaviour" - about their own code.
+//
+// On a real public repository (hashicorp/terraform, 86b00a4) a commit that
+// deleted two flag-set helper METHODS was reported as a HIGH-severity "this
+// test is vacuous". The commit did change no behaviour: the helpers were
+// unused, and the live versions live in another package. That report was
+// right about the outcome and wrong about the reason - the rule matched the
+// deleted methods only because every method's name used to come back as the
+// literal word "func", and "func" matches every method in the repository.
+// See funcDeclName.
 func (a *Auditor) removedCodeStillExists(ctx context.Context, sha string, files []core.FileChange, tree string) bool {
 	patch, err := a.repo.Patch(ctx, sha, pathsOf(files))
 	if err != nil {
