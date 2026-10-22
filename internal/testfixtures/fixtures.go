@@ -956,3 +956,64 @@ func TDDFixture(t *testing.T) *GoModule {
 	m.Commit(t, "fix: greet an empty name")
 	return m
 }
+
+// brokenSource is a file that does not compile.
+//
+// It stands in for every reason a checkout cannot be built: a generated
+// file that was never committed, a dependency that lives in a sibling
+// directory, a submodule that was not checked out. The tree is missing
+// something, and no test in it can say anything about a fix.
+const brokenSource = `package fixture
+
+func Broken( {
+`
+
+// NoTestsAtAllFixture builds a repository that has no test files at all.
+//
+// The commit changes behaviour, and the tree it lands in has nothing in it
+// that could watch that behaviour.
+//
+// This is the one situation in which "the suite did not run" is not a gap
+// in the evidence. A tree with no tests has no answer about the fix, but
+// it has a perfectly clear answer about the coverage: there is none, and
+// the tool has to say so out loud.
+func NoTestsAtAllFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/notestsatall")
+	m.Write(t, "greet.go", buggySource)
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
+
+// NoTestUnbuildableParentFixture builds a repository whose fix commit ships
+// no test of its own AND whose parent tree does not compile.
+//
+// The two facts belong together, and that is the point of the fixture. A
+// commit that ships no test is judged by an experiment: take the fix away
+// and run the tests that are in the tree. Here that experiment cannot run,
+// because the tree does not compile.
+//
+// The suite that never ran is exactly the suite that could have been
+// watching the change - so "the experiment found nothing" must not become
+// "nothing watches this". A tree that does not compile reports zero failing
+// tests, and reading that count as "the tests all passed" is how a
+// checkout that never ran turns into a blocking accusation.
+//
+// This is a real shape, not a contrived one. A repository whose root package
+// embeds a built frontend does not compile in a clean checkout, and every
+// commit in it that ships no test of its own looks exactly like this.
+func NoTestUnbuildableParentFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/notestunbuildable")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Write(t, "broken.go", brokenSource)
+	m.Init(t)
+	// The fix commit ships no test of its own, and the parent - the tree
+	// the experiment runs in - does not compile.
+	m.Write(t, "greet.go", fixedSource)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}

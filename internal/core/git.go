@@ -66,8 +66,11 @@ type Repo interface {
 	DiffFiles(ctx context.Context, base, head string) ([]FileChange, error)
 
 	// Patch returns the unified diff a commit introduces, restricted to the
-	// given paths. An empty path list means the whole commit. The result
-	// must be applicable with `git apply`.
+	// given paths. An empty path list means NO files, not the whole
+	// commit: a caller that asks for "the changes to these files" and
+	// hands over an empty list would otherwise get the fix along with
+	// the tests, and an experiment that still contains the fix is not an
+	// experiment. The result must be applicable with `git apply`.
 	Patch(ctx context.Context, sha string, paths []string) (string, error)
 
 	// FileAt returns the contents of a path at a revision. It returns an

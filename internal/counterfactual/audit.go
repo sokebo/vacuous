@@ -219,13 +219,17 @@ func New(opts Options) (*Auditor, error) {
 //
 //  1. Find the commit's parent.
 //  2. Classify the changed files into tests and sources.
-//  3. If there are no tests, the commit shipped no test: that is a finding.
-//  4. Otherwise build a worktree at the parent, apply only the test-side
-//     changes, and run the suite.
-//  5. The test going red proves the test guards the fix. The test staying
+//  3. Build a worktree at the parent, apply only the test-side changes,
+//     and run the suite. The fix stays out.
+//  4. The test going red proves the test guards the fix. The test staying
 //     green means the test is vacuous.
 //
-// Step 4 is the whole point. Everything else is bookkeeping.
+// A commit that ships no test of its own still goes through step 3: the
+// question it gets answered is the wider one - "does ANY test already in
+// the tree watch this behaviour?" - and the answer is a statement about
+// coverage rather than about the commit.
+//
+// Step 3 is the whole point. Everything else is bookkeeping.
 func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) {
 	info, err := a.commitInfo(ctx, sha)
 	if err != nil {
@@ -350,6 +354,13 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	// is a real change and is judged below; this is only about changes
 	// that leave the code exactly as it was.
 	change, err := a.sourceChange(ctx, sha, res.SourceFiles)
+	if err == nil {
+		// How much the commit changed is what decides how loudly the
+		// report says things about it. It is recorded here, once, so
+		// that every path out of this function can use it - including
+		// the one that returns before the ordinary bookkeeping runs.
+		res.SourceChange = change
+	}
 	if err == nil && change.cosmetic {
 		res.Verdict = VerdictNotApplicable
 		res.Findings = append(res.Findings, core.Finding{
@@ -420,6 +431,33 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	// numbers in it.
 	shippedItsOwnTest := len(res.TestFiles) > 0
 
+	// A commit that ships no test of its own, in a tree that has no tests
+	// at all.
+	//
+	// Nothing can watch a behaviour when there is no test to watch it
+	// with, and no experiment can find that out by running - there is
+	// nothing to run. The answer is a fact about the tree, and it is
+	// known before the experiment starts.
+	//
+	// This case is asked about separately because it is the one situation
+	// in which "the suite did not run" is not a gap in the evidence. A
+	// tree with no tests has no answer to give about the fix, but it has
+	// a perfectly clear answer about the coverage: there is none.
+	//
+	// It is only asked when the adapter is sure it has looked everywhere.
+	// For Go it is: the toolchain only ever runs _test.go files. For
+	// Node and Python it is not - the test runner's configuration
+	// decides, and a repository may keep its tests anywhere - so there
+	// the experiment has to do the talking instead.
+	if !shippedItsOwnTest && a.testDiscoveryIsAuthoritative() {
+		hasTests, tracked, err := a.treeHasTests(ctx, sha)
+		if err == nil && !hasTests {
+			res.Verdict = VerdictNoTest
+			res.Findings = append(res.Findings, noTestAtAllFinding(res, tracked))
+			return res, nil
+		}
+	}
+
 	// The experiment. Build the counterfactual tree: parent + tests, no fix.
 	run, err := a.runCounterfactual(ctx, sha, res)
 	if err != nil {
@@ -441,19 +479,33 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	// The other outcome - the existing tests go red - needs no special
 	// case: it is the ordinary "proven" verdict, and it is what a TDD
 	// flow produces, where the test landed in the previous commit.
-	if !shippedItsOwnTest && countFailures(run.result) == 0 {
-		res.Verdict = VerdictNoTest
-		res.Findings = append(res.Findings, noTestForFixFinding(res, run, change))
-		return res, nil
-	}
-
-	// How much the commit changed is what decides how loudly to report
-	// that no test witnessed it.
 	//
-	// An error here means "could not tell". That must not make the
-	// finding louder: an unanswered question is not evidence.
-	if change, err := a.sourceChange(ctx, sha, res.SourceFiles); err == nil {
-		res.SourceChange = change
+	// The question is which outcome the experiment produced, and it is
+	// the VERDICT that answers it - not the number of failures.
+	//
+	// A tree that does not compile reports zero failing tests, so "no
+	// failures" is exactly what a checkout that never ran looks like.
+	// The suites that never ran are the very ones that could have been
+	// watching the change, and reading their absence as "everything
+	// passed" turns a checkout that did not build into a blocking
+	// accusation. It reads like this: "all the existing tests passed
+	// (0 passed, 0 failed)" - a sentence about a run in which no test
+	// was ever executed.
+	//
+	// VerdictVacuous is the one answer that means "the experiment ran,
+	// everything passed, and the runner's own output does not say
+	// otherwise". Every other verdict - environment, coupled, suite
+	// crash, skipped, contradictory - means the experiment has no
+	// answer at all, and "no answer" has to stay that way.
+	//
+	// The deduplication case is excluded for the same kind of reason:
+	// the commit removed code that still exists elsewhere, so it
+	// changed no behaviour and there is nothing for a test to watch.
+	// That is the ordinary "nothing changed" finding, not an accusation.
+	if !shippedItsOwnTest && res.Verdict == VerdictVacuous && !run.deduplicated {
+		res.Verdict = VerdictNoTest
+		res.Findings = append(res.Findings, noTestForFixFinding(res, run))
+		return res, nil
 	}
 
 	// The tool arguing with itself. classify() already refused to
@@ -1556,6 +1608,78 @@ func (a *Auditor) removedCodeStillExists(ctx context.Context, sha string, files 
 	return funcsStillExistElsewhere(tree, names, changed)
 }
 
+// testDiscoveryIsAuthoritative reports whether the adapter's test-file rule
+// is the whole truth about where this repository's tests live.
+//
+// An adapter that does not say is NOT taken at its word: the rule is a good
+// guess, not a guarantee, and a tool that says "there are no tests here"
+// on the strength of a guess is making a claim it has not earned.
+func (a *Auditor) testDiscoveryIsAuthoritative() bool {
+	type authority interface {
+		TestDiscoveryIsAuthoritative() bool
+	}
+	if t, ok := a.adapter.(authority); ok {
+		return t.TestDiscoveryIsAuthoritative()
+	}
+	return false
+}
+
+// treeHasTests reports whether the tree the counterfactual runs in holds
+// any test file.
+//
+// The tree is the parent commit plus the test-side changes of the commit
+// under review. For a commit that ships no test of its own, that is the
+// parent tree itself - which is exactly the tree the question is asked
+// about.
+//
+// It is asked through the adapter, because the adapter is what knows what
+// a test file is in this language. The Go adapter keeps its own copy of
+// the rule, and the two have to agree.
+func (a *Auditor) treeHasTests(ctx context.Context, sha string) (bool, int, error) {
+	files, err := a.repo.TrackedFiles(ctx, parentOf(sha))
+	if err != nil {
+		return false, 0, fmt.Errorf("list files at %s: %w", parentOf(sha), err)
+	}
+	for _, f := range files {
+		if a.isTest(f) {
+			return true, len(files), nil
+		}
+	}
+	return false, len(files), nil
+}
+
+// noTestAtAllFinding reports a behaviour change in a tree that has no
+// tests in it.
+//
+// Nothing can watch a behaviour when there is no test to watch it with.
+// The evidence is the tree itself, not a run: there was nothing to run.
+//
+// How loudly to say it depends on how much changed, for the same reason
+// it does everywhere else: a one-line change is often a rename or a
+// message string, and demanding a test of it at the same volume as a
+// 300-line feature is how a tool teaches people to ignore it.
+func noTestAtAllFinding(res *Result, tracked int) core.Finding {
+	severity := core.SevHigh
+	if res.SourceChange.biggestFile <= smallChangeLines {
+		severity = core.SevWarn
+	}
+	return core.Finding{
+		Kind:     core.KindNoTestForFix,
+		Severity: severity,
+		Summary:  "这个改动改了行为，但这棵树里一个测试都没有",
+		Detail: fmt.Sprintf(
+			"提交 %s 改了 %d 个非测试文件（最大的一个改了 %d 行），没有加任何测试。\n"+
+				"而它所在的那棵树里**一个测试文件都没有** —— 整个仓还没有测试。\n"+
+				"也就是说，没有任何测试看守这个行为。",
+			res.Commit.Short, len(res.SourceFiles), res.SourceChange.biggestFile),
+		File: firstPath(res.SourceFiles),
+		Hint: "先给这个仓建一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
+		// The evidence is a count the reader can reproduce with one
+		// command, so the claim does not have to be taken on faith.
+		Evidence: fmt.Sprintf("父提交里有 %d 个入库文件，其中 0 个是测试文件", tracked),
+	}
+}
+
 // noTestForFixFinding reports a behaviour change that nothing in the tree
 // watches.
 //
@@ -1568,9 +1692,9 @@ func (a *Auditor) removedCodeStillExists(ctx context.Context, sha string, files 
 // Demanding a test for those at the same volume as a 300-line feature is
 // how a tool teaches people to ignore it. A small change gets a warning;
 // a real one gets a finding that can fail a build.
-func noTestForFixFinding(res *Result, run *runOutcome, change sourceChange) core.Finding {
+func noTestForFixFinding(res *Result, run *runOutcome) core.Finding {
 	severity := core.SevHigh
-	if change.biggestFile <= smallChangeLines {
+	if res.SourceChange.biggestFile <= smallChangeLines {
 		severity = core.SevWarn
 	}
 	pass, fail, skip, _ := run.result.Counts()
@@ -1582,9 +1706,14 @@ func noTestForFixFinding(res *Result, run *runOutcome, change sourceChange) core
 			"提交 %s 改了 %d 个非测试文件（最大的一个改了 %d 行），没有加任何测试。\n"+
 				"把这次修复撤掉之后，仓里**现有的**测试全部通过（%d 个通过、%d 个失败、%d 个跳过）——\n"+
 				"也就是说，没有任何测试看守这个行为。",
-			res.Commit.Short, len(res.SourceFiles), change.biggestFile, pass, fail, skip),
-		File:     firstPath(res.SourceFiles),
-		Hint:     "补一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
-		Evidence: run.command,
+			res.Commit.Short, len(res.SourceFiles), res.SourceChange.biggestFile, pass, fail, skip),
+		File: firstPath(res.SourceFiles),
+		Hint: "补一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
+		// The evidence and the recipe are what let a reader check the
+		// claim instead of taking it on faith. The recipe rebuilds the
+		// same tree the experiment ran in - the parent, with the fix
+		// taken away and the tests that are there kept.
+		Evidence: evidenceFor(run),
+		Repro:    reproFor(res, run),
 	}
 }

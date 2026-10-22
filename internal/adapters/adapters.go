@@ -167,6 +167,15 @@ func (g *Go) IsTestPath(path string) bool {
 	return IsGoTestPath(path) && !IsDependencyPath(path) && !IsTestDataPath(path)
 }
 
+// TestDiscoveryIsAuthoritative reports that the rule above is the whole
+// answer for a Go repository.
+//
+// It is. The go toolchain compiles and runs exactly the _test.go files -
+// a file under testdata/ is never built, and no other file is ever treated
+// as a test. So "there is no test file in this tree" is a statement the
+// tool can make without running anything.
+func (g *Go) TestDiscoveryIsAuthoritative() bool { return true }
+
 // IsSourcePath reports whether path holds Go code.
 //
 // A .go file is code. A .md file is not, and a commit that only edits
