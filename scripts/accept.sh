@@ -464,7 +464,16 @@ if [ "${PHASE}" != "audit" ] && { [ "${ACCEPT_REUSE_LIST:-0}" != "1" ] || [ ! -s
 		fi
 		printf '%s\t%s\n' "${name}" "${total}" >> "${REPO_LIST}.tmp"
 	done
-	mv "${REPO_LIST}.tmp" "${REPO_LIST}"
+	# 清单写空了？多半是 API 配额用完了 —— 每个仓一次提交数查询，
+	# 六十多个仓就是六十多次。这时候**空清单比旧清单坏得多**：旧清单
+	# 还能审，空清单等于什么都没审。宁可沿用旧的，也不要拿一个取不到的
+	# 列表覆盖掉一个好的。
+	if [ ! -s "${REPO_LIST}.tmp" ] && [ -s "${REPO_LIST}" ]; then
+		log "⚠ 这次没能取到仓列表（多半是 API 配额用完了）—— 沿用旧清单"
+		rm -f "${REPO_LIST}.tmp"
+	else
+		mv "${REPO_LIST}.tmp" "${REPO_LIST}"
+	fi
 fi
 
 if [ "${PHASE}" = "clone" ]; then
