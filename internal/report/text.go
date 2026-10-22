@@ -109,11 +109,26 @@ func writeLine(w io.Writer, text string) error {
 // A clean run says so in as many words. A dirty run says how bad it is,
 // so that the reader can decide whether to read the rest.
 func headline(r *core.Report, findings []core.Finding) string {
+	// How much of the run was actually judged.
+	//
+	// "No findings" and "nothing was judged" must not read the same. A
+	// window of twenty merge commits produces no findings and no verdicts,
+	// and a headline that says "no vacuous tests found" about it is
+	// exactly the confusion this tool exists to catch - in itself.
+	judged := r.Proven + r.Vacuous + r.NoTest + r.Inconclusive
+	unjudged := r.NotApplicable + r.AuditFailed
+
 	if len(findings) == 0 {
-		if r.Proven > 0 {
-			return fmt.Sprintf("vacuous — 没有发现空洞测试：%d 个修复都有测试守住", r.Proven)
+		switch {
+		case r.AuditFailed > 0:
+			return fmt.Sprintf("vacuous — 有 %d 个提交没能审成，报告不完整", r.AuditFailed)
+		case judged == 0:
+			return fmt.Sprintf("vacuous — 这一轮没有可判的提交（%d 个不适用）", r.NotApplicable)
+		case r.Proven > 0:
+			return fmt.Sprintf("vacuous — %d 个修复都有测试守住", r.Proven)
+		default:
+			return "vacuous — 没有发现问题"
 		}
-		return "vacuous — 没有发现空洞测试"
 	}
 
 	var critical, high int
@@ -125,9 +140,18 @@ func headline(r *core.Report, findings []core.Finding) string {
 			high++
 		}
 	}
-	return fmt.Sprintf("vacuous — 发现 %d 个问题（%s %d · %s %d · 空洞 %d）",
+	// The scope of the run belongs in the first line: a reader who does
+	// not know how much was judged cannot weigh what was found.
+	scope := fmt.Sprintf("审了 %d 个提交", judged)
+	if unjudged > 0 {
+		scope += fmt.Sprintf("，%d 个不适用", r.NotApplicable)
+	}
+	if r.AuditFailed > 0 {
+		scope += fmt.Sprintf("，%d 个没审成", r.AuditFailed)
+	}
+	return fmt.Sprintf("vacuous — 发现 %d 个问题（%s %d · %s %d · 没测试看着 %d；%s）",
 		len(findings), severityLabel(core.SevCritical), critical,
-		severityLabel(core.SevHigh), high, r.Vacuous)
+		severityLabel(core.SevHigh), high, r.Vacuous, scope)
 }
 
 // writeFinding writes one finding: the header line, then the prose.

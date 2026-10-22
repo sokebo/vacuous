@@ -145,7 +145,10 @@ func TestRenderTextEmptyReportIsNotEmpty(t *testing.T) {
 	if strings.TrimSpace(out) == "" {
 		t.Fatal("empty report rendered nothing at all")
 	}
-	if !strings.Contains(out, "没有发现空洞测试") {
+	// The headline must say that nothing was judged, not merely that
+	// nothing was found. Those are different, and a window of merge
+	// commits produces the first while looking like the second.
+	if !strings.Contains(out, "没有可判的提交") {
 		t.Errorf("clean report does not state the conclusion:\n%s", out)
 	}
 	if !strings.Contains(out, "proven 0") {
