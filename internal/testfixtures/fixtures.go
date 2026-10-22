@@ -879,3 +879,55 @@ func DedupFixture(t *testing.T) *GoModule {
 	m.Commit(t, "chore: remove the leftover copy of the helper")
 	return m
 }
+
+// methodDelTestFile is the test file of the deleted-method fixture.
+//
+// It never touches the method the commit deletes - nothing ever called it.
+const methodDelTestFile = `package fixture
+
+import "testing"
+
+func TestGreet(t *testing.T) {
+	if Greet("bob") != "hello, bob" {
+		t.Fatal("greet broke")
+	}
+}
+`
+
+// methodDelTestFileAfter is the same file with one more case.
+const methodDelTestFileAfter = methodDelTestFile + `
+func TestGreetStillWorks(t *testing.T) {
+	if Greet("ann") != "hello, ann" {
+		t.Fatal("greet broke")
+	}
+}
+`
+
+// DeletedMethodFixture builds a repository whose commit deletes a method.
+//
+// Deleting a method is one of the most common changes a commit makes, and
+// it is the shape the deduplication rule used to get wrong: the removed
+// method's name came back as the literal string "func", which matches every
+// method in the repository. The commit was then reported as "this change
+// only removed a copy of code that exists elsewhere - nothing changed", and
+// a real coverage gap was downgraded to a footnote.
+//
+// The method here is never called, so deleting it really does change
+// nothing - but the tool is not allowed to reach that conclusion through
+// "func" matching every method in the tree. It has to notice that no
+// method called Helper is left.
+func DeletedMethodFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/dethoddel")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "store.go", "package fixture\n\n// Store is a thing.\ntype Store struct{}\n\n// Helper returns a number.\nfunc (s *Store) Helper() int { return 1 }\n")
+	m.Write(t, "other.go", "package fixture\n\n// Other is another thing.\ntype Other struct{}\n\n// Method is a method on a different type.\nfunc (o *Other) Method() int { return 2 }\n")
+	m.Write(t, "greet_test.go", methodDelTestFile)
+	m.Init(t)
+	// The commit: drop the method, and touch the test file so that the
+	// commit is one of the shape this tool looks at.
+	m.Write(t, "store.go", "package fixture\n\n// Store is a thing.\ntype Store struct{}\n")
+	m.Write(t, "greet_test.go", methodDelTestFileAfter)
+	m.Commit(t, "chore: remove the Store.Helper method")
+	return m
+}

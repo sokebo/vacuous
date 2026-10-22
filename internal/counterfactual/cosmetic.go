@@ -163,7 +163,7 @@ func indexOfLineComment(line string) int {
 // removedFuncNames lists the functions a patch removes.
 //
 // It looks at the declaration lines only. A function that is removed while
-// an identical one still exists elsewhere in the tree was not deleted -
+// a same-named one still exists elsewhere in the tree was not deleted -
 // it was deduplicated, and the commit changed no behaviour at all.
 func removedFuncNames(patch string) []string {
 	var out []string
@@ -187,25 +187,66 @@ func removedFuncNames(patch string) []string {
 }
 
 // funcDeclName extracts the function's name from a declaration.
+//
+// Three shapes have to be handled, and getting any of them wrong turns one
+// function into a different one:
+//
+//	func Helper() int          - a plain function
+//	func (s *Store) Helper()   - a method: the first parenthesis belongs to
+//	                             the receiver, not to the parameter list
+//	func Foo[T any](x T)       - a generic function: the type parameters
+//	                             come before the argument list
+//
+// The old version cut the declaration at the first "(" and took what came
+// before it. For a method that cut at the receiver, so the "name" it
+// produced was the literal word "func" - for every method, without
+// exception.
+//
+// That is not a cosmetic slip. The deduplication rule matches removed code
+// against what is left in the tree, and a name of "func" matches every
+// method in the repository: deleting a method was then reported as "this
+// change only removed a copy of code that exists elsewhere - nothing
+// changed", and a real coverage gap was quietly downgraded to a footnote.
 func funcDeclName(decl string) string {
-	open := strings.Index(decl, "(")
-	if open < 0 {
+	rest := strings.TrimSpace(decl)
+	if !strings.HasPrefix(rest, "func ") {
 		return ""
 	}
-	head := strings.TrimSpace(decl[:open])
-	head = strings.TrimPrefix(head, "func ")
-	// A method has a receiver: "func (m *Meta) Name".
-	if strings.HasPrefix(head, "(") {
-		close := strings.Index(head, ")")
-		if close < 0 {
+	rest = strings.TrimSpace(rest[len("func "):])
+
+	// A method has a receiver: "func (m *Meta) Name". Skip it, counting
+	// the parentheses, so that a receiver which is itself a function type
+	// ("func (f func() int) Call") does not cut the name in half.
+	if strings.HasPrefix(rest, "(") {
+		depth := 0
+		end := -1
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					end = i
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
 			return ""
 		}
-		head = strings.TrimSpace(head[close+1:])
+		rest = strings.TrimSpace(rest[end+1:])
 	}
-	if i := strings.IndexAny(head, " \t"); i >= 0 {
-		head = head[:i]
+
+	// The name runs up to the parameter list, or to the type parameters
+	// of a generic function.
+	cut := strings.IndexAny(rest, "([")
+	if cut < 0 {
+		return ""
 	}
-	return head
+	return strings.TrimSpace(rest[:cut])
 }
 
 // funcsStillExistElsewhere reports whether every named function still
@@ -216,6 +257,9 @@ func funcDeclName(decl string) string {
 // one is a deduplication: nothing observable changed, so there is no
 // behaviour for a test to watch, and a report that says "this test is
 // vacuous" about such a commit is simply wrong.
+//
+// The match is on the name. A same-named function elsewhere in the tree is
+// what a move leaves behind, and that is the shape this rule is for.
 //
 // It is a conservative check: it only says "yes" when every removed
 // function is still there. A partial match means the commit did something
