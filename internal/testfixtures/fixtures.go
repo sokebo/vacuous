@@ -931,3 +931,28 @@ func DeletedMethodFixture(t *testing.T) *GoModule {
 	m.Commit(t, "chore: remove the Store.Helper method")
 	return m
 }
+
+// TDDFixture builds a repository that follows the test-first order: the
+// test lands in one commit, the fix in the next.
+//
+// The fix commit ships no test of its own, but the test from the previous
+// commit does guard the behaviour - the test goes red when the fix is
+// taken away.
+//
+// This is the shape a TDD team produces on every single change, and
+// reporting the fix commit as "nobody watches this behaviour" is a false
+// accusation against the commit that did the right thing. Worse, it is a
+// blocking one.
+func TDDFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/tdd")
+	// The test comes first, and it fails - that is the point of writing
+	// it before the fix.
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest+witnessTestBody)
+	m.Init(t)
+	// The fix comes second, with no test of its own.
+	m.Write(t, "greet.go", fixedSource)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}

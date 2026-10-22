@@ -839,3 +839,31 @@ func TestAuditDoesNotCallADeletedMethodADeduplication(t *testing.T) {
 			"and that is worth saying", found.Severity, core.SevWarn)
 	}
 }
+
+// TestAuditFindsAGuardFromAnEarlierCommit is the rule.
+//
+// The test lands in one commit, the fix in the next. The fix commit ships
+// no test of its own - but the test from the previous commit does guard
+// the behaviour, and the tool can see that: take the fix away and the
+// test goes red.
+//
+// Reporting "no test watches this" here would be a false accusation
+// against the commit that did the right thing, and a blocking one. It is
+// also the shape every TDD team produces on every change.
+func TestAuditFindsAGuardFromAnEarlierCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.TDDFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictProven {
+		t.Fatalf("verdict = %q, want %q — the test from the previous commit "+
+			"does guard this behaviour\nfindings: %+v", res.Verdict, VerdictProven, res.Findings)
+	}
+}

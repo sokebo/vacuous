@@ -354,15 +354,29 @@ func (r *Repo) Patch(sha string, paths []string) (string, error) {
 	if strings.TrimSpace(sha) == "" {
 		return "", errors.New("git: Patch requires a commit")
 	}
+	// An empty path list means "no files", NOT "every file".
+	//
+	// `git diff` without a path filter is the whole diff. A caller that
+	// asks for "the changes to these files" and hands over an empty list
+	// would get the fix along with the tests - and a counterfactual that
+	// still contains the fix is not a counterfactual at all. The
+	// experiment would run the commit's own tree and call it evidence
+	// about the parent.
+	//
+	// This is not hypothetical: it is what a commit that ships no test
+	// of its own does. The test-side path list is empty, the whole diff
+	// gets applied, and the tool reports "no test watches this" on the
+	// strength of a run that included the fix.
+	if len(paths) == 0 {
+		return "", nil
+	}
 	base, err := r.commitBase(sha)
 	if err != nil {
 		return "", err
 	}
 	args := []string{"diff", "--no-color", "--no-ext-diff", "--binary", base, sha}
-	if len(paths) > 0 {
-		args = append(args, "--")
-		args = append(args, paths...)
-	}
+	args = append(args, "--")
+	args = append(args, paths...)
 	out, err := r.run(args...)
 	if err != nil {
 		return "", fmt.Errorf("git: patch of %q: %w", sha, err)

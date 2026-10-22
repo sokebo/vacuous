@@ -133,6 +133,13 @@ const (
 	// suite is red with the fix in place, so the red says nothing about
 	// whether the test guards this fix.
 	KindPreExistingFailure Kind = "pre-existing-failure"
+	// KindAuditFailed means the tool could not audit this commit at all.
+	//
+	// It is not a statement about the code: the commit might be perfect.
+	// It is a statement about the report - it has a hole in it, and a
+	// hole in a report is worse than a finding, because a finding says
+	// "go look here" while a hole says "nothing was learned here".
+	KindAuditFailed Kind = "audit-failed"
 )
 
 // Finding is one observation. Every detector in vacuous emits these and
@@ -372,6 +379,13 @@ type Report struct {
 	// change that could not be judged is unknown. Reporting both as
 	// "inconclusive" throws away the difference.
 	NoTest int
+	// AuditFailed is the number of commits the tool could not audit.
+	//
+	// It is counted apart from everything else because it changes what
+	// the exit code has to be. A run that could not look at one commit
+	// has not judged that commit, and reporting that as "no findings"
+	// would be the tool's own version of the failure it exists to catch.
+	AuditFailed int
 	// RepoRoot is the absolute path the run was rooted at.
 	RepoRoot string
 }

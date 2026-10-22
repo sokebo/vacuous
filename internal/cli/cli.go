@@ -124,6 +124,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "vacuous: %v\n", err)
 		return ExitError
 	}
+	if rep.AuditFailed > 0 {
+		// A run that could not look at one of its commits has not judged
+		// that commit. "There were no findings" and "we could not look"
+		// are different answers, and only one of them is a green light.
+		//
+		// This is exit 2 - the code this tool already reserves for "could
+		// not tell" - and it takes precedence over the severity rule. A
+		// report with a hole in it is not a complete report, whatever
+		// else it found. The findings are still in the report; the exit
+		// code says the audit itself did not finish.
+		return ExitError
+	}
 	if rep.MaxSeverity() >= failOn {
 		return ExitFindings
 	}
@@ -354,10 +366,17 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 					detail = one.Error()
 				}
 			}
+			// The tool could not look at this commit. That is not a
+			// statement about the code - it is a hole in the report, and
+			// a hole has to be counted separately. Dressing it up as
+			// "coupled" (a claim about the test) was wrong twice over:
+			// it accused the code of something, and it was quiet enough
+			// to pass a CI gate.
+			rep.AuditFailed++
 			rep.Add(core.Finding{
-				Kind:     core.KindCoupled,
-				Severity: core.SevWarn,
-				Summary:  "无法审计这个提交",
+				Kind:     core.KindAuditFailed,
+				Severity: core.SevHigh,
+				Summary:  "这个提交没能审成 —— 报告里有一个洞",
 				Detail:   detail,
 			})
 			continue
