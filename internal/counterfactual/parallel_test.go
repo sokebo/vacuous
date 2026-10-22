@@ -343,7 +343,21 @@ func TestParallelAuditRecordsATimeoutWithoutDraggingTheRound(t *testing.T) {
 	m, shas := hangingFixture(t)
 	warmGoCache(t, m.Dir)
 
-	const budget = 5 * time.Second
+	// The budget has to be long enough that the ORDINARY commit is
+	// judged, and short enough that the hanging one is cut.
+	//
+	// It used to be five seconds. That is ten times what the ordinary
+	// commit needs on an idle machine - and not enough on a busy one.
+	// The budget covers the whole audit of that commit (the checkout, the
+	// patch, the test run), so on a loaded machine - a CI runner running
+	// the whole suite, a laptop with three other things going on - the
+	// ordinary commit's own run was cut off, and this test failed on the
+	// state of the machine rather than on the behaviour of the tool.
+	//
+	// The tool did the right thing when that happened: it recorded a
+	// timeout instead of a verdict. A wall-clock budget measures the
+	// clock, and the assertions below are about the tool.
+	const budget = 20 * time.Second
 	p := newParallelAuditor(t, m.Dir, 2, budget)
 
 	start := time.Now()
@@ -354,7 +368,7 @@ func TestParallelAuditRecordsATimeoutWithoutDraggingTheRound(t *testing.T) {
 	}
 
 	// The round must not have waited for the test that never finishes.
-	if elapsed > 20*time.Second {
+	if elapsed > 40*time.Second {
 		t.Fatalf("the round took %s - the timeout did not cut the hanging run short", elapsed)
 	}
 

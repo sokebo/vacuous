@@ -396,6 +396,30 @@ func TestAuditDetectsMissingTest(t *testing.T) {
 	if len(res.Findings) == 0 {
 		t.Fatal("a fix with no test must produce a finding")
 	}
+
+	// The finding has to be checkable, not just asserted. A reader who
+	// cannot rebuild the experiment has to take the claim on faith, and a
+	// claim that can only be taken on faith is worth very little.
+	//
+	// The recipe matters most here: this finding is a statement about the
+	// whole tree, so the reader needs the tree - the parent, with the fix
+	// taken away and the tests that are there kept.
+	var found *core.Finding
+	for i := range res.Findings {
+		if res.Findings[i].Kind == core.KindNoTestForFix {
+			found = &res.Findings[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("no %q finding in %+v", core.KindNoTestForFix, res.Findings)
+	}
+	if found.Evidence == "" {
+		t.Error("the finding must name the command that produced the evidence")
+	}
+	if found.Repro == "" {
+		t.Error("the finding must carry a recipe that rebuilds the experiment")
+	}
 }
 
 // TestAuditDoesNotTouchCallerWorktree is a safety property.
@@ -865,5 +889,83 @@ func TestAuditFindsAGuardFromAnEarlierCommit(t *testing.T) {
 	if res.Verdict != VerdictProven {
 		t.Fatalf("verdict = %q, want %q — the test from the previous commit "+
 			"does guard this behaviour\nfindings: %+v", res.Verdict, VerdictProven, res.Findings)
+	}
+}
+
+// TestAuditDoesNotAccuseWhenTheExperimentCouldNotRun is the negative
+// control for the "no test in the tree guards this" finding.
+//
+// A commit that ships no test of its own is judged by an experiment: take
+// the fix away and run the tests that are in the tree. When that tree does
+// not compile, the experiment has no answer - and "no answer" must not be
+// turned into a blocking accusation.
+//
+// The probe that decides this used to be the failure COUNT. A tree that
+// does not compile reports zero failing tests, so "no failures" is exactly
+// what a checkout that never ran looks like. The suites that never ran are
+// the very ones that could have been watching the change.
+//
+// This is not a contrived shape. A repository whose root package embeds a
+// built frontend does not compile in a clean checkout, and every commit in
+// it that ships no test of its own looks like this. On such a repository
+// the tool reported a high-severity "nothing watches this behaviour" for
+// commits whose whole test suite had never run.
+func TestAuditDoesNotAccuseWhenTheExperimentCouldNotRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.NoTestUnbuildableParentFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict == VerdictNoTest {
+		t.Fatalf("verdict = %q, but the experiment never ran — a tree that does "+
+			"not compile has no answer to give\nfindings: %+v", res.Verdict, res.Findings)
+	}
+	for _, f := range res.Findings {
+		if f.Severity >= core.SevHigh {
+			t.Errorf("a commit whose experiment could not run must not raise a "+
+				"high-severity finding: %+v", f)
+		}
+	}
+}
+
+// TestAuditSaysSoWhenTheTreeHasNoTestsAtAll pins the other side of the
+// rule above.
+//
+// A tree with no tests in it has no answer about the fix, but it has a
+// perfectly clear answer about the coverage: there is none. The tool has
+// to say so out loud, and it has to be able to say it without running
+// anything - there is nothing to run.
+//
+// The two cases look alike from the outside and have to be told apart: a
+// tree with NO tests knows its answer, a tree that COULD NOT BE BUILT has
+// no answer at all.
+func TestAuditSaysSoWhenTheTreeHasNoTestsAtAll(t *testing.T) {
+	m := testfixtures.NoTestsAtAllFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictNoTest {
+		t.Fatalf("verdict = %q, want %q — a tree with no tests at all cannot "+
+			"watch anything\nfindings: %+v", res.Verdict, VerdictNoTest, res.Findings)
+	}
+	found := false
+	for _, f := range res.Findings {
+		if f.Kind == core.KindNoTestForFix && f.Severity >= core.SevHigh {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a change of behaviour in a tree with no tests at all must be "+
+			"a high-severity finding: %+v", res.Findings)
 	}
 }

@@ -112,6 +112,15 @@ func (p *Python) IsTestPath(path string) bool {
 	return strings.Contains(dir+"/", "/tests/") || strings.HasSuffix(dir, "/tests")
 }
 
+// TestDiscoveryIsAuthoritative reports that the rule above is NOT the whole
+// answer for a Python repository.
+//
+// It is not. pytest decides for itself which files are tests, through its
+// own configuration, and a repository is free to point that anywhere. The
+// patterns here are a good guess, not a guarantee - so the tool may not say
+// "this repository has no tests" on the strength of them.
+func (p *Python) TestDiscoveryIsAuthoritative() bool { return false }
+
 // Plan builds a pytest invocation.
 //
 // The report is written as JUnit XML rather than parsed out of pytest's

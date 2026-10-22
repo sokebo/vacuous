@@ -112,6 +112,27 @@ type Adapter interface {
 	Run(ctx context.Context, plan Plan) (RunResult, error)
 }
 
+// TestDiscoveryAuthority is an optional capability an adapter may
+// implement.
+//
+// It says whether the adapter's test-file rule is the WHOLE truth about
+// where the tests of a repository live.
+//
+// It matters because "this repository has no tests at all" is a claim the
+// tool can only make when it is sure it has looked everywhere. For Go it
+// can: the toolchain only ever runs _test.go files, so the rule is the
+// whole answer. For Node and Python it cannot: the test runner's own
+// configuration decides, and a repository is free to put its tests
+// anywhere.
+//
+// A tool that says "there are no tests here" on the strength of a
+// filename pattern is making a claim it has not earned.
+type TestDiscoveryAuthority interface {
+	// TestDiscoveryIsAuthoritative reports whether IsTestPath is the
+	// complete answer to "where are the tests in this repository".
+	TestDiscoveryIsAuthoritative() bool
+}
+
 // WorktreePreparer is an optional capability an adapter may implement.
 //
 // Some projects need things that live OUTSIDE the repository in order to
