@@ -246,6 +246,7 @@ var knownKinds = map[string]bool{
 	string(core.KindSuiteCrash):         true,
 	string(core.KindPreExistingFailure): true,
 	string(core.KindNoTestRunner):       true,
+	string(core.KindUncommittedChanges): true,
 	string(core.KindNotApplicable):      true,
 }
 
