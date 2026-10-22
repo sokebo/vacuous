@@ -816,3 +816,66 @@ func UnbuildableBaselineFixture(t *testing.T) *GoModule {
 	m.Commit(t, "fix: greet an empty name")
 	return m
 }
+
+// dedupTestFile is the test file of the deduplication fixture.
+//
+// It imports the live package, and it does not mention the dead copy at
+// all - which is the point: nobody called it.
+const dedupTestFile = `package fixture
+
+import (
+	"testing"
+
+	"example.com/dedup/live"
+)
+
+func TestGreet(t *testing.T) {
+	if Greet("bob") != "hello, bob" {
+		t.Fatal("greet broke")
+	}
+}
+
+func TestHelperIsOne(t *testing.T) {
+	if live.Helper() != 1 {
+		t.Fatal("helper must be one")
+	}
+}
+`
+
+// dedupTestFileAfter is the same file with one more case - the test side of
+// the deduplication commit.
+const dedupTestFileAfter = dedupTestFile + `
+func TestHelperIsStable(t *testing.T) {
+	if live.Helper() != 1 {
+		t.Fatal("helper must still be one")
+	}
+}
+`
+
+// DedupFixture builds a repository whose fix commit deletes a dead
+// duplicate of a function that still exists elsewhere.
+//
+// The removed function is never called - it is a leftover copy. Deleting it
+// changes no behaviour whatsoever, so "this change has no test watching it"
+// does not apply: there is no behaviour to watch.
+//
+// This is the shape of a real deduplication commit: the code was moved
+// somewhere else in an earlier commit, and this one removes the leftover.
+// Found on a real public repository, where such a commit was reported as a
+// high-severity "this test is vacuous" - an accusation against a commit that
+// changed nothing at all.
+func DedupFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/dedup")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "live/helper.go", "package live\n\n// Helper is the live one.\nfunc Helper() int { return 1 }\n")
+	m.Write(t, "dead/helper.go", "package dead\n\n// Helper is a leftover copy of the live one. Nobody calls it.\nfunc Helper() int { return 2 }\n")
+	m.Write(t, "greet_test.go", dedupTestFile)
+	m.Init(t)
+	// The fix commit: delete the dead copy, and touch the test file so
+	// that the commit is one of the shape this tool looks at.
+	m.Git(t, "rm", "-q", "dead/helper.go")
+	m.Write(t, "greet_test.go", dedupTestFileAfter)
+	m.Commit(t, "chore: remove the leftover copy of the helper")
+	return m
+}

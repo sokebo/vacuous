@@ -626,6 +626,14 @@ type runOutcome struct {
 	baselineUnknown bool
 	// baselineUnknownDetail explains why the baseline could not run.
 	baselineUnknownDetail string
+	// deduplicated says the commit removed code that still exists
+	// elsewhere in the tree.
+	//
+	// A commit like that changed no behaviour at all - it deleted a copy
+	// of something that lives somewhere else. There is no behaviour for a
+	// test to watch, so "this test is vacuous" is not a finding about the
+	// test; it is a finding about nothing.
+	deduplicated bool
 }
 
 // runCounterfactual builds the "fix removed, test kept" tree and runs the
@@ -754,6 +762,13 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 	// failures in the counterfactual and one in the baseline; the counts
 	// differ, but the second failure is the witness, and the tool must
 	// not throw it away.
+	// A commit that only removed code which still exists elsewhere in the
+	// tree changed no behaviour. The tree the experiment runs in is the
+	// right place to look: the duplicate is still there.
+	if countFailures(result) == 0 && len(res.SourceFiles) > 0 {
+		out.deduplicated = a.removedCodeStillExists(ctx, sha, res.SourceFiles, wt.Path())
+	}
+
 	if countFailures(result) > 0 {
 		base := a.newFailuresWithoutFix(ctx, sha, target, plan, result)
 		switch {
@@ -1211,34 +1226,57 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		out[len(out)-1].Kind = "proven-test"
 
 	case VerdictVacuous:
-		// How loudly to say this depends on how much changed.
+		// What this verdict really says: "removing the fix did not make
+		// any test red". What it does NOT say: "this test is bad".
 		//
-		// The rule is the same one the "no test at all" finding uses, and
-		// for the same reason. A commit that changed two lines and also
-		// touched a test file has produced a "no test witnessed it"
-		// result - but a change that small is usually a version string,
-		// a message or a rename, and there is nothing a test could say
-		// about it. Calling that a HIGH-severity accusation is a false
-		// alarm: the test file it points at may well be a good one.
+		// The difference matters. A test that was added for another
+		// reason - a refactor adapted it, a flaky test was stabilised, a
+		// new case was added for old code - passes with and without the
+		// fix, and it is a perfectly good test. Calling it "vacuous"
+		// accuses it of being worthless, and the reader's next move is
+		// to go and fix a test that was never broken.
 		//
-		// The asymmetry used to be the other way round: the same two
-		// lines were a warning when the commit shipped no test, and a
-		// high-severity finding when the commit happened to touch a test
-		// file.
-		severity := core.SevHigh
-		summary := "这个测试在撤掉修复后依然是绿的 —— 它没有测到修复修的那个行为"
+		// The thing that IS worth saying: this change has no test
+		// watching it. That is a statement about the commit, not about
+		// the test - and it is the actionable half.
+		//
+		// The measured reason for the wording: across sixteen real
+		// repositories, the vacuous findings were a deduplication (the
+		// commit deleted a copy of code that lived elsewhere - no
+		// behaviour changed at all), a stabilisation of a flaky test, and
+		// a two-line change. None of them was a test that failed to
+		// watch a behaviour. The high-severity findings in the same
+		// batch were all "a behaviour changed and nothing watches it" -
+		// the same fact, said about the commit instead of the test.
+		severity := core.SevWarn
+		summary := "这次改动没有测试看着它"
 		detail := fmt.Sprintf(
 			"提交 %s 同时改了代码和测试。把修复撤掉、只留测试后，%d 个测试全部通过。\n"+
-				"这意味着这个测试在 bug 修复之前也会通过 —— 它从来没有看守过这个行为。",
+				"也就是说：这次改动的行为，**没有任何测试看着它**。\n"+
+				"这不等于那个测试是坏的 —— 它可能本来就不是为这个行为写的"+
+				"（重构时顺手改的、修一个飘的测试、给老代码补的用例）。\n"+
+				"要补的是「这个行为」的测试，不是「那个测试」。",
 			res.Commit.Short, countPass(run))
 		if res.SourceChange.biggestFile <= smallChangeLines {
-			severity = core.SevWarn
 			summary = "改动很小，没有测试看着它 —— 多半不是问题"
 			detail = fmt.Sprintf(
 				"提交 %s 同时改了代码和测试，但代码那边只改了 %d 行。撤掉这几行、只留测试后，%d 个测试全部通过。\n"+
 					"改动这么小的时候，「没有测试守着它」多半不是问题 —— 版本号、消息文案、改个措辞都属于这一类。\n"+
 					"如果这几行真的改的是行为，那它需要测试。",
 				res.Commit.Short, res.SourceChange.biggestFile, countPass(run))
+		}
+		if run.deduplicated {
+			// The commit removed code that still exists elsewhere in the
+			// tree. Nothing observable changed, so there is no behaviour
+			// for a test to watch - and nothing to report.
+			severity = core.SevInfo
+			summary = "这次改动只是把别处已有的代码删了一份 —— 行为没变"
+			detail = fmt.Sprintf(
+				"提交 %s 删掉的代码，在树的另一个地方还有一份。\n"+
+					"也就是说它没有改变任何行为 —— 所以「没有测试看着它」在这里不成立，"+
+					"没有测试需要看。\n"+
+					"（撤掉修复后 %d 个测试全部通过，但这个提交本来就没改行为。）",
+				res.Commit.Short, countPass(run))
 		}
 		out = append(out, core.Finding{
 			Kind:     core.KindVacuousTest,
@@ -1248,8 +1286,9 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Repro:    reproFor(res, run),
-			Hint: "把断言落在可观察的行为上：断言具体的返回值、错误内容或状态，" +
-				"而不是实现细节或者「没有 panic」",
+			Hint: "要补的是「这次改动的行为」的测试：断言具体的返回值、错误内容或状态，" +
+				"而不是实现细节或者「没有 panic」。\n" +
+				"如果那个测试本来就是为别的事写的，那就没问题 —— 这次改动需要它自己的测试。",
 		})
 
 	case VerdictSkipped:
@@ -1449,3 +1488,37 @@ func pathsOf(fs []core.FileChange) []string {
 // parentOf returns the first parent of a commit. The commit list from
 // git log always starts with HEAD, so this is the "commit^" spelling.
 func parentOf(sha string) string { return sha + "^" }
+
+// removedCodeStillExists reports whether the commit only removed code that
+// still exists somewhere else in the tree.
+//
+// It is the difference between "this commit removed a behaviour" and "this
+// commit removed a copy of something that lives in another file". The second
+// one is a deduplication, and the tree does not behave differently after it.
+//
+// Found on a real public repository: a commit that deleted two flag-set
+// helpers from one file - helpers that had been moved to another file in an
+// earlier commit - was reported as a HIGH-severity "this test is vacuous".
+// The commit changed no behaviour whatsoever.
+func (a *Auditor) removedCodeStillExists(ctx context.Context, sha string, files []core.FileChange, tree string) bool {
+	patch, err := a.repo.Patch(ctx, sha, pathsOf(files))
+	if err != nil {
+		return false
+	}
+	names := removedFuncNames(patch)
+	if len(names) == 0 {
+		return false
+	}
+	// Only a deletion counts. A commit that both removes and adds code
+	// did something else too, and the caller must not use this to quiet
+	// a finding.
+	_, added, _, _ := splitPatch(patch)
+	if added != "" {
+		return false
+	}
+	changed := map[string]bool{}
+	for _, f := range files {
+		changed[f.Path] = true
+	}
+	return funcsStillExistElsewhere(tree, names, changed)
+}
