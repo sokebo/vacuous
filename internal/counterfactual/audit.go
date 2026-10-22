@@ -401,35 +401,24 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	}
 	res.TestFiles = kept
 
-	// A commit that ships no test at all.
-	if len(res.TestFiles) == 0 {
-		// How loudly to say this depends on how much changed.
-		//
-		// A one-line change is often a rename, a message string, a
-		// threshold nobody thinks to test. Demanding a test for those at
-		// the same volume as a 300-line feature is how a tool teaches
-		// people to ignore it. A small change gets a warning; a real one
-		// gets a finding that can fail a build.
-		severity := core.SevHigh
-		if change.biggestFile <= smallChangeLines {
-			severity = core.SevWarn
-		}
-
-		res.Verdict = VerdictNoTest
-		res.Findings = append(res.Findings, core.Finding{
-			Kind:     core.KindNoTestForFix,
-			Severity: severity,
-			Summary:  "这个改动改了代码，但没有任何测试跟着来",
-			Detail: fmt.Sprintf(
-				"提交 %s 改了 %d 个非测试文件（最大的一个改了 %d 行），没有加任何测试。\n"+
-					"如果这个改动影响了行为，那它现在是没有测试看守的。",
-				info.Short, len(res.SourceFiles), change.biggestFile),
-			File:     firstPath(res.SourceFiles),
-			Hint:     "补一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
-			Evidence: strings.Join(pathsOf(res.SourceFiles), "\n"),
-		})
-		return res, nil
-	}
+	// A commit that ships no test of its own.
+	//
+	// "This commit brought no test" is NOT "nothing guards this
+	// behaviour". The guard may be a test from an earlier commit - and in
+	// a TDD flow (the test lands first, the fix second) that is exactly
+	// what happens. Reporting the fix commit as unguarded there is a
+	// false accusation, and a blocking one.
+	//
+	// So the experiment still runs. The fix is taken away and the tests
+	// that ARE there are run:
+	//
+	//   - they go red  -> an existing test does guard this behaviour
+	//   - they stay green -> nothing guards it, and now that is an
+	//     experiment rather than a guess.
+	//
+	// The finding below is written after the run, with the run's own
+	// numbers in it.
+	shippedItsOwnTest := len(res.TestFiles) > 0
 
 	// The experiment. Build the counterfactual tree: parent + tests, no fix.
 	run, err := a.runCounterfactual(ctx, sha, res)
@@ -440,6 +429,23 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	res.FailureOutput = run.failureTail
 
 	res.Verdict = classify(run, a.isTest)
+
+	// A commit that shipped no test of its own, whose existing tests
+	// stayed green with the fix taken away.
+	//
+	// That is the strong version of the claim. Not "no test came along"
+	// - a fact about the commit - but "nothing in the tree watches this
+	// behaviour", which is a fact about the coverage, and it is now
+	// backed by an experiment instead of an assumption.
+	//
+	// The other outcome - the existing tests go red - needs no special
+	// case: it is the ordinary "proven" verdict, and it is what a TDD
+	// flow produces, where the test landed in the previous commit.
+	if !shippedItsOwnTest && countFailures(run.result) == 0 {
+		res.Verdict = VerdictNoTest
+		res.Findings = append(res.Findings, noTestForFixFinding(res, run, change))
+		return res, nil
+	}
 
 	// How much the commit changed is what decides how loudly to report
 	// that no test witnessed it.
@@ -709,6 +715,22 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 		if narrowed := scoper.ScopeFor(changed); len(narrowed) > 0 {
 			target.PkgPattern = strings.Join(narrowed, " ")
 		}
+	}
+	// A commit that shipped no test of its own is asked a wider question:
+	// "does ANY test that is already in the tree guard this behaviour?".
+	//
+	// The scope above answers a narrower one - "do the tests near the
+	// change catch it?" - and the guard can live elsewhere. In a TDD flow
+	// the test lands in one commit and the fix in the next, so the guard
+	// is usually in a different package than the change. A scope that
+	// misses it turns a guarded behaviour into "nobody watches this" -
+	// a blocking accusation against a commit that did the right thing.
+	//
+	// So for that case the whole module runs. It costs more, and it buys
+	// an answer that is complete.
+	if len(res.TestFiles) == 0 {
+		target.Files = nil
+		target.PkgPattern = ""
 	}
 
 	plan, err := a.adapter.Plan(ctx, core.PlanRequest{Root: wt.Path(), Target: target})
@@ -1532,4 +1554,37 @@ func (a *Auditor) removedCodeStillExists(ctx context.Context, sha string, files 
 		changed[f.Path] = true
 	}
 	return funcsStillExistElsewhere(tree, names, changed)
+}
+
+// noTestForFixFinding reports a behaviour change that nothing in the tree
+// watches.
+//
+// It is only built when the experiment has run and the existing tests
+// stayed green with the fix taken away. That is what makes it a statement
+// about coverage rather than about the commit.
+//
+// How loudly to say it depends on how much changed. A one-line change is
+// often a rename, a message string, a threshold nobody thinks to test.
+// Demanding a test for those at the same volume as a 300-line feature is
+// how a tool teaches people to ignore it. A small change gets a warning;
+// a real one gets a finding that can fail a build.
+func noTestForFixFinding(res *Result, run *runOutcome, change sourceChange) core.Finding {
+	severity := core.SevHigh
+	if change.biggestFile <= smallChangeLines {
+		severity = core.SevWarn
+	}
+	pass, fail, skip, _ := run.result.Counts()
+	return core.Finding{
+		Kind:     core.KindNoTestForFix,
+		Severity: severity,
+		Summary:  "这个改动改了行为，但仓里没有任何测试看守它",
+		Detail: fmt.Sprintf(
+			"提交 %s 改了 %d 个非测试文件（最大的一个改了 %d 行），没有加任何测试。\n"+
+				"把这次修复撤掉之后，仓里**现有的**测试全部通过（%d 个通过、%d 个失败、%d 个跳过）——\n"+
+				"也就是说，没有任何测试看守这个行为。",
+			res.Commit.Short, len(res.SourceFiles), change.biggestFile, pass, fail, skip),
+		File:     firstPath(res.SourceFiles),
+		Hint:     "补一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
+		Evidence: run.command,
+	}
 }

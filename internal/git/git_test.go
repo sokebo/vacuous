@@ -469,7 +469,9 @@ func TestPatch(t *testing.T) {
 	f := newFixture(t)
 	r := f.open()
 
-	patch, err := r.Patch(f.shaFix, nil)
+	// The whole diff of the fix commit, named file by file.
+	all := []string{"fix.go", "vacuous_test.go"}
+	patch, err := r.Patch(f.shaFix, all)
 	if err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
@@ -500,7 +502,7 @@ func TestPatch(t *testing.T) {
 	}
 
 	// The root commit diffs against the empty tree.
-	root, err := r.Patch(f.shaRoot, nil)
+	root, err := r.Patch(f.shaRoot, []string{"fix.go", "vacuous_test.go", "bug.go", "bug_test.go"})
 	if err != nil {
 		t.Fatalf("Patch for the root commit: %v", err)
 	}
@@ -508,7 +510,23 @@ func TestPatch(t *testing.T) {
 		t.Errorf("the root commit's patch does not add files:\n%s", root)
 	}
 
-	if _, err := r.Patch("no-such-commit", nil); err == nil {
+	// An empty path list means NO files, not every file.
+	//
+	// git diff without a path filter is the whole diff. A caller that
+	// asks for "the changes to these files" and hands over an empty list
+	// would get the fix along with the tests - and a counterfactual that
+	// still contains the fix is not a counterfactual. It is the bug that
+	// made a commit with no test of its own look like an unguarded
+	// behaviour change, when the run that "proved" it had the fix in it.
+	none, err := r.Patch(f.shaFix, nil)
+	if err != nil {
+		t.Fatalf("Patch with no paths: %v", err)
+	}
+	if strings.TrimSpace(none) != "" {
+		t.Errorf("Patch with no paths must be empty, got:\n%s", none)
+	}
+
+	if _, err := r.Patch("no-such-commit", all); err == nil {
 		t.Error("Patch with an unknown commit should fail")
 	}
 }
@@ -517,7 +535,7 @@ func TestPatchAppliesToParentCommit(t *testing.T) {
 	f := newFixture(t)
 	r := f.open()
 
-	patch, err := r.Patch(f.shaFix, nil)
+	patch, err := r.Patch(f.shaFix, []string{"fix.go", "vacuous_test.go"})
 	if err != nil {
 		t.Fatalf("Patch: %v", err)
 	}

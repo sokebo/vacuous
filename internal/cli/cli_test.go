@@ -339,3 +339,35 @@ func TestAuditOnARepoWithNoTestsSaysSo(t *testing.T) {
 		t.Errorf("expected the plain no-runner message, got: %s", stderr)
 	}
 }
+
+// TestAuditOfACommitThatCannotBeReadFailsClosed is the rule.
+//
+// A commit the tool cannot even read - a bad sha, a repository that has
+// been rewritten underneath it - produces no verdict. The report must say
+// so, and the exit code must NOT be zero.
+//
+// This is the difference between "there is nothing to report" and "I could
+// not look". Only the first one is a green light, and a CI gate that
+// cannot tell them apart is not a gate.
+//
+// Found by review: passing a commit that does not exist produced a report
+// with every counter at zero and exit code 0.
+func TestAuditOfACommitThatCannotBeReadFailsClosed(t *testing.T) {
+	// A real Go module, so the adapter is found and the run reaches the
+	// commit - the point of the test is what happens to a commit that
+	// cannot be read, not what happens to a project with no runner.
+	m := testfixtures.NewGoModule(t, "example.com/unreadable")
+	m.Write(t, "greet.go", "package fixture\n\n// Greet greets.\nfunc Greet(name string) string { return name }\n")
+	m.Write(t, "greet_test.go", "package fixture\n\nimport \"testing\"\n\nfunc TestGreet(t *testing.T) {\n\tif Greet(\"a\") != \"a\" {\n\t\tt.Fatal(\"bad\")\n\t}\n}\n")
+	m.Init(t)
+
+	code, stdout, _ := runCLI(t, "--mode", "audit", "--commit", "no-such-commit", m.Dir)
+
+	if code != ExitError {
+		t.Fatalf("exit code = %d, want %d (the audit could not be done, "+
+			"which is not the same as \"nothing to report\")", code, ExitError)
+	}
+	if !strings.Contains(stdout, "audit-failed") {
+		t.Errorf("the report must say the commit could not be audited, got:\n%s", stdout)
+	}
+}

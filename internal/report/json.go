@@ -43,6 +43,8 @@ type jsonSummary struct {
 	// MaxSeverity is the worst severity in the report, "info" when the
 	// report is empty.
 	MaxSeverity string `json:"max_severity"`
+	// AuditFailed is the number of commits the tool could not audit.
+	AuditFailed int `json:"audit_failed"`
 }
 
 // jsonFinding is one finding, flattened for consumption.
@@ -105,6 +107,7 @@ func buildJSON(r *core.Report) jsonReport {
 			NotApplicable: r.NotApplicable,
 			ByKind:        byKind,
 			MaxSeverity:   r.MaxSeverity().String(),
+			AuditFailed:   r.AuditFailed,
 		},
 		Findings: make([]jsonFinding, 0, len(findings)),
 	}
