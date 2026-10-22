@@ -3105,3 +3105,137 @@ the ordinary commit: expected verdict "proven", got "timeout"
 「工具在 5 秒内没跑完」和「工具跑不完」是两件事，测试要断言的是后者。
 
 ---
+
+### 3.57 「只读保证」只管住了 git，没管住 go —— 审计把被审仓库的 go.sum 改了
+
+**现象**：仓库 A 的工作树里，`go.sum` 多了 144 行 —— 整个模块图的哈希，
+`charmbracelet/glamour`、`ProtonMail/go-crypto`、`atomicgo/cursor` 这些
+**构建根本用不到**的传递依赖。
+
+这不是开发者写的代码，是**审计留下的**。
+
+**根因**：Go 适配器给子进程设了 `GOFLAGS=`，注释写的是「让这次运行保持隔离：
+环境里一个野 GOFLAGS 会改变被测的东西」。**空字符串不是「清掉」** —— Go 把
+**空的**环境变量当成「没设」，于是回落到用户的配置文件（`go env -w`，默认
+`~/Library/Application Support/go/env`）。而这台机器的配置里正是：
+
+```
+GOFLAGS=-mod=mod
+GOPROXY=https://goproxy.cn,direct
+GOSUMDB=sum.golang.google.cn
+```
+
+`GOFLAGS=` 于是**什么都没挡住**：子进程照样跑在 `-mod=mod` 下 —— 而
+`-mod=mod` 明确允许 go 命令改写 `go.mod` 和 `go.sum`。
+
+更要命的是另外两处 `go list`（`go_run.go` 里问「这个测试来自哪个文件」的那次，
+和 `modules.go` 里问「这个 module 有没有这个包」的那次）**根本没设环境**，
+`cmd.Env` 是 nil → 整个继承调用方的环境。而审计规程要求的就是
+`GOFLAGS=-mod=mod`。
+
+**后果是三件事叠在一起**：
+
+1. **只读保证是假的**。README 写着「审别人的仓库时，工具一个字节都不写进去」。
+   实际上 `check` 模式是在被审仓库的**工作树里就地**跑的，`go test` /
+   `go list` 在 `-mod=mod` 下可以改写它的 `go.mod` 和 `go.sum`。
+2. **同一个仓，两台机器两个结论**。CI 的机器配置里没有 GOFLAGS → 默认
+   `-mod=readonly` → 只读；这台机器 → `-mod=mod` → 可写。同一份审计，
+   在本地和在 CI 上跑的不是同一种东西。
+3. **闸门看不见**。3.23 写明闸门**有意**不看被审仓库的工作树（仓库 D 一直有
+   未提交的在制品，算进去就每轮都喊「有变化」）。于是这类污染**天然不可见** ——
+   被审仓库的工作树和它提交态不一样了，没有任何一层会说话。
+
+**复现方式（工具之外的手段）**：
+
+```
+$ git -C 仓库A show HEAD:go.sum > /tmp/committed.go.sum   # 126 行
+$ cd 仓库A工作树 && GOFLAGS=-mod=mod GOPROXY=off go mod download all
+$ wc -l go.sum                                           # 270 行
+$ diff go.sum 仓库A工作树/go.sum                           # 完全一致
+```
+
+`go mod download all` 在 `-mod=mod` 下写出的 `go.sum`，和工作树里那份**逐字节
+相同** —— 污染的来源和机制都对上了。同一个目录用 `-mod=readonly` 跑，
+`go.sum` 一个字不动。
+
+另外两条（同样是工具之外的验证）：
+
+```
+$ GOFLAGS= go env GOFLAGS
+-mod=mod            # 空字符串没挡住配置文件
+$ GOFLAGS= GOENV=off go env GOFLAGS
+                    # 空了
+```
+
+**修法**：新增 `goToolEnv()`，**三处** `go` 调用统一走它：
+
+```go
+func goToolEnv() []string {
+	return []string{
+		"GOFLAGS=",
+		"GOENV=off",   // ← 真正堵住的那一行
+		"GO111MODULE=on",
+	}
+}
+```
+
+`GOENV=off` 让 Go **完全不看配置文件**，于是 `GOFLAGS=` 才真的是「哪儿都没有
+GOFLAGS」，子进程回落到 Go 自己的默认值（`-mod=readonly`；模块自带
+`vendor/` 的话是 `-mod=vendor`）。三处分别是：plan 的环境（`go test`）、
+`go_run.go` 的 `go list`、`modules.go` 的 `go list` —— 后两处改成走新的
+`goCommand()` 辅助函数，不再继承调用方的环境。
+
+**修的过程中踩到的第二个坑（差点当成别的毛病）**：`cmd.Env` 一旦被**显式**
+设过，`os/exec` 就不再往里面注入 `PWD=<工作目录>` —— 那个注入只在
+`cmd.Env == nil` 时发生。于是子进程带着**别的目录**的 PWD 启动，`go` 工具
+只好回落到系统调用去拿当前目录，顺手把软链解开：macOS 的
+`/var/folders/...` 于是变成 `/private/var/folders/...`。
+
+报出来的路径和工具问的路径对不上，`relToRoot` 认不出来 → **范围映射整个
+是空的**。症状是两条早就存在的测试突然变红：
+
+```
+TestGoAdapterRunsRealSuite: TestAdd file = "", want "add_test.go"
+TestGoScopePatterns: goScopePatterns = [], want [./ ./internal/calc/...]
+```
+
+修法：`goEnvFor(dir)` 里把 `PWD=<dir>` 一起带上（`go test` 那一路同样补上），
+把 `os/exec` 替我们做的事自己做掉。
+
+**负对照**：
+
+1. 把 `GOENV=off` 那一行删掉 → 两条测试一起红：
+   - `TestGoToolEnvIgnoresTheGoEnvFile`：报「go 子进程从机器的 go 配置文件里
+     继承了 GOFLAGS="-mod=mod"」—— 它自己造了一台「配置里有 -mod=mod」的机器
+     （一个假的 go env 文件），所以**在任何机器上都会红**，不只在这台上。
+   - `TestGoListDoesNotWriteGoSum`：**端到端地**把被审仓库的 `go.sum` 改写出来
+     —— 报的就是那两行哈希。测试用的依赖由一个本地 `file://` 代理提供，
+     不需要网络，也不碰共享的模块缓存。
+2. 把 `PWD=` 那一行删掉 → 三条测试一起红：上面那两条，加上
+   `TestGoListReportsThePathWeAskedAbout`（它自己造一个指向检出目录的**软链**，
+   要求 go 工具报回来的路径落在软链这条路径上 —— 不依赖平台：macOS 的临时目录
+   本来就在 `/var` 底下，Linux 上不是，所以测试自己造软链）。
+
+改回去 → 全绿。
+
+**教训**：
+
+- **显式设环境会悄悄改掉别的行为**。`PWD` 的注入是 `os/exec` 的副作用，
+  不是承诺：一旦 `cmd.Env` 非 nil，它就没了。改环境的时候要连带问一句
+  「这个子进程原来还依赖什么」。
+- **两处路径长得不一样，要按「是不是同一个目录」比，不能按字符串比** ——
+  软链、`/private` 前缀、`/tmp` vs `/private/tmp` 都是同一类。
+
+- **把环境变量设成空，不等于清掉这个环境变量**。Go 会把空的当「没设」，回落
+  到配置文件。想真的「哪儿都没有」，得让那份配置根本不被读 —— 这就是
+  `GOENV=off` 的用处。审计规程（`GOFLAGS=-mod=mod`）和工具的隔离要求
+  （`GOFLAGS=`）正面撞车时，输的是工具：**隔离必须赢**，而且要赢得**不依赖
+  调用方怎么设**。
+- **只读保证要覆盖整条链，不只是 git 那头**。3.x 里反复写的是「用
+  `git archive` 而不是 `git worktree add`」 —— 那是 git 那一头。这一条漏掉
+  的是**工具链那一头**：`go test` 一样能在你的仓库里落字。
+- **闸门有意不看被审仓库的工作树**（3.23）是对的，但它有个前提：被审仓库的
+  工作树**只被开发者改**。工具自己往里写，就把这个前提打破了 —— 那一刻
+  没人再知道工作树和提交态差在哪里。
+
+---

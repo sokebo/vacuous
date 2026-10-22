@@ -230,15 +230,15 @@ func (g *Go) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, error) 
 
 	args = append(args, req.ExtraArgs...)
 
-	env := []string{
-		// Keep the run hermetic: a stray GOFLAGS in the environment can
-		// change what gets tested.
-		"GOFLAGS=",
-		"GO111MODULE=on",
+	// Keep the run hermetic: a stray GOFLAGS in the environment can change
+	// what gets tested, and GOFLAGS=-mod=mod would let the child rewrite the
+	// audited repository's go.mod and go.sum. See goToolEnv for why the
+	// empty string alone was not enough.
+	env := append(goToolEnv(),
 		// Colour codes in the output would only confuse the parser.
 		"TERM=dumb",
 		"NO_COLOR=1",
-	}
+	)
 
 	// A repository can hold several independent modules, each with its own
 	// tests. Running only the root module would silently ignore the rest,
