@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -117,8 +116,7 @@ func (g *Go) moduleHasScope(ctx context.Context, dir, pattern string) bool {
 		return true
 	}
 	args := append([]string{"list"}, fields...)
-	cmd := exec.CommandContext(ctx, "go", args...)
-	cmd.Dir = dir
+	cmd := goCommand(ctx, dir, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

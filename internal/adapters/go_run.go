@@ -214,6 +214,10 @@ func (g *Go) runSingle(ctx context.Context, plan core.Plan) (core.RunResult, err
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = plan.Dir
 	cmd.Env = append(os.Environ(), plan.Env...)
+	// PWD has to name the directory the run happens in. See goEnvFor: with
+	// an explicit environment nothing injects it, and a stale PWD makes the
+	// toolchain report the checkout under its resolved path.
+	cmd.Env = append(cmd.Env, "PWD="+plan.Dir)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -300,8 +304,7 @@ func goListPackages(ctx context.Context, root string) []goPackage {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "list", "-f", "{{.ImportPath}}\t{{.Dir}}", "./...")
-	cmd.Dir = root
+	cmd := goCommand(ctx, root, "list", "-f", "{{.ImportPath}}\t{{.Dir}}", "./...")
 	// `go list` reports problems on stderr and still lists what it could,
 	// so the error is ignored on purpose and stdout is parsed either way.
 	out, _ := cmd.Output()
