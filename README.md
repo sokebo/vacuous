@@ -348,10 +348,13 @@ items, _ := load() // vacuous:ignore[no-test-for-fix]   // 只豁免这一类
 
 ### 已知边界
 
-- **Go**：已充分验证。多 module、跨仓共享依赖、本地 `replace` 都跑通了。
-- **Python**：已验证。在一个真实的 Python 仓上跑通了完整的反事实执行。
-- **Node / jest / vitest**：只有夹具测试覆盖，**尚未在真实仓库上跑通**。
-  代码路径存在，但请当作未经充分验证对待。
+- **Go**：已充分验证。多 module、跨仓共享依赖、本地 `replace` 都跑通了；
+  也在一个 5 万提交的公开仓（hashicorp/terraform）上跑过完整的反事实执行。
+- **Python**：已验证。pytest 和 `python -m unittest` 两种形态都在真实仓上跑通了
+  完整的反事实执行。
+- **Node / jest / vitest**：在两个真实公开仓上验过（一个 jest、一个 vitest），
+  找到并修掉 5 个真 bug。但**它比 Go 路径年轻** —— 窄跑不绿就退回全量那条
+  逻辑的副作用还没有在足够大的真实仓上压过，请当作「验证过但没那么厚」对待。
 - **修复引入新 API 时**，测试离开修复就编译不过 → 判 coupled（见上一节）。
 
 ---
