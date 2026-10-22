@@ -1,6 +1,10 @@
 package counterfactual
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sokebo/vacuous/internal/core"
+)
 
 // TestPatchIsCosmetic pins down exactly which changes are allowed to be
 // called cosmetic.
@@ -151,5 +155,110 @@ func TestStripCommentDoesNotTouchHashInsideStrings(t *testing.T) {
 func TestNormalizeCodeDropsWholeLineComments(t *testing.T) {
 	if got := normalizeCode("  # just a note"); got != "" {
 		t.Errorf("normalizeCode() = %q, want empty", got)
+	}
+}
+
+// TestSemanticChangePerFileCountsRealChange pins down how a change is
+// measured.
+//
+// The number decides how loudly the tool reports a missing test, so the
+// direction of every error matters: counting too much turns a formatting
+// change into a build-breaking finding, and counting too little hides a
+// real behaviour change.
+func TestSemanticChangePerFileCountsRealChange(t *testing.T) {
+	cases := []struct {
+		name  string
+		patch string
+		want  int
+	}{
+		{
+			// The shape gofmt produces when a struct block grows a field:
+			// every line in the block changes, and none of them changed.
+			name: "gofmt realignment is not a change",
+			patch: `--- a/task.go
++++ b/task.go
+@@ -1,6 +1,6 @@
+ type Task struct {
+-	ID      string ` + "`json:\"id\"`" + `
+-	TokenID int    ` + "`json:\"token_id\"`" + `
++	ID              string ` + "`json:\"id\"`" + `
++	TokenID         int    ` + "`json:\"token_id\"`" + `
+ }`,
+			want: 0,
+		},
+		{
+			name: "a comment is not a change",
+			patch: `--- a/greet.go
++++ b/greet.go
+@@ -1,3 +1,4 @@
+ package fixture
+-// Greet greets.
++// Greet returns a greeting.
++// It never fails.
+ func Greet(name string) string {`,
+			want: 0,
+		},
+		{
+			// One line replaced by a different one: one line removed, one
+			// added.
+			name: "one line replaced",
+			patch: `--- a/greet.go
++++ b/greet.go
+@@ -1,3 +1,3 @@
+ package fixture
+-func Greet() string { return "hi" }
++func Greet() string { return "hello" }`,
+			want: 2,
+		},
+		{
+			// Three brand-new lines: a real addition.
+			name: "three lines added",
+			patch: `--- a/greet.go
++++ b/greet.go
+@@ -1,2 +1,5 @@
+ package fixture
++func A() {}
++func B() {}
++func C() {}`,
+			want: 3,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := semanticChangePerFile(c.patch)
+			total := 0
+			for _, n := range got {
+				total += n
+			}
+			if total != c.want {
+				t.Errorf("semanticChangePerFile() = %d, want %d (per file: %v)", total, c.want, got)
+			}
+		})
+	}
+}
+
+// TestChangeSeverityIsLoudOnlyForRealChanges pins down when a missing test
+// is loud enough to fail a build.
+//
+// The threshold is deliberately high. A build that blocks on a two-line
+// change is a build people learn to bypass, and a bypassed tool protects
+// nobody - so the loud band has to mean "this was a real change".
+func TestChangeSeverityIsLoudOnlyForRealChanges(t *testing.T) {
+	cases := []struct {
+		lines int
+		want  core.Severity
+	}{
+		{0, core.SevWarn},
+		{2, core.SevWarn},
+		{3, core.SevWarn},
+		{9, core.SevWarn},
+		{10, core.SevHigh},
+		{53, core.SevHigh},
+	}
+	for _, c := range cases {
+		if got := changeSeverity(c.lines); got != c.want {
+			t.Errorf("changeSeverity(%d) = %s, want %s", c.lines, got, c.want)
+		}
 	}
 }

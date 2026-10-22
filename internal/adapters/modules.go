@@ -32,6 +32,16 @@ func goModuleRoots(planEnv []string) []string {
 	return nil
 }
 
+// rootIsModuleOrWorkspace reports whether dir is itself a Go module or a Go
+// workspace.
+//
+// It decides whether the root run is worth attempting. A directory that is
+// neither cannot run "go test ./..." at all, and the error it produces
+// describes the tool's own mistake rather than the code under review.
+func rootIsModuleOrWorkspace(dir string) bool {
+	return fileExists(filepath.Join(dir, "go.mod")) || fileExists(filepath.Join(dir, "go.work"))
+}
+
 // moduleDirs turns the module list into absolute directories.
 func moduleDirs(root string, modules []string) []string {
 	out := make([]string, 0, len(modules))
@@ -58,6 +68,23 @@ func (g *Go) runInModules(ctx context.Context, plan core.Plan) (core.RunResult, 
 
 	merged := core.RunResult{Command: plan.Command()}
 
+	// The root run only makes sense when the root IS a module (or a
+	// workspace). A repository that keeps its Go code in a subdirectory -
+	// "backend/go.mod" next to a Node frontend, say - has no module at the
+	// root, and "go test ./..." there fails with
+	//
+	//	pattern ./...: directory prefix . does not contain main module
+	//
+	// That failure is the TOOL's doing, not the code's: the real module
+	// below it runs perfectly well. Merging that error into the result
+	// turns the whole repository into "the checkout does not build", and
+	// the verdict becomes "cannot tell" for every commit in it - the
+	// repository loses its audit entirely because of where its module
+	// happens to sit.
+	//
+	// So the root run is skipped when there is no module at the root. The
+	// nested modules below run exactly as before.
+	//
 	// The root module is the one the plan was written for: its pattern is
 	// relative to it. It runs first, and its result is the one that decides
 	// the verdict.
@@ -67,11 +94,13 @@ func (g *Go) runInModules(ctx context.Context, plan core.Plan) (core.RunResult, 
 	// fixtures in a nested module (this one does) then got judged by its
 	// testdata: the real suite never ran, and the verdict was invented out
 	// of a run that never happened.
-	root, err := g.runSingle(ctx, plan)
-	if err != nil {
-		return merged, err
+	if rootIsModuleOrWorkspace(plan.Dir) {
+		root, err := g.runSingle(ctx, plan)
+		if err != nil {
+			return merged, err
+		}
+		mergeRunResult(&merged, root)
 	}
-	mergeRunResult(&merged, root)
 
 	for _, dir := range moduleDirs(plan.Dir, modules) {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {

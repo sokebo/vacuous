@@ -218,6 +218,47 @@ func TestGoAdapterGreenSuite(t *testing.T) {
 	}
 }
 
+// TestGoAdapterRunsModuleInSubdirectory checks a repository whose Go module
+// is not at the root.
+//
+// The shape is common: a Node frontend at the top and the Go service under
+// "backend/". Running "go test ./..." at the root of such a repository fails
+// with "pattern ./...: directory prefix . does not contain main module" -
+// and that failure is the tool's own doing, not the code's. If it is merged
+// into the result, the whole repository reads as "the checkout does not
+// build", every commit in it becomes "cannot tell", and the audit of the
+// repository is over before it starts.
+//
+// The load-bearing assertion is the pair: the module's tests must have run
+// AND there must be no build error. Either one alone passes even when the
+// rule is broken - the tests ran but the error is still there, or the error
+// is gone but so are the tests.
+func TestGoAdapterRunsModuleInSubdirectory(t *testing.T) {
+	root := copyFixture(t, "goproj-subdir")
+	a := NewGo()
+	if !a.Detect(root) {
+		t.Fatal("the Go adapter did not detect the fixture")
+	}
+	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	res, err := a.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if got, ok := outcomeFor(res, "TestAdd"); !ok {
+		t.Errorf("TestAdd is missing from the outcomes: %+v", res.Outcomes)
+	} else if got.Status != core.StatusPass {
+		t.Errorf("TestAdd = %s, want %s", got.Status, core.StatusPass)
+	}
+	if len(res.BuildErrors) != 0 {
+		t.Errorf("BuildErrors = %v, want none: the root is not a module, so the root run must be skipped rather than failed",
+			res.BuildErrors)
+	}
+}
+
 // TestGoAdapterDefeatsTheTestCache is the negative control for -count=1.
 //
 // Without -count=1 the second run of an unchanged package is answered from

@@ -48,9 +48,9 @@ func (a *Auditor) sourceChange(ctx context.Context, sha string, files []core.Fil
 	if err != nil {
 		return sourceChange{}, err
 	}
-	removed, added, lines, perFile := splitPatch(patch)
+	removed, added, lines, _ := splitPatch(patch)
 	biggest := 0
-	for _, n := range perFile {
+	for _, n := range semanticChangePerFile(patch) {
 		if n > biggest {
 			biggest = n
 		}
@@ -60,6 +60,80 @@ func (a *Auditor) sourceChange(ctx context.Context, sha string, files []core.Fil
 		lines:       lines,
 		biggestFile: biggest,
 	}, nil
+}
+
+// semanticChangePerFile counts, for each file in a unified diff, how many
+// lines really changed.
+//
+// "Really changed" means the line is not the same code before and after,
+// with comments and whitespace ignored. A file that only had its struct
+// fields re-aligned by gofmt has zero: the code is character-for-character
+// the same once the alignment is taken out.
+//
+// Counting raw diff lines would say that file changed 30 lines, and the
+// severity of the finding would follow that number. So a commit that adds
+// one field and lets gofmt re-align the block around it would look like a
+// 30-line change, and it would be reported as loudly as a 30-line feature.
+// That is the wrong way round: the number has to describe the behaviour
+// change, not the formatting.
+//
+// The count is the size of the symmetric difference of the two sides'
+// multisets of normalized lines. A line that was removed and a line that
+// was added count once each; a line that moved (removed on one side, added
+// on the other, identical after normalizing) counts zero.
+//
+// A line that holds nothing but a comment does not enter the multisets at
+// all. A comment that was added is not a behaviour change, and counting it
+// would inflate a two-line change into a three-line one.
+func semanticChangePerFile(patch string) map[string]int {
+	removed := map[string][]string{}
+	added := map[string][]string{}
+	file := ""
+
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "---"), strings.HasPrefix(line, "+++"):
+			if strings.HasPrefix(line, "+++ ") {
+				file = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
+			}
+			continue
+		case strings.HasPrefix(line, "-"):
+			if code := normalizeCode(line[1:]); code != "" {
+				removed[file] = append(removed[file], code)
+			}
+		case strings.HasPrefix(line, "+"):
+			if code := normalizeCode(line[1:]); code != "" {
+				added[file] = append(added[file], code)
+			}
+		}
+	}
+
+	out := map[string]int{}
+	for f := range removed {
+		out[f] += multisetDifference(removed[f], added[f])
+	}
+	for f := range added {
+		out[f] += multisetDifference(added[f], removed[f])
+	}
+	return out
+}
+
+// multisetDifference counts the elements of a that are not accounted for by
+// b: |a - b|, as multisets.
+func multisetDifference(a, b []string) int {
+	pool := map[string]int{}
+	for _, s := range b {
+		pool[s]++
+	}
+	n := 0
+	for _, s := range a {
+		if pool[s] > 0 {
+			pool[s]--
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 // patchIsCosmetic reports whether a unified diff changes anything other than
