@@ -168,8 +168,26 @@ func TestAuditDetectsVacuousTest(t *testing.T) {
 	for _, f := range res.Findings {
 		if f.Kind == "vacuous-test" {
 			found = true
-			if f.Severity < core.SevHigh {
-				t.Errorf("a vacuous test must be a high-severity finding, got %v", f.Severity)
+			// The severity is a warning, not a high-severity
+			// accusation.
+			//
+			// The verdict says "removing the fix did not make any test
+			// red". It does NOT say "this test is bad" - the test may
+			// have been added for another reason entirely, and calling it
+			// broken sends the reader off to fix a test that was never
+			// broken.
+			//
+			// The measured reason: across sixteen real repositories the
+			// high-severity findings were all "a behaviour changed and
+			// nothing watches it". A vacuous-test finding that shouts
+			// dilutes exactly that one.
+			if f.Severity != core.SevWarn {
+				t.Errorf("a vacuous-test finding must be a warning, got %v", f.Severity)
+			}
+			// And it must not blame the test.
+			if strings.Contains(f.Summary, "这个测试在撤掉修复后依然是绿的") ||
+				strings.Contains(f.Detail, "它从来没有看守过这个行为") {
+				t.Errorf("the finding must not accuse the test:\n%q\n%s", f.Summary, f.Detail)
 			}
 			if f.Summary == "" {
 				t.Error("the finding must carry a human-readable summary")
@@ -735,5 +753,47 @@ func TestAuditReportsARedSuiteAtTheCommitItself(t *testing.T) {
 	}
 	if !strings.Contains(found.Summary, "套件本身就是红的") {
 		t.Errorf("the summary must lead with the fact, got: %q", found.Summary)
+	}
+}
+
+// TestAuditDoesNotAccuseADeduplication is the rule.
+//
+// The commit removed a function that still exists elsewhere in the tree, and
+// that nobody called. It changed no behaviour at all.
+//
+// A report that says "this test is vacuous" about such a commit is wrong
+// twice over: the commit has nothing to guard, and the test it points at is
+// perfectly good.
+//
+// Found on a real public repository: a commit that deleted two flag-set
+// helpers which had been moved to another package in an earlier commit was
+// reported as a HIGH-severity "this test is vacuous".
+func TestAuditDoesNotAccuseADeduplication(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.DedupFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	var found *core.Finding
+	for i := range res.Findings {
+		if res.Findings[i].Kind == core.KindVacuousTest {
+			found = &res.Findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a vacuous-test finding, got: %+v", res.Findings)
+	}
+	if found.Severity != core.SevInfo {
+		t.Errorf("severity = %v, want %v — a deduplication changed nothing, "+
+			"so there is nothing to accuse", found.Severity, core.SevInfo)
+	}
+	if !strings.Contains(found.Summary, "行为没变") {
+		t.Errorf("the summary must say the commit changed no behaviour, got: %q", found.Summary)
 	}
 }

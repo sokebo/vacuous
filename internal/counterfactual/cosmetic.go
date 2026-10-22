@@ -2,6 +2,8 @@ package counterfactual
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/sokebo/vacuous/internal/core"
@@ -156,4 +158,117 @@ func indexOfLineComment(line string) int {
 		}
 	}
 	return -1
+}
+
+// removedFuncNames lists the functions a patch removes.
+//
+// It looks at the declaration lines only. A function that is removed while
+// an identical one still exists elsewhere in the tree was not deleted -
+// it was deduplicated, and the commit changed no behaviour at all.
+func removedFuncNames(patch string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(patch, "\n") {
+		if !strings.HasPrefix(line, "-") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		code := strings.TrimSpace(strings.TrimPrefix(line, "-"))
+		if !strings.HasPrefix(code, "func ") {
+			continue
+		}
+		name := funcDeclName(code)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+// funcDeclName extracts the function's name from a declaration.
+func funcDeclName(decl string) string {
+	open := strings.Index(decl, "(")
+	if open < 0 {
+		return ""
+	}
+	head := strings.TrimSpace(decl[:open])
+	head = strings.TrimPrefix(head, "func ")
+	// A method has a receiver: "func (m *Meta) Name".
+	if strings.HasPrefix(head, "(") {
+		close := strings.Index(head, ")")
+		if close < 0 {
+			return ""
+		}
+		head = strings.TrimSpace(head[close+1:])
+	}
+	if i := strings.IndexAny(head, " \t"); i >= 0 {
+		head = head[:i]
+	}
+	return head
+}
+
+// funcsStillExistElsewhere reports whether every named function still
+// exists in the tree, in a file other than the ones the patch touched.
+//
+// This is the signal that separates "the commit removed a behaviour" from
+// "the commit removed a copy of code that lives somewhere else". The second
+// one is a deduplication: nothing observable changed, so there is no
+// behaviour for a test to watch, and a report that says "this test is
+// vacuous" about such a commit is simply wrong.
+//
+// It is a conservative check: it only says "yes" when every removed
+// function is still there. A partial match means the commit did something
+// else too, and the caller must not use it to quiet a finding.
+func funcsStillExistElsewhere(tree string, names []string, changedFiles map[string]bool) bool {
+	if len(names) == 0 {
+		return false
+	}
+	for _, name := range names {
+		if !funcExistsOutside(tree, name, changedFiles) {
+			return false
+		}
+	}
+	return true
+}
+
+// funcExistsOutside reports whether a function with that name is declared
+// in the tree, in a file the patch did not touch.
+func funcExistsOutside(tree, name string, changedFiles map[string]bool) bool {
+	found := false
+	_ = filepath.Walk(tree, func(path string, info os.FileInfo, err error) error {
+		if err != nil || found {
+			return nil
+		}
+		if info.IsDir() {
+			switch filepath.Base(path) {
+			case ".git", "vendor", "node_modules", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(tree, path)
+		if relErr == nil && changedFiles[rel] {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			decl := strings.TrimSpace(line)
+			if !strings.HasPrefix(decl, "func ") {
+				continue
+			}
+			if funcDeclName(decl) == name {
+				found = true
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return found
 }
