@@ -3490,3 +3490,124 @@ fix」），这正是 coupled，而不是 environment。
 旧表里记的是**当时**的值，那是历史，不改；要改的是「现在该拿什么当基线」。
 这一行就是现在的基线。照着旧表去核实，会核实一个已经不存在的仓库形状
 （这正是文档自己在第 130 行写下的那条）。
+
+---
+
+### 3.61 内测脚本漏算了「没有测试看着」那一类 —— 它报的数字比报告本身还小
+
+**现象**：`scripts/try.sh`（内测用的那条命令）在仓库 A 上说：
+
+```
+审到提交 : 10
+有结论   : 3   （3 条「有测试看守」+ 0 条「没有测试看着」）
+判不了   : 5
+不适用   : 2
+审不成   : 0
+
+── 这次结果算不算数 ──────────────────────────────────
+✓ 有 3 条真结论。这次的数字可以用。
+```
+
+而同一份报告（`vacuous --mode audit --limit 12 --json`）说的是：
+
+```json
+{"proven": 3, "vacuous": 0, "inconclusive": 5, "no_test": 2,
+ "not_applicable": 2, "by_kind": {"coupled": 5, "no-test-for-fix": 3},
+ "max_severity": "high", "audit_failed": 0}
+```
+
+**12 个提交被审过，报告里有 3 条 `no-test-for-fix`（其中 1 条是高危）。**
+脚本说「10 个」「没有测试看着 0 条」。
+
+**根因**：脚本自己算了一遍加法，而它漏了一个键。
+
+工具的口径写在 `internal/report/text.go` 的 headline 里：
+
+```go
+judged := r.Proven + r.Vacuous + r.NoTest + r.Inconclusive
+unjudged := r.NotApplicable + r.AuditFailed
+```
+
+`no_test`（这个改动改了行为，但仓里没有任何测试看守它）**是一条结论**，
+不是「判不了」。`internal/core/core.go` 里对这个计数的说明写得很直白：
+
+> It is counted apart from Inconclusive because "nobody wrote a test" is an
+> answer, not a shrug.
+
+而脚本写的是：
+
+```python
+total = proven + vac + incon + na + afail   # ← 没有 no_test
+real  = proven + vac                        # ← 也没有 no_test
+judged = total - na                         # ← 跟着一起错，还把 audit_failed 算进了「判过」
+```
+
+少算一个键不会让脚本崩溃 —— 它只会**报出一个比报告小的数**，然后拿这个数
+下结论。这正是这个脚本要防的那种事：「0 条发现」有两种意思，而脚本自己
+先把其中一种说成了另一种。
+
+**这个洞为什么之前没被看见**：脚本把 `vacuous`（测试存在但证明不了任何事）
+的文案写成了「没有测试看着」，而「没有测试看着」在工具的词汇里是
+`no_test`。两个概念共用一句话，少算的那个键就被藏进了另一个键的
+影子里 —— 读输出的人看不出少了东西。
+
+**顺带发现的第二个洞**：`△`（有结论，但也有判不了的）那一档**是死代码**。
+分支顺序是 `afail → real → judged==0 → incon>=judged → else`，而 `real` 非零时
+会在第二个分支就 return，`real` 为零时 `judged == incon`，于是
+`incon >= judged` 恒真 —— `else` 永远到不了。也就是说：
+
+> 一次运行里既有 5 条结论、又有 5 条判不了的提交时，脚本只会说
+> 「✓ 这 3 条真结论，这次的数字可以用」，**那 5 条判不了的一个字都不提**。
+
+README 里写了 `△` 这一档，但它从来没有出现过。
+
+**修复**：
+
+1. 脚本按工具自己的口径算：`judged = proven + vacuous + no_test + inconclusive`、
+   `unjudged = not_applicable + audit_failed`，`real`（有结论）= proven + vacuous
+   + no_test。
+2. 三个概念各说各的：`proven` 是「有测试看守」，`vacuous` 是「测试形同虚设」，
+   `no_test` 才是「没有测试看着」。
+3. 分支按「有多少结论」排，不按「有没有结论」排：`△` 这一档因此第一次真正
+   走得进去。判不了的提交不该被一个 ✓ 盖住。
+4. 报告里有洞（`audit_failed > 0`）而一个结论都没有时，多说一句
+   「✗ 一个提交都没审成」，别让它掉进「这个窗口里没有值得审的提交」。
+
+**修复后同一个仓的输出**：
+
+```
+审到提交 : 12
+有结论   : 5   （3 条「有测试看守」+ 0 条「测试形同虚设」+ 2 条「没有测试看着」）
+判不了   : 5
+不适用   : 2
+审不成   : 0
+
+△ 有 5 条结论，5 条判不了。判不了的那些不算「没问题」。
+
+  [high] no-test-for-fix  这个改动改了行为，但仓里没有任何测试看守它
+```
+
+**负对照**：新增 `internal/scripts/try_test.go`。它**跑真的脚本**，喂给它的
+JSON 由工具自己的 `report.RenderJSON` 生成 —— 不是手写一份长得像的假数据。
+这样工具改字段名时脚本会跟着失效，而不是各算各的。
+
+两条破法都要让测试变红：
+
+1. 把 `real = proven + vac + notest` 改回 `real = proven + vac`（= 原来的 bug）
+   → `TestTryScriptTallyMatchesTheReport` 变红。输出里能直接看到症状：
+   三个分项写着 `2 + 0 + 1`，加起来却是 `2`。
+2. 把分支顺序换回旧的（`△` 变成死代码）→
+   `TestTryScriptVerdictPerSummary/conclusions_mixed_with_undecidable_commits`
+   和 `.../the_audit_could_not_finish` 变红。
+
+改回去后照旧全绿。
+
+**教训**：
+
+- **同一个数只能有一个算法。** 脚本自己算一遍加法，就得跟工具算的一模一样；
+  两处各写一遍，差一个键的时候没人看得出来。
+- **「共用的文案」会把缺失的键藏起来。** `vacuous` 和 `no_test` 都叫「没有
+  测试看着」，少算的那个键就有了替身。下游要改名字的时候，顺手把两个
+  概念分开，比补一个键更值钱。
+- **文档里写了、代码里走不到的那一档，也要算 bug。** README 承诺的 `△` 从来
+  没出现过 —— 承诺和实现要对得上。

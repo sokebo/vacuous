@@ -172,22 +172,34 @@ if [ ! -s "$OUT/audit.json" ]; then
 	exit $audit_exit
 fi
 
-python3 - "$OUT/audit.json" "$audit_exit" <<'PY'
+python3 - "$OUT/audit.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 s = d.get("summary", {})
-exit_code = int(sys.argv[2])
 
+# 口径必须和工具自己的一样 —— internal/report/text.go 的 headline 里是：
+#
+#   judged   = proven + vacuous + no_test + inconclusive
+#   unjudged = not_applicable + audit_failed
+#
+# 少算一个键，脚本就会报出跟报告对不上的数：报告里有 2 个
+# 「这个改动改了行为，但仓里没有任何测试看守它」，脚本却说「没有测试
+# 看着 0 条」。这个脚本存在的理由就是不让人把「没查成」当成「没问题」，
+# 它自己先得跟报告对得上。
 proven = s.get("proven", 0)
 vac = s.get("vacuous", 0)
+notest = s.get("no_test", 0)
 incon = s.get("inconclusive", 0)
 na = s.get("not_applicable", 0)
 afail = s.get("audit_failed", 0)
-total = proven + vac + incon + na + afail
-real = proven + vac
+
+judged = proven + vac + notest + incon
+unjudged = na + afail
+total = judged + unjudged
+real = proven + vac + notest
 
 print(f"审到提交 : {total}")
-print(f"有结论   : {real}   （{proven} 条「有测试看守」+ {vac} 条「没有测试看着」）")
+print(f"有结论   : {real}   （{proven} 条「有测试看守」+ {vac} 条「测试形同虚设」+ {notest} 条「没有测试看着」）")
 print(f"判不了   : {incon}")
 print(f"不适用   : {na}")
 print(f"审不成   : {afail}")
@@ -196,20 +208,26 @@ print("判定分布 :", ", ".join(f"{k}={v}" for k, v in sorted(s.get("by_kind",
 
 print()
 print("── 这次结果算不算数 ──────────────────────────────────")
-judged = total - na
+# 分支要按「有多少结论」排，不能按「有没有结论」排：
+# 一次运行里可以既有结论、又有判不了的提交。后者不该被前者的 ✓ 盖住 ——
+# 判不了的提交不是「没问题」。
 if afail:
     print(f"⚠ 报告里有 {afail} 个洞（工具没能审成）。")
     print("  这些不是「没问题」，是「没查成」—— 报告里写了缺什么、该跑什么命令。")
-if real:
-    print(f"✓ 有 {real} 条真结论。这次的数字可以用。")
-elif judged == 0:
-    print("✗ 这个窗口里没有值得审的提交（合并 / 子模块指针 / 纯文档 / 只加测试）。")
-    print("  把 limit 调大，或者用 --since 指定一个更早的起点。")
-elif incon >= judged:
+if real > 0:
+    if incon > 0 or afail > 0:
+        print(f"△ 有 {real} 条结论，{incon} 条判不了。判不了的那些不算「没问题」。")
+    else:
+        print(f"✓ 有 {real} 条真结论。这次的数字可以用。")
+elif judged > 0:
     print(f"✗ 值得审的 {judged} 条里一条结论都没有（{incon} 条判不了）。")
     print("  这通常是环境没搭好，不是代码没问题 —— 回头看上面体检那一段。")
+elif afail > 0:
+    print("✗ 一个提交都没审成 —— 报告里全是洞。")
+    print("  先把环境搭好（上面体检那一段），再跑一次。")
 else:
-    print(f"△ 有 {real} 条结论，{incon} 条判不了。判不了的那些不算「没问题」。")
+    print("✗ 这个窗口里没有值得审的提交（合并 / 子模块指针 / 纯文档 / 只加测试）。")
+    print("  把 limit 调大，或者用 --since 指定一个更早的起点。")
 for f in d.get("findings", []):
     if f.get("severity") in ("high", "critical"):
         print()
