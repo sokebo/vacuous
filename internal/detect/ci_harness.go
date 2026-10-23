@@ -55,6 +55,9 @@ type ciContext struct {
 	// targets maps a repository-local script file to the name of the
 	// package.json script that runs it.
 	targets map[string]string
+	// testCommands are the commands that run a test suite the tool knows
+	// about.
+	testCommands []string
 }
 
 // newCIContext reads the repository's package.json.
@@ -62,11 +65,12 @@ type ciContext struct {
 // A repository without one - every Go repository, and a Node library that
 // never registered a script - has no harness to look for, and every
 // question asked of it has the answer "nothing to see".
-func newCIContext(repoRoot string) *ciContext {
+func newCIContext(repoRoot string, testCommands []string) *ciContext {
 	c := &ciContext{
-		root:    repoRoot,
-		scripts: packageScripts(repoRoot),
-		targets: map[string]string{},
+		root:         repoRoot,
+		scripts:      packageScripts(repoRoot),
+		targets:      map[string]string{},
+		testCommands: testCommands,
 	}
 	if len(c.scripts) == 0 {
 		return c
@@ -78,6 +82,51 @@ func newCIContext(repoRoot string) *ciContext {
 		}
 	}
 	return c
+}
+
+// runsTestCommand reports whether the given workflow text reaches a test
+// suite command through the package.json script chain.
+//
+// "npm run build" that ends in "npm run test" runs the tests just as much
+// as a workflow that says "npm test" outright. The CI check has to look
+// the same way for both, or the two forms get different verdicts for the
+// same repository - and only one of them would be right.
+func (c *ciContext) runsTestCommand(text string) bool {
+	if c == nil || len(c.testCommands) == 0 {
+		return false
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if runsAnyCommand(line, c.testCommands) {
+			return true
+		}
+	}
+	for _, name := range runScriptNamesInText(text) {
+		if c.reachesTestCommand(name, maxScriptChain) {
+			return true
+		}
+	}
+	return false
+}
+
+// reachesTestCommand reports whether running the given package.json script
+// ends up running a test suite.
+func (c *ciContext) reachesTestCommand(name string, depth int) bool {
+	if depth <= 0 {
+		return false
+	}
+	cmd, ok := c.scripts[name]
+	if !ok {
+		return false
+	}
+	if runsAnyCommand(cmd, c.testCommands) {
+		return true
+	}
+	for _, sub := range runScriptNames(cmd) {
+		if c.reachesTestCommand(sub, depth-1) {
+			return true
+		}
+	}
+	return false
 }
 
 // ciHarnessRun records that a CI workflow reaches one of the repository's

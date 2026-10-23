@@ -256,3 +256,85 @@ jobs:
 		t.Fatalf("a CI that only compiles must still be reported: %+v", findings)
 	}
 }
+
+// TestCIRunningTestsThroughScriptChainIsNotReported covers the same shape
+// as the check-script case, but for a test suite: the workflow says
+// "npm run ci", and the "ci" script says "npm run test".
+//
+// Before this existed, the tool matched the workflow text against a fixed
+// table of test commands and found none - so it reported "this repository's
+// CI never runs any test" about a CI that runs the tests. The check-script
+// half of the fix resolved the chain for harness scripts; this half
+// resolves it for test suites. Judging the two at different depths would
+// be the same defect wearing a different hat.
+func TestCIRunningTestsThroughScriptChainIsNotReported(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "package.json", `{
+  "name": "app",
+  "scripts": {
+    "ci": "npm run test",
+    "test": "vitest run"
+  }
+}
+`)
+	write(t, dir, ".github/workflows/ci.yml", `name: CI
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm run ci
+`)
+	commit(t, dir)
+
+	findings, err := GuardLiveness(dir)
+	if err != nil {
+		t.Fatalf("GuardLiveness: %v", err)
+	}
+	for _, f := range findings {
+		if strings.Contains(f.Summary, "测试") {
+			t.Fatalf("a CI that runs the tests through a script chain must not be reported: %+v", f)
+		}
+	}
+}
+
+// TestCIScriptChainWithoutTestsIsStillReported is the control for the
+// chain lookup: a chain that reaches no test suite must still be reported.
+func TestCIScriptChainWithoutTestsIsStillReported(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "package.json", `{
+  "name": "app",
+  "scripts": {
+    "ci": "npm run build",
+    "build": "vite build"
+  }
+}
+`)
+	write(t, dir, ".github/workflows/ci.yml", `name: CI
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm run ci
+`)
+	commit(t, dir)
+
+	findings, err := GuardLiveness(dir)
+	if err != nil {
+		t.Fatalf("GuardLiveness: %v", err)
+	}
+	var found bool
+	for _, f := range findings {
+		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a CI whose script chain reaches no test suite must still be reported: %+v", findings)
+	}
+}
