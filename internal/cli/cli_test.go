@@ -251,14 +251,23 @@ func Add(a, b int) int {
 	}
 }
 
-// TestASilencedFindingIsNotCountedInTheStatistics keeps the report from
-// contradicting itself.
+// TestASilencedFindingIsHiddenAndItsCommitIsStillCounted keeps the report
+// from contradicting itself.
 //
 // Counting a silenced finding produced "无测试 1" next to an empty list of
 // findings: the statistics claimed something the report did not show, and
 // the JSON said no_test 1 with findings [] - a document a consumer cannot
 // read.
-func TestASilencedFindingIsNotCountedInTheStatistics(t *testing.T) {
+//
+// The cure used to be to stop counting the commit. That cured the symptom
+// and made the report lie about something worse: the commit had been
+// examined, and the scope line then said it had not. A commit that vanishes
+// from the report is a commit nobody can go and look at.
+//
+// So the commit keeps its verdict, and the silence gets a number of its own.
+// "no_test 1, silenced 1, findings []" is readable: a finding was produced,
+// and somebody wrote down why it does not count.
+func TestASilencedFindingIsHiddenAndItsCommitIsStillCounted(t *testing.T) {
 	repo := auditFixture(t)
 	repo.Write(t, "a.go", `package auditsup
 
@@ -273,11 +282,56 @@ func Add(a, b int) int {
 	if stderr != "" {
 		t.Fatalf("unexpected stderr: %s", stderr)
 	}
-	if !strings.Contains(stdout, `"no_test": 0`) {
-		t.Errorf("a silenced finding must not be counted as a finding:\n%s", stdout)
-	}
 	if !strings.Contains(stdout, `"findings": []`) {
-		t.Errorf("the report should be empty:\n%s", stdout)
+		t.Errorf("a silenced finding must not show up in the list:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `"no_test": 1`) {
+		t.Errorf("the commit was judged, so its verdict still counts:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, `"silenced": 1`) {
+		t.Errorf("the silence needs its own number, or the tally cannot be read:\n%s", stdout)
+	}
+}
+
+// TestASilencedCommitIsStillCountedInTheScope is the regression guard for
+// the commit that vanished.
+//
+// The scope line - "审了 N 个提交" - is the one number that tells a reader
+// how much was examined. A commit whose finding was silenced was examined
+// all the same; dropping it from that count made the line describe a
+// smaller run than the one that happened, and the difference was invisible:
+// nothing in the report said a commit had been dropped.
+//
+// The fixture has two behaviour changes. One is reported, one is silenced.
+// Both were examined, so the scope has to say two.
+func TestASilencedCommitIsStillCountedInTheScope(t *testing.T) {
+	repo := auditFixture(t)
+	repo.Write(t, "a.go", `package auditsup
+
+func Add(a, b int) int {
+	return a + b + 1
+}
+`)
+	repo.Commit(t, "change behaviour, nothing watches it")
+
+	repo.Write(t, "a.go", `package auditsup
+
+// vacuous:ignore 这一行是刻意的 —— 纯重构
+func Add(a, b int) int {
+	return a + b + 2
+}
+`)
+	repo.Commit(t, "change behaviour again, on purpose")
+
+	_, stdout, stderr := runCLI(t, "--mode", "audit", repo.Dir)
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+	if !strings.Contains(stdout, "审了 2 个提交") {
+		t.Errorf("both commits were examined, silenced or not:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "豁免: 1") {
+		t.Errorf("the silence needs its own line, or the tally cannot be read:\n%s", stdout)
 	}
 }
 

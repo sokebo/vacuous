@@ -414,6 +414,22 @@ type Report struct {
 	// has not judged that commit, and reporting that as "no findings"
 	// would be the tool's own version of the failure it exists to catch.
 	AuditFailed int
+	// Silenced is the number of commits whose findings were suppressed by a
+	// "// vacuous:ignore" comment.
+	//
+	// It is not a verdict: the commit was judged, and the verdict stands.
+	// What the comment does is keep the finding out of the report.
+	//
+	// It is counted because the two things have to be told apart. A tally
+	// that says "no test 1" next to an empty list of findings reads as a
+	// broken report; with this number beside it, the reader knows one
+	// finding was suppressed on purpose and can go read the comment that
+	// says why.
+	//
+	// It is also what keeps a suppressed commit from vanishing: a commit
+	// that is examined and then silenced still happened, and the report
+	// has to say that it was examined.
+	Silenced int
 	// RepoRoot is the absolute path the run was rooted at.
 	RepoRoot string
 }
