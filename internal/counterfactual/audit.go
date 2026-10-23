@@ -31,6 +31,16 @@ type Result struct {
 	TestFiles []core.FileChange
 	// SourceFiles are the code files among them.
 	SourceFiles []core.FileChange
+	// ForeignSourceFiles are the code files among them that this
+	// repository's test runner cannot execute - TypeScript in a Go
+	// repository, a shell script in a Python one.
+	//
+	// They are code, and they are not tests, but the counterfactual cannot
+	// touch them: the runner this repository has does not speak their
+	// language. They are kept apart from OtherFiles because "we cannot
+	// judge this" and "there is nothing here to judge" are different
+	// answers, and only one of them is honest.
+	ForeignSourceFiles []core.FileChange
 	// OtherFiles are the files that are neither code nor tests:
 	// documentation, configuration, assets.
 	OtherFiles []core.FileChange
@@ -144,6 +154,15 @@ const (
 	// VerdictNotApplicable means there was nothing to judge, e.g. a commit
 	// that only touched docs.
 	VerdictNotApplicable Verdict = "n/a"
+	// VerdictUnsupportedSource means the commit changed code, in a language
+	// this repository's test runner cannot execute.
+	//
+	// It is its own verdict because "nothing to judge" would be a lie: the
+	// commit did change something, and whether a test watches it is a
+	// question this tool simply cannot answer here. Filing it under
+	// VerdictNotApplicable made it disappear from the report with no
+	// trace, indistinguishable from a commit that only edited a README.
+	VerdictUnsupportedSource Verdict = "unsupported-source"
 	// VerdictContradictory means the tool's conclusion and the tool's own
 	// raw output disagree. The tool refuses to conclude in that case.
 	VerdictContradictory Verdict = "contradictory"
@@ -331,6 +350,8 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 			res.TestFiles = append(res.TestFiles, f)
 		case a.isSource(f.Path):
 			res.SourceFiles = append(res.SourceFiles, f)
+		case a.isForeignSource(f.Path):
+			res.ForeignSourceFiles = append(res.ForeignSourceFiles, f)
 		default:
 			// Not code and not a test: documentation, configuration,
 			// assets, notes. A commit that only changes these has no
@@ -345,7 +366,22 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	//
 	// Either it touched nothing but documentation and configuration - not
 	// this tool's business - or it only added tests.
+	//
+	// But there is a third case that used to be folded into the first one:
+	// the commit changed CODE, in a language this repository's runner
+	// cannot execute. That is not "nothing to judge" - it is "we cannot
+	// judge it", and the report has to say which one it is. Filing it
+	// under "nothing to judge" made a TypeScript fix in a Go repository
+	// disappear from the report with no trace at all: the commit was
+	// counted as not-applicable, exactly like a commit that only edited a
+	// README, and the reader had no way to tell the two apart.
 	if len(res.SourceFiles) == 0 {
+		if len(res.ForeignSourceFiles) > 0 {
+			res.Verdict = VerdictUnsupportedSource
+			res.Findings = append(res.Findings, foreignSourceFinding(res))
+			return res, nil
+		}
+
 		if len(res.TestFiles) == 0 {
 			res.Verdict = VerdictNotApplicable
 			return res, nil
@@ -702,6 +738,64 @@ func (a *Auditor) isSource(path string) bool {
 	}
 	ext := strings.ToLower(pathExt(path))
 	return sourceExtensions[ext]
+}
+
+// isForeignSource reports whether a path holds code that this repository's
+// test runner cannot execute.
+//
+// The adapter has the first word: if it claims a file, the file is the
+// adapter's. What is left is the cross-language question - is this file code
+// at all - and the answer is yes for TypeScript in a Go repository, a shell
+// script in a Python one.
+//
+// The distinction matters because of what the two answers lead to. "This file
+// is not code" puts the commit in the "nothing to judge" bucket, and the
+// report says nothing about it. "This file is code the tool cannot run"
+// puts the commit in the "could not judge" bucket, and the report has to say
+// so out loud: a reader who cannot tell those two apart reads an empty
+// report as "no problems".
+func (a *Auditor) isForeignSource(path string) bool {
+	if adapters.IsTestDataPath(path) {
+		return false
+	}
+	// The adapter has already said no - that is what got us here. Asking it
+	// again would be a second opinion on the same question.
+	if a.isSource(path) {
+		return false
+	}
+	ext := strings.ToLower(pathExt(path))
+	return sourceExtensions[ext]
+}
+
+// foreignSourceFinding reports a commit whose change is code, in a language
+// this repository's runner cannot execute.
+//
+// It is deliberately not an accusation. The commit may have shipped a test,
+// may not have, and the tool has no way to find out - that is the whole
+// point. What it does know is that the question was asked and could not be
+// answered, and a reader deserves to hear that rather than read a clean
+// report.
+func foreignSourceFinding(res *Result) core.Finding {
+	paths := make([]string, 0, len(res.ForeignSourceFiles))
+	for _, f := range res.ForeignSourceFiles {
+		paths = append(paths, f.Path)
+	}
+	return core.Finding{
+		Kind:     core.KindUnsupportedSource,
+		Severity: core.SevInfo,
+		Summary:  "这个提交改的是本工具在这个仓里跑不了的代码 —— 判不了",
+		Detail: fmt.Sprintf(
+			"提交 %s 改了 %d 个文件，它们是代码，但用的是这个仓的测试运行器不会说的语言：\n"+
+				"  %s\n"+
+				"反事实审计要做的事是「撤掉修复，看测试会不会红」—— "+
+				"而这个仓的运行器跑不了那种代码，所以这个问题在这里没有答案。\n"+
+				"这不是「没有测试看着这个改动」：是「这个工具没看这一部分」。\n"+
+				"（工具能驱动的运行器：go test / pytest / python -m unittest / jest / vitest）",
+			res.Commit.Short, len(res.ForeignSourceFiles), strings.Join(paths, "\n  ")),
+		File: firstPath(res.ForeignSourceFiles),
+		Hint: "要判这一部分，得让这个仓有一个能驱动那种语言的测试运行器；" +
+			"在那之前，这个提交既不算被验证过，也不算有问题",
+	}
 }
 
 // pathExt returns the extension of a path, including the dot.
@@ -1770,6 +1864,27 @@ func (a *Auditor) treeHasTests(ctx context.Context, sha string) (bool, int, erro
 	return false, len(files), nil
 }
 
+// foreignScopeNote names the part of a commit the counterfactual did not
+// reach, for a commit that changed both code this adapter can run and code
+// it cannot.
+//
+// It is a scope statement, not an accusation. Without it, a finding that
+// says "this commit changed 3 files and no test watches them" reads as a
+// statement about the whole commit - and for a commit that also changed a
+// TypeScript file, it is not.
+func foreignScopeNote(res *Result) string {
+	if len(res.ForeignSourceFiles) == 0 {
+		return ""
+	}
+	paths := make([]string, 0, len(res.ForeignSourceFiles))
+	for _, f := range res.ForeignSourceFiles {
+		paths = append(paths, f.Path)
+	}
+	return fmt.Sprintf(
+		"\n（另外这次还改了 %d 个本工具在这个仓里跑不了的代码文件：%s —— 那部分没有被判到。）",
+		len(res.ForeignSourceFiles), strings.Join(paths, "、"))
+}
+
 // noTestAtAllFinding reports a behaviour change in a tree that has no
 // tests in it.
 //
@@ -1801,8 +1916,9 @@ func noTestAtAllFinding(res *Result, tracked int) core.Finding {
 		Detail: fmt.Sprintf(
 			"提交 %s 改了 %d 个非测试文件（最大的一个改了 %d 行），没有加任何测试。\n"+
 				"而它所在的那棵树里**一个测试文件都没有** —— 整个仓还没有测试。\n"+
-				"也就是说，没有任何测试看守这个行为。",
-			res.Commit.Short, len(res.SourceFiles), res.SourceChange.biggestFile),
+				"也就是说，没有任何测试看守这个行为。%s",
+			res.Commit.Short, len(res.SourceFiles), res.SourceChange.biggestFile,
+			foreignScopeNote(res)),
 		File: firstPath(res.SourceFiles),
 		Hint: "先给这个仓建一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
 		// The evidence is a count the reader can reproduce with one
@@ -1833,8 +1949,9 @@ func noTestForFixFinding(res *Result, run *runOutcome) core.Finding {
 		Detail: fmt.Sprintf(
 			"提交 %s 改了 %d 个非测试文件（最大的一个改了 %d 行），没有加任何测试。\n"+
 				"把这次修复撤掉之后，仓里**现有的**测试全部通过（%d 个通过、%d 个失败、%d 个跳过）——\n"+
-				"也就是说，没有任何测试看守这个行为。",
-			res.Commit.Short, len(res.SourceFiles), res.SourceChange.biggestFile, pass, fail, skip),
+				"也就是说，没有任何测试看守这个行为。%s",
+			res.Commit.Short, len(res.SourceFiles), res.SourceChange.biggestFile,
+			pass, fail, skip, foreignScopeNote(res)),
 		File: firstPath(res.SourceFiles),
 		Hint: "补一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
 		// The evidence and the recipe are what let a reader check the

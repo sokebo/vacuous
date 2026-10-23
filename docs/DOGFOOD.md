@@ -2323,6 +2323,13 @@ CI 里有两个 job：`build`（fmt / vet / build / test -race / 空缓存 test�
   它就是测试），静态检查层对**所有语言**都排除 testdata。方向是**漏报**
   （Python 的 testdata 夹具里真有 `pytest.skip`，静态检查不报它）。
   这个不对称**目前没有端到端测试守着**，只有各层自己的单测。
+- **混合语言仓里，判决只覆盖适配器那一种语言**：3.64 修好的是「只改了别的
+  语言的代码」那一档（以前一个字都不提，现在会说「判不了」）。但一个**同时**
+  改了 Go 和 TypeScript 的提交，判决仍然只覆盖 Go 那一半 —— 而如果这个提交
+  的判决是「有测试看守」（`proven`），报告里**不会**再提那半边没被判到。
+  （3.64 只在**指控**的措辞里补了那一句，因为指控才是「假装覆盖了整个提交」
+  的那种话；`proven` 不是指控，不说什么就不算说错。）
+  这是一个已知的缺口，不是 bug：记在这里，免得下一轮把它当成新发现。
 - **Node 判决层拿不到 `vacuous` 结论**：vitest 5 的 JSON reporter 改成写文件
   （`.vitest/json/output.json`）而不是 stdout，工具的 Node 适配器还在等 stdout，
   于是 Node 仓一律判 `suite-crash`。**修前修后完全一样**，是既有的不兼容，
@@ -3926,3 +3933,187 @@ token 数量不够（应 ≥ 30）、`var()` 引用太少（应 > 100），就 `
   「说清这个仓的守卫到哪、还缺哪」。**宁可说窄一点，也不要说错一点。**
 - **修误伤必须配一条「真阳性不许被修掉」的用例。** 只写正例的话，
   「什么都不报」能让全部测试变绿。
+
+---
+
+### 3.64 只改了别的语言的代码，报告里一个字都不提
+
+**现象**：仓库 A 的反事实审计里，有 4 个提交**一个发现都没有**，只是被计入
+「不适用」。翻回源码看，这 4 个提交改的都是代码：
+
+| 提交 | 改了什么 |
+|---|---|
+| `ed2b11c` | `frontend/src/main.ts`、`frontend/src/style.css`、`frontend/wailsjs/go/models.ts`、`scripts/preview/build-demo.mjs`、`scripts/preview/render.js` |
+| `0a1e9d7` | `scripts/preview/build-demo.mjs`、`scripts/preview/render.js` |
+| `9a86e0b` | `scripts/preview/cdp-shot.js`、`scripts/preview/render.js`、`scripts/shots.sh` |
+| `a42c25d` | `scripts/preview/cdp-shot.js`、`scripts/shots.sh` |
+
+提交信息写得很清楚：`fix(ui)`、`feat(preview)`、`fix(alpha): 暗色截图对比度` ——
+**都是行为改动**，而且都没有测试。
+
+其中 `a42c25d` 还被写成了一句**假话**：
+
+```
+[info] no-test-for-fix
+       这个提交只加了测试，没有改代码 —— 没有可以撤掉的修复
+       提交 a42c25d 改了 1 个测试文件，没有改任何代码。
+```
+
+它改了 2 个 `.js`/`.sh` 文件 —— 报告说「没有改任何代码」。
+
+**为什么这要命**：报告里「不适用」那一档的注释写着
+「a commit that only touched documentation」。一个 TypeScript 修复和一段纯文档，
+在报告里长得一模一样：都只是被计了个数，**都不说一句话**。
+
+读者拿到的信息是「20 个提交里 7 个不适用」。这 7 个里，
+3 个确实是文档/注释/纯测试，**4 个是没人看的代码修复**。
+没有任何症状表明这两者不是一回事。
+
+**人工核实**（回到源码，不用工具自己的输出）：
+
+仓库 A 是个 Go 仓（有 `go.mod`、`internal/link`、`internal/storage`），
+但它同时有一整套前端：`frontend/src/*.ts`、`frontend/wailsjs/go/models.ts`，
+外加 `scripts/preview/*.mjs` 和 `scripts/*.sh`。
+
+`ed2b11c` 的提交信息写着「stop implying a semantic judgement the engine
+cannot make」，diff 里改的是 TypeScript 里的判断逻辑。
+`9a86e0b` 的提交信息写着「可复现的截图管线」，加的是 `scripts/shots.sh` 和
+`scripts/preview/cdp-shot.js` —— 一条新的执行管线。
+
+→ **这些提交确实改了行为，也确实没有测试。工具该说的「没人看守」没说。**
+
+**根因**：文件分类只有三档，而「是不是代码」这一问，问错了人。
+
+`Auditor.isSource` 先问适配器：
+
+```go
+func (g *Go) IsSourcePath(path string) bool {
+    ...
+    return strings.HasSuffix(path, ".go") && !IsGoTestPath(path)
+}
+```
+
+Go 适配器只认 `.go`。于是 `.ts` / `.mjs` / `.js` / `.sh` 在 Go 仓里一律落到
+`OtherFiles` 那一档，而那一档的注释写着：
+
+```go
+// Not code and not a test: documentation, configuration,
+// assets, notes.
+```
+
+**「不是本适配器的代码」被当成了「不是代码」。**
+这两个判断在单语言仓里恰好等价，在混合仓里就不等价了。
+
+全局其实有一张跨语言的扩展名表（`sourceExtensions`，含 `.ts` `.py` `.js` `.sh`），
+但它只是**适配器不认识时的兜底** —— 适配器一旦开口，就没人再问那张表。
+
+**修复**：多出一档 `ForeignSourceFiles` —— 「按跨语言的标准算，它是代码，
+但这个仓的运行器不会说这种语言」：
+
+1. 文件分类多一个分支：适配器不认、但全局扩展名表认 → `ForeignSourceFiles`。
+2. 判决从 `n/a`（没什么可判的）改成 `unsupported-source`（**判不了**），
+   并发一条 `unsupported-source` 的信息级发现，把文件逐个列出来。
+3. 混在一起的提交（Go + TypeScript）照常判 Go 那一半，但**在指控的措辞里
+   补一句**说清楚哪几个文件没被判到：
+
+```
+[high] no-test-for-fix
+       提交 307d83c 改了 3 个非测试文件（最大的一个改了 169 行），没有加任何测试。
+       把这次修复撤掉之后，仓里**现有的**测试全部通过（47 个通过、0 个失败、0 个跳过）——
+       也就是说，没有任何测试看守这个行为。
+       （另外这次还改了 2 个本工具在这个仓里跑不了的代码文件：scripts/preview/build-demo.mjs、
+         scripts/preview/render.js —— 那部分没有被判到。）
+```
+
+第 3 条不是可有可无的装饰：没有它，一条指控读起来像是对**整个提交**说的，
+而它不是。
+
+**为什么不给它高危**：这个工具判不了那种代码，「有没有测试看着」这个问题
+在这里**没有答案**。把「没有答案」说成「没有测试看着」是误伤，
+而误伤会让人加 `--no-verify`，闸门就等于不存在。
+所以它是信息级，措辞是「不是『没有测试看着这个改动』：是『这个工具没看这一部分』」。
+
+**负对照**（三条路径各拆一次，都要让测试变红）：
+
+| 拆掉的修复 | 变红的用例 | 保持绿 |
+|---|---|---|
+| `isForeignSource` 永远返回 false（分类失效） | `TestAuditSaysSoWhenTheCommitChangedCodeItCannotRun`、`TestAuditStillJudgesGoCodeInAMixedLanguageCommit` | 其余全部 |
+| 把 `.md` 也算成代码（边界放宽过头） | `TestAuditLeavesDocumentationOnlyCommitsAlone` | 其余两条 |
+| 去掉措辞里的「没判到哪些文件」 | `TestAuditStillJudgesGoCodeInAMixedLanguageCommit` | 其余两条 |
+
+**同时必须有「真阳性不许被修掉」那一侧**：
+
+| 用例 | 断言 |
+|---|---|
+| `TestAuditLeavesDocumentationOnlyCommitsAlone` | 只改 README 的提交 → **仍然**是「不适用」，不报 `unsupported-source` |
+| `TestAuditStillJudgesGoCodeInAMixedLanguageCommit` | Go + TypeScript 的提交 → Go 那一半**照常判**（`no-test`），不是被判不了 |
+
+第二条最要紧：这个修复的副作用是「多认出一档代码」。
+如果它把该判的提交也扫进「判不了」那一档，那就是**用漏报换漏报**，
+报告变得什么都说不了了。
+
+**6 个被审仓的复核**（改前 / 改后逐条 diff）：
+
+| 仓库 | 改前 | 改后 | 结论 |
+|---|---|---|---|
+| 仓库 A（静态体检） | 3 | 3 | 逐条一致 |
+| 仓库 B（静态体检） | 1 | 1 | 逐条一致 |
+| 仓库 C（静态体检） | 7 | 7 | 逐条一致 |
+| 仓库 D（静态体检） | 1 | 1 | 逐条一致 |
+| 仓库 E（静态体检） | 2 | 2 | 逐条一致 |
+| 仓库 F（静态体检） | 1 | 1 | 逐条一致 |
+
+静态检查层一个字节都没动 —— 这次改的只有判决层。
+
+仓库 A 的反事实审计：
+
+```
+改前: proven 3 · vacuous 0 · 无测试 3 · 无法判定 7 · 不适用 7
+      (coupled 7 · no-test-for-fix 6)
+改后: proven 3 · vacuous 0 · 无测试 3 · 无法判定 11 · 不适用 3
+      (coupled 7 · no-test-for-fix 5 · unsupported-source 4)
+```
+
+**4 个提交从「不适用」挪到了「无法判定」** —— 正是上面列出来的那 4 个。
+`no-test-for-fix` 少 1 条，是因为 `a42c25d` 那条假话（「没有改任何代码」）
+被换成了实话。**3 条高危发现逐字未变** —— 这次动的不是它们。
+
+**工具对自己也是干净的**：self-check 报
+`proven 5 · vacuous 0 · 无法判定 8 · 不适用 6`
+（`coupled 5 · environment 1 · unsupported-source 2`），
+**自相矛盾自检 0 条**。
+
+**这一轮自己也挨了一刀**：这个仓自己的最近 20 个提交里，有 2 个只改了
+shell 脚本 —— `97e5f13`（加 `scripts/try.sh`）和 `c3c789a`（修
+`scripts/accept.sh`）。改之前它们被算成「不适用」，一个字都不提；
+改之后它们变成了「判不了」，并把文件名列了出来。
+
+> **self-check 的数字和 3.63 里记的对不上，这不是回归。** 审计窗口是最近
+> 20 个提交，工具自己的仓每多一个提交，窗口就滑一位：
+>
+> | | proven | 无法判定 | 不适用 |
+> |---|---|---|---|
+> | 3.63 记的（窗口在 `6712ed3`） | 5 | 7 | 7 |
+> | 修之前（窗口滑到 `e2d4e88`） | 5 | 6 | 8 |
+> | 修之后 | 5 | 8 | 6 |
+>
+> 第一次滑动：滑进来 `e2d4e88`（纯文档 → 不适用 +1），
+> 滑出去 `ee4cd4a`（耦合 → 无法判定 −1）—— 一加一减正好对上。
+> 第二次滑动：这一次不是窗口动了，是**这次修复自己**把 2 个纯 shell 的提交
+> 从「不适用」挪到了「无法判定」。
+>
+> **教训**：记一个会随窗口滑动的数当基线，等于给自己埋一个「假的回归」——
+> 下一轮看到数字不一样，就会白查一轮。**能记的是规则（「自相矛盾必须是 0 条」），
+> 不是快照。**
+
+**教训**：
+
+- **「不是本适配器的代码」不等于「不是代码」。** 这两个判断在单语言仓里
+  恰好等价，在混合仓里就不等价 —— 而混合仓是常态。
+- **「没什么可判」和「判不了」必须分开。** 前者说「这里没有东西」，
+  后者说「这里有东西，我没看」。把它们合并，报告就成了沉默：
+  一个真实的漏报看起来和一个纯文档提交一模一样。
+- **分类表的兜底顺序会悄悄改变问题。** 跨语言的扩展名表已经存在，
+  但它排在适配器后面 —— 于是适配器一开口，那张表就再没人问。
+- **改措辞也要有负对照。** 第 3 条（补一句「哪几个文件没判到」）看着像装饰，
+  拆掉它以后测试确实变红 —— 说明它在守着「一条指控不能假装覆盖了整个提交」。

@@ -537,6 +537,71 @@ func TestGreetNormalName(t *testing.T) {
 	return m
 }
 
+// ForeignSourceFixture builds a Go repository whose commit changes code
+// written in a language the Go test runner cannot execute.
+//
+// The shape is ordinary: a Go backend with a TypeScript frontend is one of
+// the most common layouts in the world, and a commit that fixes the frontend
+// is a real behaviour change.
+//
+// The question it asks - "does any test watch this?" - has no answer here,
+// because "go test" cannot run the code the commit changed. That is not the
+// same as "there was nothing to judge", and the tool used to confuse the
+// two: the commit was filed under "not applicable", the report counted it,
+// and said nothing else about it.
+func ForeignSourceFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/foreign")
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Write(t, "frontend/src/app.ts", "export function greet(name: string) {\n  return `hello, ${name}`\n}\n")
+	m.Init(t)
+	m.Write(t, "frontend/src/app.ts", "export function greet(name: string) {\n  if (name === '') return 'hello'\n  return `hello, ${name}`\n}\n")
+	m.Commit(t, "fix(ui): do not greet an empty name in the frontend either")
+	return m
+}
+
+// MixedLanguageFixture builds a Go repository whose commit changes Go code
+// AND TypeScript code.
+//
+// The Go part is judged normally - the counterfactual runs. The TypeScript
+// part is not, because the runner does not speak it.
+//
+// A finding about that commit must not read as if it covered the whole
+// commit: it is a statement about the Go half.
+func MixedLanguageFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/mixed")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Write(t, "frontend/src/app.ts", "export function greet(name: string) {\n  return `hello, ${name}`\n}\n")
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "frontend/src/app.ts", "export function greet(name: string) {\n  if (name === '') return 'hello'\n  return `hello, ${name}`\n}\n")
+	m.Commit(t, "fix: greet an empty name, in both halves of the app")
+	return m
+}
+
+// DocsOnlyFixture builds a Go repository whose commit changes nothing but a
+// README.
+//
+// It is the control for the foreign-source rule: documentation is not code,
+// in any language, and a commit that only edits documentation must stay in
+// the "nothing to judge" bucket. A rule that swept every non-Go file into
+// "code we cannot run" would move this commit into the wrong bucket, and
+// the report would claim it had something to judge when it never did.
+func DocsOnlyFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/docsonly")
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Write(t, "README.md", "# fixture\n")
+	m.Init(t)
+	m.Write(t, "README.md", "# fixture\n\nThe greeting is handled by the caller.\n")
+	m.Commit(t, "docs: explain the empty-name case")
+	return m
+}
+
 // baseTestBody is the body of the starting test file.
 const baseTestBody = `
 func TestGreetNormalName(t *testing.T) {
