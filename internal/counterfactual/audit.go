@@ -504,7 +504,7 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	res.TestCommand = run.command
 	res.FailureOutput = run.failureTail
 
-	res.Verdict = classify(run, a.isTest)
+	res.Verdict = classify(run, a.isTest, changedPaths(res.Changed))
 
 	// A commit that shipped no test of its own, whose existing tests
 	// stayed green with the fix taken away.
@@ -616,6 +616,41 @@ func buildErrorFiles(buildErrors []string) []string {
 	return out
 }
 
+// revertedFile reports which of the commit's own changed files the build
+// broke in, if any.
+//
+// The build error may name the file with a module prefix
+// ("example.com/app/pkg/widget.go"), while the changed file is
+// repo-relative ("pkg/widget.go"), so the two are compared by their tail.
+func revertedFile(broken []string, changed []string) string {
+	for _, b := range broken {
+		b = strings.TrimSpace(b)
+		if b == "" {
+			continue
+		}
+		for _, c := range changed {
+			if c == "" {
+				continue
+			}
+			if b == c || strings.HasSuffix(b, "/"+c) {
+				return c
+			}
+		}
+	}
+	return ""
+}
+
+// changedPaths lists the repo-relative paths of the files a commit touched.
+func changedPaths(files []core.FileChange) []string {
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		if f.Path != "" {
+			out = append(out, f.Path)
+		}
+	}
+	return out
+}
+
 // isTest asks the adapter whether a path is a test file.
 func (a *Auditor) isTest(path string) bool {
 	type tester interface{ IsTestPath(string) bool }
@@ -722,6 +757,13 @@ type runOutcome struct {
 	baselineUnknown bool
 	// baselineUnknownDetail explains why the baseline could not run.
 	baselineUnknownDetail string
+	// revertedFile names the file whose build broke because the fix was
+	// taken out of it.
+	//
+	// It is set when the counterfactual tree failed to build in a file
+	// this commit changed. That is not an environment problem: the tree
+	// broke because the thing under examination was removed from it.
+	revertedFile string
 	// deduplicated says the commit removed code that still exists
 	// elsewhere in the tree.
 	//
@@ -1029,11 +1071,11 @@ func countFailures(res core.RunResult) int {
 //
 // The check is part of the verdict, not a postscript on it: a verdict that
 // the evidence contradicts must never be returned as a verdict.
-func classify(run *runOutcome, isTest func(string) bool) Verdict {
+func classify(run *runOutcome, isTest func(string) bool, changed []string) Verdict {
 	if run == nil {
 		return VerdictNotApplicable
 	}
-	verdict := verdictFrom(run, isTest)
+	verdict := verdictFrom(run, isTest, changed)
 	if reason := checkConsistency(run, verdict); reason != "" {
 		run.contradiction = reason
 		return VerdictContradictory
@@ -1042,7 +1084,11 @@ func classify(run *runOutcome, isTest func(string) bool) Verdict {
 }
 
 // verdictFrom computes the verdict from the evidence.
-func verdictFrom(run *runOutcome, isTest func(string) bool) Verdict {
+//
+// changed lists the repo-relative paths of the files the commit touched. It
+// is what separates "the build broke in a file the fix was in" from "the
+// build broke in a file the fix had nothing to do with".
+func verdictFrom(run *runOutcome, isTest func(string) bool, changed []string) Verdict {
 	if run == nil {
 		return VerdictNotApplicable
 	}
@@ -1083,13 +1129,30 @@ func verdictFrom(run *runOutcome, isTest func(string) bool) Verdict {
 		if isTest == nil {
 			return VerdictCoupled
 		}
-		for _, file := range buildErrorFiles(r.BuildErrors) {
+		broken := buildErrorFiles(r.BuildErrors)
+		for _, file := range broken {
 			if isTest(file) {
 				return VerdictCoupled
 			}
 		}
-		// The build broke somewhere that is not a test: the dependencies
-		// moved on and the code at the parent no longer fits them.
+		// The build broke in a file THIS COMMIT CHANGED.
+		//
+		// The counterfactual tree is the parent commit plus the test
+		// patch, so that file sits at its pre-fix state - and it does not
+		// build. The fix is what made it build. The suite cannot run
+		// without the fix, which is exactly what "coupled" means.
+		//
+		// Calling this an environment problem sends the reader after a
+		// build input that is not missing: the very same tree built fine
+		// with the fix in place, and the file that broke is the file the
+		// commit repaired.
+		if file := revertedFile(broken, changed); file != "" {
+			run.revertedFile = file
+			return VerdictCoupled
+		}
+		// The build broke somewhere that is not a test and not a file
+		// this commit touched: the dependencies moved on and the code at
+		// the parent no longer fits them.
 		return VerdictEnvironment
 	}
 
@@ -1425,10 +1488,19 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		// applied but the package no longer compiles. The second one is
 		// the common shape - the test asserts on a symbol the fix
 		// introduced - and it is still a real, reportable state.
+		//
+		// The third shape is the one where the build broke in a file the
+		// commit itself repaired. There the fix is what made the code
+		// build at all, and the sentence has to say so: telling the
+		// reader that the test "references something the fix introduced"
+		// would be a different (and wrong) story.
 		detail := fmt.Sprintf(
 			"提交 %s 的测试改动无法单独应用到父提交上 —— 测试依赖了这次修复引入的东西。\n"+
 				"因此「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
 			res.Commit.Short)
+		summary := "无法判定：测试和修复耦合在一起，拆不开"
+		hint := "这不是错误，是提示：耦合的测试很难单独证明自己。\n" +
+			"可以加一个更靠近行为的测试来覆盖同一个场景"
 		if run != nil && run.command != "" {
 			detail = fmt.Sprintf(
 				"提交 %s 的测试补丁能打上，但撤掉修复之后整个包编译不过 —— "+
@@ -1437,16 +1509,28 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 					"测试和修复是缠在一起的。",
 				res.Commit.Short)
 		}
+		if run != nil && run.revertedFile != "" {
+			detail = fmt.Sprintf(
+				"提交 %s 的测试补丁能打上，但撤掉修复之后代码本身编译不过 —— "+
+					"坏掉的那个文件（%s）正是这次修复改过的文件。\n"+
+					"也就是说，这个修复就是让代码重新编译得过去的那个修复；"+
+					"没有它，套件一次都跑不起来。\n"+
+					"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
+				res.Commit.Short, run.revertedFile)
+			summary = "无法判定：撤掉修复之后代码就编译不过了"
+			hint = "这不是错误：这个提交让代码重新编译得过，这件事本身有价值。\n" +
+				"只是「撤掉修复，测试会不会红」在这里没有答案 —— " +
+				"要回答它，需要一个不依赖这次编译修复的测试。"
+		}
 		out = append(out, core.Finding{
 			Kind:     core.KindCoupled,
 			Severity: core.SevWarn,
-			Summary:  "无法判定：测试和修复耦合在一起，拆不开",
+			Summary:  summary,
 			Detail:   detail,
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Repro:    reproFor(res, run),
-			Hint: "这不是错误，是提示：耦合的测试很难单独证明自己。\n" +
-				"可以加一个更靠近行为的测试来覆盖同一个场景",
+			Hint:     hint,
 		})
 
 	case VerdictSuiteCrash:
