@@ -3839,18 +3839,29 @@ token 数量不够（应 ≥ 30）、`var()` 引用太少（应 > 100），就 `
 `npm run smoke:css` 而找不到 —— workflow 里写的是 `npm run build`。
 **一个结论如果不能被读者当场核对，它就不是结论，是断言。**
 
-**负对照**（两条路径各拆一次，都要让测试变红）：
+**同一个不对称，顺手补掉了**：上面修的是「CI 顺着链找到验证脚本」。但 CI
+**顺着链找到测试套件**这件事，原来还是没做 —— `npm run ci` 而 `ci` 脚本里是
+`npm run test`，一样是跑测试，一样会被判成「CI 不跑任何测试」。
+
+这是**同一种病换了个马甲**：一份报告里，「有没有测试套件」和「有没有自己的
+验证脚本」这两件事，用了两套深度不同的判据。修完上面那条之后，如果这条不改，
+就等于给同一个错误留了另一半。`npm run ci → npm run test` 现在也算「CI 跑了
+测试」。
+
+**负对照**（三条路径各拆一次，都要让测试变红）：
 
 | 拆掉的修复 | 变红的用例 | 保持绿 |
 |---|---|---|
-| 脚本链不再展开（`maxScriptChain = 0`） | `TestCIRunningOwnCheckScriptIsNotReportedAsUnguarded`、`TestCIChainOfTwoLevels` | 其余四条 |
-| workflow 直接点名脚本那条路失效 | `TestCINamingOwnCheckScriptDirectly` | 其余五条 |
+| 脚本链不再展开（`maxScriptChain = 0`） | `TestCIRunningOwnCheckScriptIsNotReportedAsUnguarded`、`TestCIChainOfTwoLevels` | 其余六条 |
+| workflow 直接点名脚本那条路失效 | `TestCINamingOwnCheckScriptDirectly` | 其余七条 |
+| 测试命令的链查找失效 | `TestCIRunningTestsThroughScriptChainIsNotReported` | 其余七条 |
 
 **同时必须有「真阳性不许被修掉」那一侧**：
 
 | 用例 | 断言 |
 |---|---|
 | `TestCIWithoutAnyLocalCheckIsStillReported` | CI 只跑 `npm run build`（build 不碰本仓任何脚本）→ **仍然报**「CI 不跑任何测试」 |
+| `TestCIScriptChainWithoutTestsIsStillReported` | CI 跑 `npm run ci`（链里没有测试套件）→ **仍然报** |
 | `TestCIRunningSiblingRepositoryScriptIsNotLocalGuard` | CI 只跑兄弟仓的 `../theme-pkg/scripts/check-consumer.mjs` → **不算本仓的守卫**，仍然报 |
 | `TestCIWithoutPackageJSONIsUnaffected` | 没有 `package.json` 的仓（所有 Go 仓）→ 行为不变 |
 
@@ -3902,6 +3913,9 @@ token 数量不够（应 ≥ 30）、`var()` 引用太少（应 > 100），就 `
   CI 检查没有读那份结果。
 - **「CI 里没有 `npm test`」和「CI 里没有测试」不是一回事。** 前者是查表，
   后者是要顺着调用链走到底。前者永远为真，后者才有信息。
+- **修一条链的深度，要顺手检查另一条链是不是也只走了一半。**
+  「CI 跑不跑验证脚本」和「CI 跑不跑测试套件」是同一个问题的两半。
+  修了一半，另一半还停在旧深度上 —— 报告里就会留下一个新的自相矛盾。
 - **警告的措辞比警告的级别更要紧。** 这一条级别没变（都是警告），但少了
   「代码坏了，CI 照样是绿的」这半句假话，报告就从「指控这个仓没守卫」变成
   「说清这个仓的守卫到哪、还缺哪」。**宁可说窄一点，也不要说错一点。**

@@ -206,6 +206,12 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 
 	var out []core.Finding
 
+	// The CI may reach a test suite through the package.json script chain
+	// instead of naming it outright ("npm run ci" ending in
+	// "npm run test"). Both forms run the tests, so both have to be
+	// recognised the same way.
+	ci := newCIContext(repoRoot, commands)
+
 	// Does any workflow run the tests?
 	var withTests []string
 	var checks []string
@@ -216,7 +222,7 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 	// the kind of confident wrong claim this tool exists to stop making.
 	var opaque []string
 	for _, w := range workflows {
-		if runsAnyCommand(w.text, commands) {
+		if runsAnyCommand(w.text, commands) || ci.runsTestCommand(w.text) {
 			withTests = append(withTests, w.name)
 		}
 		if callsAnotherWorkflow(w.text) {
@@ -235,7 +241,6 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 		// two false claims in one sentence - the CI does run checks, and
 		// the code breaking does turn it red. What is genuinely missing is
 		// a test suite, and that is a narrower, more honest finding.
-		ci := newCIContext(repoRoot)
 		var local []ciHarnessRun
 		var localWorkflows []string
 		for _, w := range workflows {
