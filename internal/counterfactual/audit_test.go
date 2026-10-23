@@ -347,6 +347,129 @@ func TestAuditLeavesCosmeticChangesAloneWhenTestsWereTouched(t *testing.T) {
 	}
 }
 
+// TestAuditSaysSoWhenTheCommitChangedCodeItCannotRun proves the tool does
+// not file a code change it cannot judge under "nothing to judge".
+//
+// The commit changes TypeScript in a repository whose runner is "go test".
+// There is a real question here - does any test watch this change? - and
+// the tool cannot answer it. What it must NOT do is file the commit under
+// "not applicable", which is the same bucket a commit that only edited a
+// README lands in: the report would count it and say nothing else, and a
+// reader could not tell the two apart.
+func TestAuditSaysSoWhenTheCommitChangedCodeItCannotRun(t *testing.T) {
+	m := testfixtures.ForeignSourceFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictUnsupportedSource {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictUnsupportedSource, res.Verdict, res.Findings)
+	}
+	if len(res.ForeignSourceFiles) != 1 {
+		t.Fatalf("expected 1 foreign source file, got %d: %+v",
+			len(res.ForeignSourceFiles), res.ForeignSourceFiles)
+	}
+
+	var found *core.Finding
+	for i := range res.Findings {
+		if res.Findings[i].Kind == core.KindUnsupportedSource {
+			found = &res.Findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected an %s finding, got %+v", core.KindUnsupportedSource, res.Findings)
+	}
+	// The reader must be able to see WHICH file was not judged, and must
+	// not be told that the commit was fine.
+	if !strings.Contains(found.Detail, "frontend/src/app.ts") {
+		t.Errorf("the finding must name the file it could not judge: %q", found.Detail)
+	}
+	if found.Severity >= core.SevWarn {
+		t.Errorf("an unjudgeable change must not be raised as a problem: %+v", found)
+	}
+}
+
+// TestAuditLeavesDocumentationOnlyCommitsAlone is the control for the rule
+// above.
+//
+// Documentation is not code, in any language. A commit that only edits a
+// README has nothing to judge and must stay in the "not applicable" bucket -
+// a rule that treated every non-Go file as "code we cannot run" would move
+// it into the wrong bucket and make the report claim it had something to
+// judge when it never did.
+func TestAuditLeavesDocumentationOnlyCommitsAlone(t *testing.T) {
+	m := testfixtures.DocsOnlyFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictNotApplicable {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictNotApplicable, res.Verdict, res.Findings)
+	}
+	if len(res.ForeignSourceFiles) != 0 {
+		t.Fatalf("a documentation file must not be counted as code: %+v", res.ForeignSourceFiles)
+	}
+	for _, f := range res.Findings {
+		if f.Kind == core.KindUnsupportedSource {
+			t.Errorf("a docs-only commit must not raise %s: %+v", core.KindUnsupportedSource, f)
+		}
+	}
+}
+
+// TestAuditStillJudgesGoCodeInAMixedLanguageCommit proves the new category
+// does not swallow the commits it was meant to complement.
+//
+// This commit changes Go code AND TypeScript code. The Go half is judged
+// exactly as before - the counterfactual runs - and the finding must say
+// so, including which files it did not reach. Without that sentence, a
+// finding that says "this commit changed 3 files and no test watches them"
+// reads as a statement about the whole commit, and it is not.
+func TestAuditStillJudgesGoCodeInAMixedLanguageCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.MixedLanguageFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictNoTest {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictNoTest, res.Verdict, res.Findings)
+	}
+	if len(res.SourceFiles) != 1 {
+		t.Fatalf("expected 1 Go source file, got %d: %+v", len(res.SourceFiles), res.SourceFiles)
+	}
+	if len(res.ForeignSourceFiles) != 1 {
+		t.Fatalf("expected 1 foreign source file, got %d: %+v",
+			len(res.ForeignSourceFiles), res.ForeignSourceFiles)
+	}
+
+	var finding *core.Finding
+	for i := range res.Findings {
+		if res.Findings[i].Kind == core.KindNoTestForFix {
+			finding = &res.Findings[i]
+		}
+	}
+	if finding == nil {
+		t.Fatalf("expected a %s finding, got %+v", core.KindNoTestForFix, res.Findings)
+	}
+	if !strings.Contains(finding.Detail, "frontend/src/app.ts") {
+		t.Errorf("the finding must say which files it did not reach: %q", finding.Detail)
+	}
+}
+
 // TestAuditLeavesTheFirstCommitAlone proves the tool does not turn git's
 // "invalid reference" into a finding.
 //

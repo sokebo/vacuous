@@ -248,6 +248,7 @@ var knownKinds = map[string]bool{
 	string(core.KindNoTestRunner):       true,
 	string(core.KindUncommittedChanges): true,
 	string(core.KindNotApplicable):      true,
+	string(core.KindUnsupportedSource):  true,
 }
 
 // isKnownKind reports whether a word names a finding kind.

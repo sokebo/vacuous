@@ -92,6 +92,20 @@ const (
 	// report from reading as "no problems", when the truth is "no problems
 	// in the part I could see".
 	KindUnsupportedTests Kind = "unsupported-tests"
+	// KindUnsupportedSource means the commit changed code written in a
+	// language this repository's test runner cannot execute, so the
+	// counterfactual could not be carried out on that part of the change.
+	//
+	// It exists because the alternative is silence. A commit that changes
+	// only TypeScript, in a repository whose runner is "go test", used to
+	// be filed under "nothing to judge" - the same bucket as a commit that
+	// only edited a README. The report then counted it and said nothing
+	// else, and a reader had no way to tell "this commit needed no test"
+	// from "this commit needed a test and nobody looked".
+	//
+	// Like the other inconclusive kinds, it is not a problem and not a
+	// pass: it says the report does not cover this part of the change.
+	KindUnsupportedSource Kind = "unsupported-source"
 	// KindUncommittedChanges means the report describes code that is not
 	// committed yet.
 	//
