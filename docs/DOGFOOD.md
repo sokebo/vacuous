@@ -3310,3 +3310,183 @@ detect.Skipped(root, files)               // 内容却是从工作树读的（os
 - **注释里的承诺也是承诺**。`gate.go` 那句「审计会报成高危」替一个**不存在
   的检查器**背了书，而它正是某个设计决定唯一的理由 —— 一个查不出来的洞，
   往往是因为有人**读到了注释**就相信了它。
+
+---
+
+### 3.59 symlink 和 submodule 让检出回退到「会写被审仓」的那条路
+
+**现象**：两种仓库，每一种都被工具静悄悄地写进了：
+
+1. **仓库里有 symlink** —— 检出内容是对的（symlink 还在），但被审仓的
+   `.git/worktrees/` 里多了一个 worktree 注册项。`internal/git` 这个包开头
+   写着它对被审仓的承诺：「一个字节都不写进去 —— 不写工作树，不写索引，
+   不写 ref，连 `.git` 都不写」。
+2. **仓库里有 submodule** —— 检出里 submodule 那个位置是**空目录**，构建
+   必然失败，于是每个提交都判 `environment`（「环境没搭」）。**这个仓一条
+   结论都没有**，而报告看上去是「每个提交都有交代」。
+
+**根因**：`NewWorktree` 先走「零写入」那条路 —— `git archive` 解包，然后拿
+解包出来的文件数和树里的文件数对一下。对不上就判定「不是精确副本」，退回
+`git worktree add`。而这条回退路**是写被审仓的**（HEAD 上代码自己的注释
+写着：「Fallback: git's own worktree. It writes to the audited repository,
+so it is a last resort rather than the default.」）。
+
+两件事让「对不上」变成常态：
+
+- `untar` **不数 symlink**。git 眼里 symlink 是树里的一个文件，解包出来
+  也是，但计数时跳过了它 → 永远少 1。
+- `treeFileCount` **把 gitlink 当成普通文件**。树里 submodule 是一项
+  gitlink（钉住的 commit），`git archive` 只带 gitlink 不带内容，解包出来
+  是空目录 → 数量对不上。
+
+于是**任何带 symlink 或 submodule 的仓，每次审计都走回退路**。前者写被审
+仓；后者写被审仓，而且检出还是坏的。
+
+**为什么值得单独修**：example 那批仓**真的用 submodule** ——
+`meta-service` 挂 7 个（admin / relay / shared / http-mock /
+http-mock-data / docs / tools），`service` 和 `relay-service` 各 2 个。
+（任务说明里写的「用 `replace` 指向 `../shared`」只对 `admin-service` 和
+`relay-service` 成立，其余是 submodule。）
+
+**证据**：在 HEAD 的副本上（`git archive HEAD` 解到 `/tmp`）写了一个复现
+测试，两个都红：
+
+```
+--- FAIL: TestReproSymlinkCheckout
+    WROTE TO THE AUDITED REPO: .git/worktrees exists
+--- FAIL: TestReproSubmoduleCheckout
+    SUBMODULE CONTENT MISSING from the checkout: .../repo/lib/lib.go: no such file or directory
+    WROTE TO THE AUDITED REPO: .git/worktrees exists
+```
+
+同一份测试换成本次的代码，两个都绿。
+
+**修复**：
+
+1. `untar` 把 symlink 计入文件数（它本来就是树里的一个文件）。
+2. `treeFileCount` 把 gitlink 剔出去（它是「另一个仓的指针」，不是这个树的
+   文件）。
+3. submodule 的内容**从本机对象库里放回检出**：走
+   `git archive --git-dir=<submodule 的 git dir> <钉住的 commit>`。**取的是
+   钉住的 commit，不是工作树** —— 工作树上可能是别的 commit（开发机上
+   一半时间是），那会让反事实实验跑在一个不存在的仓上。
+4. 本机上没有那个 commit 的对象 → 明确报 `SubmoduleError`，**点名 submodule
+   和钉住的 commit**，并给出该跑什么命令。不猜、不联网。
+
+**负对照**（四条，每条都是「把修复改回去，测试必须变红」）：
+
+| 改坏什么 | 哪条测试变红 |
+|---|---|
+| symlink 不计入文件数 | `TestWorktreeCheckoutKeepsSymlinksAndWritesNothing` |
+| gitlink 又被当成树里的文件 | `TestWorktreeCheckoutIsExactWithSubmodule` |
+| 取工作树的 commit 而不是钉住的 commit | `TestWorktreeSubmoduleUsesThePinnedCommit` |
+| 根本不落实 submodule | `TestWorktreeMaterializesSubmoduleContent` |
+
+> 第一条是**这一轮补的**：symlink 那处修复原先**一条测试都没有**。
+> 拿掉那个 `files++`，整个包的测试**全绿** —— 一个没人看守的修复。
+> 按 3.7、3.52 的标准，只报不抓的检查器等于装饰品，补上之后它才算数。
+
+**教训**：
+
+- **「数量对得上」和「内容是对的」是两件事。** 这个工具用文件数当精确性的
+  代理，代理一旦偏一个，整个检出就走上一条更贵的路。
+- **回退路径的代价是写被审仓**，所以任何让回退变得常见的缺陷，都在偷偷
+  消耗「只读」这条保证 —— 而保证不会喊疼，它只是悄悄地不成立了。
+- **一个没有人看守的修复，等于没有修复。** 补那条守卫测试花的力气，比
+  重写整个 submodule 支持少得多。
+
+**来龙去脉**：这份 checkout 修复是上一轮 cron 核验在运行时崩溃时留下的
+未提交改动（`internal/git/submodule.go` 等 5 个文件，10-22 20:35–21:03）。
+这一轮判定它是**孤儿**（运行时里没有第二个 agent 拥有这个仓、写作窗口内
+没有活跃会话、没有进程占着这些文件、14 小时没人动过），于是**独立复现了
+它要修的 bug**（在 HEAD 副本上）、确认它确实修好了、**补上了它缺的那条
+守卫**，再收编进仓。收编的理由不是「有人写过了」，是「我验过了」。
+
+---
+
+### 3.60 编译不过发生在「这次提交改过的文件」上，被说成了「环境缺东西」
+
+**现象**：仓库 A 的提交 `e2d22b7`（`fix(bench): 修 vet 报错（冗余换行）`，
+一行改动）被判成：
+
+> `environment`（信息级）：这个提交没法判定：检查出的代码缺东西，跑不起来
+> …… 证据：`cmd/alpha-bench/main.go:94:2: fmt.Println arg list ends with
+> redundant newline`
+> 提示：看证据里的编译错误：缺什么就补什么。本地依赖的，检查一下该目录在不在；
+> 生成物的，先构建一次再审
+
+**缺的东西并不缺。** 证据里那行是 **vet 报错**，而这个提交**修的就是它**。
+读者照着提示去补「没入库的生成物」，什么也找不到。
+
+**根因**：判决层有一条规则（`verdictFrom` 的编译错误分支）：
+
+> 编译不过，坏在**非测试文件**上 → 依赖动过了，父提交上的代码跟不上了 →
+> `environment`
+
+这条规则**没有看那个文件是不是这次提交改过的**。而反事实树是
+**父提交 + 测试补丁** —— 那个文件处在**修复被撤掉**的状态。于是：
+
+> 撤掉修复 → 那个文件编译不过 → **这个修复就是让它编译过去的那个修复**
+
+按工具自己的定义（`VerdictCoupled`：「the test could not run without the
+fix」），这正是 coupled，而不是 environment。
+
+**证据**：同一个提交，改前改后各跑一次端到端：
+
+```
+改前: kind=environment  severity=info
+      "这个提交没法判定：检查出的代码缺东西，跑不起来"
+改后: kind=coupled      severity=warn
+      "无法判定：撤掉修复之后代码就编译不过了"
+      "坏掉的那个文件（cmd/alpha-bench/main.go）正是这次修复改过的文件"
+```
+
+**修复**：
+
+1. 判决时多带一份信息：这次提交改了哪些文件（`changedPaths(res.Changed)`）。
+2. 编译不过发生在**这次提交改过的文件**上 → `coupled`（套件离不开这个
+   修复），并把文案换成第三种说法，点名坏掉的是哪个文件。
+3. **环境那套 pattern 仍然优先**（`isEnvironmentFailure` 先判）：真·环境问题
+   （模块找不到、replace 目录不存在、工具链版本不够）照旧判 environment。
+   只有「pattern 都不认识、坏在非测试文件上」这一类才会走到新规则。
+
+**负对照**：把新规则拿掉 → 两条测试变红
+（`TestBuildErrorInTheRepairedFileIsCoupling`、
+`TestClassifySeparatesCouplingFromEnvironment` 里的新用例），其余用例照旧绿。
+
+> 修这条的时候踩到了一个老坑：**筛选器把守卫筛掉了**。第一次负对照显示
+> 「守卫生效次数 = 0」—— 不是守卫没抓住，是**破法本身把包编译坏了，测试
+> 压根没跑**。全绿和一条没跑，在输出里长得一模一样。所以脚本里现在先数
+> 「跑了几条」，再数「红了几条」。
+
+**顺带修好的**：耦合那种发现的文案以前只有两种（测试补丁打不上 / 测试引用
+了修复引入的东西）。新加的第三种说的是「坏掉的是代码本身，而这次修复就是
+让代码能编译的那个修复」—— 读者要做的下一步跟前两种**不一样**：
+前两种是「这个测试耦合了」，第三种是「这个提交让代码重新编译得过去，
+这件事本身有价值，只是覆盖度这个问题在这里没有答案」。
+
+**教训**：
+
+- **「坏在哪个文件」要和「这个提交动了哪个文件」放在一起看。** 这跟 3.58
+  是同一族病：一个判断只看了手里的一半事实，另一半就在旁边。
+- **「没有答案」有两种，给读者的下一步不一样。** 指错下一步比不给结论更
+  糟 —— 读者会照着错的下一步花半天时间，什么也修不到。
+
+---
+
+### 基线表过期了（3.55 的副作用）
+
+3.55 把「实验没跑起来」从「没有任何测试看守它（高危）」改判成
+「`environment`（信息级）」。**仓库 A 的基线因此变了，但基线表没跟着改**：
+
+| 记的地方 | 记的值 | 现在的值 |
+|---|---|---|
+| 第 2414 / 2460 / 2539 / 2657 行 | `proven 3 · vacuous 0 · 无测试 4 · 无法判定 6 · 不适用 7` | `proven 3 · vacuous 0 · 无测试 3 · 无法判定 7 · 不适用 7` |
+
+差的那一条就是 `e2d22b7`：它从「无测试（高危）」变成了「无法判定」。
+这一轮 3.60 修完之后，它进一步从 `environment` 变成了 `coupled` —— 但
+**数量不变**（都是「无法判定」）。
+
+旧表里记的是**当时**的值，那是历史，不改；要改的是「现在该拿什么当基线」。
+这一行就是现在的基线。照着旧表去核实，会核实一个已经不存在的仓库形状
+（这正是文档自己在第 130 行写下的那条）。
