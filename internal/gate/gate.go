@@ -10,6 +10,11 @@
 // 现在基线是一份**指纹**：HEAD 上除文档以外所有被跟踪文件的内容哈希。
 // 改文档不改指纹，闸门就安静下来；改代码、改 CI 配置、改被审仓库，
 // 指纹或 HEAD 就变了，闸门立刻出声。
+//
+// 被审仓库还多看一只眼睛：**它工作树里的内容**。
+// check 分析读的是工作树，不是 HEAD —— 同一个 HEAD，工作树改了没提交，
+// 跑出来的结果就不同。所以闸门记基线时也记下被审仓工作树的指纹，
+// 对不上就说明「上次核验时的工作树」已经不是现在这个了，得重跑。
 package gate
 
 import (
@@ -20,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -40,12 +46,21 @@ type State struct {
 type Target struct {
 	Path string `json:"path"`
 	Head string `json:"head"`
+
+	// Working 是工作树里「与 HEAD 不同的那些被跟踪文件」的指纹。
+	// 空 = 工作树和 HEAD 是一致的。
+	//
+	// 它单独存在，是因为 HEAD 相同并不代表被审仓库没变 —— check 分析读的是
+	// 工作树里的文件。同一个 HEAD，干净的时候和改了没提交的时候，跑出来的
+	// 结果是不一样的。
+	Working string `json:"working,omitempty"`
 }
 
 // Change 是一条「有东西变了」的记录。
 type Change struct {
-	// Kind: code（工具代码变了）/ dirty（工作树有未提交的改动）/
-	//       target（被审仓库动了）/ unknown（判不出来）
+	// Kind: code（工具代码变了）/ dirty（工具自己的工作树有未提交的改动）/
+	//       target（被审仓库的 HEAD 变了）/ target-dirty（被审仓库的工作树变了）/
+	//       unknown（判不出来）
 	Kind   string `json:"kind"`
 	Detail string `json:"detail"`
 }
@@ -133,21 +148,19 @@ func isDoc(path string) bool {
 // （见 DOGFOOD.md 3.18）。被 .gitignore 忽略的文件也不算：编译产物和临时
 // 文件不是「改动」。
 //
-// 注意这里**不看被审仓库的工作树**，只看工具自己的。被审仓库按 HEAD 算，
-// 是有原因的：某个被审仓库的工作树里一直有用户正在开发的未提交源码，把它算
-// 进去，闸门就会每一轮都喊「有变化」—— 正是 3.18 那个自毁的毛病。
+// 注意这里量的是**工具自己的**工作树。被审仓库的工作树另有一只眼睛
+// （WorkingFingerprint），但口径不一样：
 //
-// 这个洞并不是完全没人管，但管它的是工具自己的报告，不是闸门：
+//   - 这里：「现在是脏的」就算数。工具自己的仓归我们管，工作树脏了就是
+//     「这次核验跑的不是 HEAD 里那份代码」，必须重跑。
+//   - 被审仓：「和上次记录时不一样」才算数。被审仓不是我们一个人的 ——
+//     某个仓的工作树里一直有别人正在开发的未提交源码，按「脏就算数」来算，
+//     闸门会每一轮都喊「有变化」，正是 3.18 那个自毁的毛病。
 //
-//   - check 模式读的是**工作树里的文件**，所以一份 check 报告可能描述的是
-//     还没提交的代码。工具会把这件事说出来（kind 是 uncommitted-changes），
-//     见 docs/DOGFOOD.md 3.58。
-//   - audit 模式的两棵树（反事实和基线）都是用 git archive 从提交里建出来的，
-//     所以审计的结论跟工作树无关。
-//
-// 这两件事以前没有写在这里，这段注释曾经声称「工具的审计会把被审仓库的工作树
-// 报成高危」—— 工具从来没有这个检查器，那句话是假的，而且它还是「闸门不看
-// 工作树」这个设计唯一的理由。
+// 另外：被审仓的工作树早就不再只由工具的报告负责了。check 模式读的是
+// **工作树里的文件**，所以一份 check 报告可能描述的是还没提交的代码；
+// audit 模式的两棵树（反事实和基线）都是用 git archive 从提交里建出来的，
+// 所以审计的结论跟工作树无关。见 docs/DOGFOOD.md 3.58 与 3.62。
 func DirtyPaths(repoDir string) ([]string, error) {
 	// 用 -z：路径不会被 git 加引号，解析不会踩到转义。
 	out, err := gitOutput(repoDir, "status", "--porcelain", "-z")
@@ -183,6 +196,71 @@ func Head(dir string) (string, error) {
 		return "", fmt.Errorf("读取 %s 的 HEAD 失败: %w", dir, err)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// WorkingFingerprint 返回工作树里「与 HEAD 不同的那些被跟踪文件」的指纹。
+//
+// 为什么它必须存在：闸门盯的不只是被审仓库的 HEAD，还有它**工作树里的内容**。
+// check 分析读的是工作树里的文件（detect 那边写明了这一点：静态检查读的是
+// 工作树，所以一个改了没提交的文件是被它的修改态分析的）。
+//
+// 于是同一个 HEAD 下，工作树改了和没改，跑出来的结果是不一样的 —— 实测：
+// 同一个仓、同一个 HEAD，工作树干净时 1 条发现；在工作树里给一个测试文件
+// 加一行 t.Skip，就是 3 条。只看 HEAD 的闸门会把这种情况报成「没变化」，
+// 于是它记下的基线描述的是上一次核验时的工作树，而现在的工作树已经不是
+// 那一个了 —— 而且没有任何症状。
+//
+// 三条边界，都是有意选的：
+//
+//	① 只算**被跟踪**的文件。未跟踪的（.mavis/ 这样的草稿目录、编辑器备份）
+//	   不在 check 的分析范围里：它们在磁盘上，却不是这个仓的一部分。
+//	   把它们算进来，闸门就会天天响。
+//	② 比的是「和上次记录时不一样」，不是「现在是脏的」。
+//	   被审仓不是我们一个人的 —— 别人正在改 beta、epsilon，工作树长期是脏的。
+//	   「脏」是常态，「和上次不一样」才是要重跑的理由。
+//	③ 文档照样算。工具自己的仓排除文档，是因为我们自己每轮都提交文档；
+//	   被审仓的文档不在那个豁免范围里。
+func WorkingFingerprint(dir string) (string, error) {
+	out, err := gitOutput(dir, "diff", "--name-only", "-z", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("读取 %s 的工作树状态失败: %w", dir, err)
+	}
+	var paths []string
+	for _, p := range strings.Split(out, "\x00") {
+		if p = strings.TrimSpace(p); p != "" {
+			paths = append(paths, p)
+		}
+	}
+	if len(paths) == 0 {
+		return "", nil
+	}
+	sort.Strings(paths)
+	h := sha256.New()
+	for _, p := range paths {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+		h.Write([]byte(workingContentHash(dir, p)))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// workingContentHash 算出工作树里某个文件的内容哈希。
+//
+// 文件被从工作树里删掉也是一种「和 HEAD 不同」，用固定标记表示 ——
+// 免得「删掉了」和「改成了空文件」算出同一个值。
+func workingContentHash(dir, rel string) string {
+	data, err := os.ReadFile(filepath.Join(dir, rel))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "<deleted>"
+		}
+		// 子模块之类不是普通文件的地方，读不出来就当读不出来 ——
+		// 但它仍然是个稳定的标记，所以不会让闸门天天响。
+		return "<unreadable>"
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // LoadState 读出记录的状态。
@@ -243,7 +321,11 @@ func CurrentState(repoDir string, targets []string) (State, error) {
 		if err != nil {
 			return State{}, fmt.Errorf("被审仓库 %s 读不到 HEAD: %w", abs, err)
 		}
-		st.Targets = append(st.Targets, Target{Path: abs, Head: head})
+		wf, err := WorkingFingerprint(abs)
+		if err != nil {
+			return State{}, fmt.Errorf("被审仓库 %s 读工作树状态失败: %w", abs, err)
+		}
+		st.Targets = append(st.Targets, Target{Path: abs, Head: head, Working: wf})
 	}
 	return st, nil
 }
@@ -362,16 +444,31 @@ func Check(repoDir string, st State) []Change {
 	for _, t := range st.Targets {
 		head, err := Head(t.Path)
 		if err != nil {
-			changes = append(changes, Change{
-				Kind:   "unknown",
-				Detail: fmt.Sprintf("被审仓库 %s 读不到 HEAD: %v", t.Path, err),
-			})
+			changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("被审仓库 %s 读不到 HEAD: %v", t.Path, err)})
 			continue
 		}
 		if head != t.Head {
 			changes = append(changes, Change{
 				Kind:   "target",
 				Detail: fmt.Sprintf("被审仓库 %s 的 HEAD 变了（%s → %s）", t.Path, short(t.Head), short(head)),
+			})
+			continue
+		}
+		// HEAD 没变，工作树变了 —— 一样得重跑。
+		//
+		// 这一条以前没有，于是闸门对被审仓只有一只眼睛（HEAD）。而 check
+		// 读的是工作树：同一个 HEAD，工作树改了没提交，跑出来的结果就不同
+		// （实测 1 条发现变 3 条）。少了这一条，闸门记下的基线描述的是上一次
+		// 核验时的工作树，而不是现在这个。
+		wf, err := WorkingFingerprint(t.Path)
+		if err != nil {
+			changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("被审仓库 %s 读工作树状态失败: %v", t.Path, err)})
+			continue
+		}
+		if wf != t.Working {
+			changes = append(changes, Change{
+				Kind:   "target-dirty",
+				Detail: fmt.Sprintf("被审仓库 %s 的工作树变了（未提交的内容和上次记录时不一样）", t.Path),
 			})
 		}
 	}

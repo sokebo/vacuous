@@ -200,6 +200,139 @@ func TestCheckReportsTargetMove(t *testing.T) {
 	}
 }
 
+// TestCheckReportsTargetWorkingTreeChange 守的是被审仓库的第二只眼睛。
+//
+// 闸门以前对被审仓只看 HEAD，于是漏掉了这一种变化：工作树里改了没提交。
+// 而 check 分析读的是工作树 —— 同一个 HEAD，工作树干净和改了没提交，
+// 跑出来的结果不一样（实测 1 条发现变 3 条）。
+//
+// 少了这一条，闸门记下的基线描述的是「上一次核验时的工作树」，
+// 而现在的工作树已经不是那一个了 —— 而且它报的还是「没变化」。
+func TestCheckReportsTargetWorkingTreeChange(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 改了，没提交。HEAD 一点没动。
+	writeFile(t, target, "main.go", "package main\n\nfunc main() { println(7) }\n")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	changes := Check(dir, loaded)
+	if len(changes) != 1 {
+		t.Fatalf("被审仓库工作树变了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+	}
+	if changes[0].Kind != "target-dirty" {
+		t.Errorf("应该是 target-dirty，实际是 %q", changes[0].Kind)
+	}
+	if !strings.Contains(changes[0].Detail, target) {
+		t.Errorf("报错里要点名是哪个仓: %q", changes[0].Detail)
+	}
+}
+
+// TestCheckReportsTargetWorkingTreeContentChange 守的是指纹的内容那一半。
+//
+// 只记「哪些文件脏了」不够：同一个文件改了内容，脏的文件名单一模一样，
+// 但 check 读到的是新的内容，结果可能就不一样了。
+func TestCheckReportsTargetWorkingTreeContentChange(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	// 先让工作树脏起来，再记基线 —— 基线记下的就是「脏着的那个版本」。
+	writeFile(t, target, "main.go", "package main\n\nfunc main() { println(1) }\n")
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 脏的还是同一个文件，但内容换了。
+	writeFile(t, target, "main.go", "package main\n\nfunc main() { println(2) }\n")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	changes := Check(dir, loaded)
+	if len(changes) != 1 {
+		t.Fatalf("脏文件内容变了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+	}
+	if changes[0].Kind != "target-dirty" {
+		t.Errorf("应该是 target-dirty，实际是 %q", changes[0].Kind)
+	}
+}
+
+// TestCheckIsQuietWhenTargetWorkingTreeIsUnchanged 守的是「宁可漏报不可误伤」。
+//
+// 被审仓不是我们一个人的 —— 别人正在改 beta、epsilon，工作树长期是脏的。
+// 「脏」是常态，「和上次记录时不一样」才是要重跑的理由。
+//
+// 这一条要是搞错了，后果比漏报严重得多：闸门每轮都喊「有变化」，
+// 于是每轮都跑完整的六仓 dogfood、发现什么新东西都没有 —— 闸门从此
+// 只会消耗人，不会告诉人任何事。
+func TestCheckIsQuietWhenTargetWorkingTreeIsUnchanged(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	// 记录基线的时候，被审仓的工作树已经是脏的。
+	writeFile(t, target, "main.go", "package main\n\nfunc main() { println(7) }\n")
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	if changes := Check(dir, loaded); len(changes) != 0 {
+		t.Errorf("工作树和基线一样不该触发重跑，却报了: %+v", changes)
+	}
+}
+
+// TestCheckIsQuietWhenTargetHasOnlyUntrackedScratch 守的是草稿目录。
+//
+// .mavis/ 这样的目录在每个被审仓里都可能躺着（工具自己的会话记录）。
+// 它们在磁盘上，但不在 check 的分析范围里 —— 把它们算成「变了」，
+// 闸门就会天天响。
+func TestCheckIsQuietWhenTargetHasOnlyUntrackedScratch(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	writeFile(t, target, ".mavis/session.json", "{\"会话\":1}\n")
+	writeFile(t, target, "main.go.bak", "备份\n")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	if changes := Check(dir, loaded); len(changes) != 0 {
+		t.Errorf("只有未跟踪的草稿不该触发重跑，却报了: %+v", changes)
+	}
+}
+
 // TestCheckFailsClosedWhenTargetIsGone 守的是 fail closed：
 // 判不出来的时候不许报成「没变化」。
 func TestCheckFailsClosedWhenTargetIsGone(t *testing.T) {

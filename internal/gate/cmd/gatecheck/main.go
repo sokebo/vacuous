@@ -145,7 +145,7 @@ func runRecord(repo string, targets stringList, yes bool, force bool) int {
 		fmt.Printf("  commit      %s\n", st.Commit)
 		fmt.Printf("  fingerprint %s\n", st.Fingerprint)
 		for _, t := range st.Targets {
-			fmt.Printf("  target      %s  %s\n", t.Head[:7], t.Path)
+			fmt.Printf("  target      %s  %s  %s\n", t.Head[:7], t.Path, workingState(t))
 		}
 		if old, err := gate.LoadState(dir); err == nil {
 			fmt.Println("相对上次记录的变化：")
@@ -170,9 +170,20 @@ func runRecord(repo string, targets stringList, yes bool, force bool) int {
 	fmt.Printf("  commit      %s\n", st.Commit)
 	fmt.Printf("  fingerprint %s\n", st.Fingerprint)
 	for _, t := range st.Targets {
-		fmt.Printf("  target      %s  %s\n", t.Head[:7], t.Path)
+		fmt.Printf("  target      %s  %s  %s\n", t.Head[:7], t.Path, workingState(t))
 	}
 	return 0
+}
+
+// workingState 把被审仓工作树的状态写成一行人能看懂的话。
+//
+// 空指纹 = 工作树和 HEAD 一致。有指纹 = 有一批被跟踪的文件改了没提交；
+// 那个指纹就是「和上次记录时不一样」的判据 —— 记下来了，下次对不上就重跑。
+func workingState(t gate.Target) string {
+	if t.Working == "" {
+		return "工作树=干净"
+	}
+	return fmt.Sprintf("工作树=%s", t.Working[:7])
 }
 
 func usage() {
