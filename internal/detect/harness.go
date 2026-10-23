@@ -1,7 +1,6 @@
 package detect
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -93,26 +92,26 @@ func HarnessCommands(root string) []HarnessCommand {
 	if root == "" {
 		return nil
 	}
-	b, err := os.ReadFile(filepath.Join(root, "package.json"))
-	if err != nil {
-		return nil
-	}
-	var pkg struct {
-		Scripts map[string]string `json:"scripts"`
-	}
-	if err := json.Unmarshal(b, &pkg); err != nil {
-		return nil
-	}
+	return harnessFromScripts(root, packageScripts(root))
+}
 
-	names := make([]string, 0, len(pkg.Scripts))
-	for name := range pkg.Scripts {
+// harnessFromScripts selects the scripts that are checks rather than build
+// steps.
+//
+// It takes the scripts table rather than reading package.json itself, so
+// that every part of the tool reads the same file the same way. The CI
+// check needs the scripts table too - to follow the chain from
+// "npm run build" down to the script that actually checks something.
+func harnessFromScripts(root string, scripts map[string]string) []HarnessCommand {
+	names := make([]string, 0, len(scripts))
+	for name := range scripts {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	var out []HarnessCommand
 	for _, name := range names {
-		cmd := strings.TrimSpace(pkg.Scripts[name])
+		cmd := strings.TrimSpace(scripts[name])
 		if cmd == "" {
 			continue
 		}
