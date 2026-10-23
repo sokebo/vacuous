@@ -45,6 +45,14 @@ type jsonSummary struct {
 	MaxSeverity string `json:"max_severity"`
 	// AuditFailed is the number of commits the tool could not audit.
 	AuditFailed int `json:"audit_failed"`
+	// Silenced is the number of judged commits whose findings were
+	// suppressed by a "// vacuous:ignore" comment.
+	//
+	// It is a subset of the judged commits, not a bucket of its own: the
+	// commit was judged and its verdict stands in the counters above. It
+	// is here so that a consumer can tell "no finding was produced" from
+	// "a finding was produced and then suppressed on purpose".
+	Silenced int `json:"silenced"`
 }
 
 // jsonFinding is one finding, flattened for consumption.
@@ -108,6 +116,7 @@ func buildJSON(r *core.Report) jsonReport {
 			ByKind:        byKind,
 			MaxSeverity:   r.MaxSeverity().String(),
 			AuditFailed:   r.AuditFailed,
+			Silenced:      r.Silenced,
 		},
 		Findings: make([]jsonFinding, 0, len(findings)),
 	}

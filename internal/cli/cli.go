@@ -405,15 +405,25 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 			}
 			rep.Add(f)
 		}
-		// A silenced finding is not a finding. Counting it anyway would
-		// make the report contradict itself: "无测试 1" next to an
-		// empty list of findings, with nothing to show for the one.
+		// A silenced finding is not a finding: it does not go into the
+		// list, and it does not fail the run. The reason it was silenced
+		// is not lost - it is written next to the code that earned it,
+		// which is where the next person will look.
 		//
-		// The reason it was silenced is not lost - it is written next to
-		// the code that earned it, which is where the next person will
-		// look.
+		// What the comment does NOT do is un-judge the commit. The
+		// experiment ran, it produced a verdict, and the verdict is a fact
+		// about the commit. Dropping the verdict along with the finding is
+		// what made a silenced commit disappear from the report: the scope
+		// line said "审了 14 个提交", and with the five not-applicable
+		// ones that accounts for nineteen of the twenty commits examined -
+		// the twentieth was simply not there, and nothing said so.
+		//
+		// The count of silenced commits is kept apart from the verdict
+		// counters, because it is not a verdict - it says "the finding is
+		// not shown", not "there was nothing to judge". It is a subset of
+		// the judged commits, not a seventh bucket.
 		if silenced {
-			continue
+			rep.Silenced++
 		}
 		switch res.Verdict {
 		case counterfactual.VerdictProven:

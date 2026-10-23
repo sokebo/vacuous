@@ -75,6 +75,22 @@ func renderText(w io.Writer, r *core.Report) error {
 		r.Proven, r.Vacuous, r.NoTest, r.Inconclusive, r.NotApplicable, r.AuditFailed)); err != nil {
 		return err
 	}
+	// The silence gets its own line rather than another number in the
+	// tally.
+	//
+	// It is not a verdict, so putting it in the tally would make the
+	// tally's partition untrue; and the tally already sits at the width
+	// budget, so a seventh number would split across two lines. A line of
+	// its own also says more than a number can: the reader learns that a
+	// commit was judged, that the finding was suppressed on purpose, and
+	// that the reason is written next to the code.
+	if r.Silenced > 0 {
+		if err := writeField(w, "豁免", fmt.Sprintf(
+			"%d 个提交判出了结论，但发现被 // vacuous:ignore 注释压住 —— "+
+				"注释就写在触发它的代码旁边", r.Silenced)); err != nil {
+			return err
+		}
+	}
 	return writeField(w, "按类别", byKindLine(r))
 }
 
