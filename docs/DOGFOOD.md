@@ -89,7 +89,7 @@ scripts/gate.sh check     # 退出码 0=没变 1=变了 2=判不出来
 | 仓库 B | 1 个（严重 1） | 1 × `guard-not-installed` |
 | 仓库 C | 7 个（高危 2） | 2 × `skipped-test`（高危），4 × `skipped-test`（警告），1 × `unsupported-tests`（信息） |
 | 仓库 D | 1 个（高危 0） | 1 × `skipped-test`（警告） |
-| 仓库 E | 1 个（高危 0） | 1 × `unsupported-tests`（信息） |
+| 仓库 E | 2 个（高危 0） | 1 × `guard-not-installed`（警告），1 × `unsupported-tests`（信息） |
 | 仓库 F | 1 个（高危 0） | 1 × `unsupported-tests`（信息） |
 
 **6 个仓库里 6 个都有发现。** 这不是巧合，是这类代码的真实状态。
@@ -138,6 +138,22 @@ scripts/gate.sh check     # 退出码 0=没变 1=变了 2=判不出来
 >
 > 这条记在这里不是为了好看，是因为**过期的记录比没有记录更危险**：照着旧表
 > 去核实会核实一个已经不存在的仓库形状。
+
+> **仓库 E 这一行又变了（2026-10-23 晚复核，见 3.63）。** 多了 1 条
+> `guard-not-installed`（警告），**那一条是错判，已修**。仓库 E 在这三个提交里
+> 第一次有了自己的 CI（`.github/workflows/ci.yml`），工具一看「CI 里没有
+> `go test` / `npm test`」就报了「这个仓库的 CI 不跑任何测试」「代码坏了，
+> CI 照样是绿的」。
+>
+> **两句都是假的**：那个 CI 跑 `npm run build`，build 链里有
+> `npm run smoke:css` → `scripts/smoke-test-css.mjs`，那个脚本读产物 CSS，
+> 发现 `:root` 块被吞、token 数量不够之类的事故就 `process.exit(1)`。
+> 注释里写着「让 build 失败, 阻止部署」。
+>
+> 修完之后这一条说的是准的：「CI 不跑**测试套件**，但它跑的是自己写的验证脚本」，
+> 并且把调用链摆出来：`npm run build → npm run smoke:css → node
+> scripts/smoke-test-css.mjs`。**缺测试套件这个真信号还在**（警告级不变），
+> 「CI 是摆设」这个假结论没了。
 
 ### 逐条核实
 
@@ -3715,3 +3731,179 @@ alpha 和 zeta **没有**被报 —— 它们脏的地方只有未跟踪的 `.ma
   的闸门对 check 模式永远只有半只眼睛。
 - **闸门对自己的每一只眼睛，都要有两组测试**：该报的时候报、不该报的时候安静。
   只补第一组，闸门就成了一个「逢事必报」的噪音源。
+
+### 3.63 CI 里的检查藏在两层下面 —— 工具说「CI 不跑任何测试」，而 CI 正在跑
+
+**现象**：仓库 E 在三个提交里第一次有了自己的 CI（`.github/workflows/ci.yml`）。
+工具立刻多报一条：
+
+```
+[warn] guard-not-installed  .github/workflows
+       这个仓库的 CI 不跑任何测试
+       .github/workflows/ 下有 1 个 workflow，没有一个跑测试。
+       这个仓库的 CI 从来不执行测试套件 —— 代码坏了，CI 照样是绿的。
+```
+
+**为什么这要命**：这不是「多了一条噪音」，是**一份报告里出现了两个相反的结论**。
+同一次运行里，另一条 finding 是：
+
+```
+[info] unsupported-tests
+       这个仓有自己的验证命令，但这个工具跑不了它们
+         npm run smoke:css → node scripts/smoke-test-css.mjs
+         npm run verify   → node scripts/verify/run-all.mjs
+```
+
+一条说「CI 从来不执行测试套件，代码坏了 CI 照样是绿的」，另一条把
+`npm run smoke:css` 摆出来 —— 而 **CI 正在跑它**。读者只能二选一：要么信
+「CI 是摆设」，要么信「这仓有验证命令」。两个都是这份报告自己给的。
+
+**人工核实**（回到源码，不是靠工具自己的输出）：
+
+仓库 E 的 CI 只有两个实打实的步骤：
+
+```yaml
+- run: npm ci
+- run: npm run build
+```
+
+`package.json` 里：
+
+```json
+"build": "npm run check:theme && npm run build:font && vite build && npm run smoke:css",
+"smoke:css": "node scripts/smoke-test-css.mjs"
+```
+
+`scripts/smoke-test-css.mjs` 开头写着：
+
+```js
+// sokobo-epsilon CSS build 冒烟测试
+// 失败时: process.exit(1) — 让 build 失败, 阻止部署
+```
+
+它读产物 CSS，发现 `:root` 块被吞、`@font-face` 没了、暗色模式媒体查询没了、
+token 数量不够（应 ≥ 30）、`var()` 引用太少（应 > 100），就 `process.exit(1)`。
+
+→ **CI 确实有守卫。「代码坏了，CI 照样是绿的」是假的。**
+（`check:theme` 那一层跑的是兄弟仓的 `../zeta/scripts/check-consumer.mjs`，
+按 3.40 的口径那不算本仓的守卫 —— 但它也确实在 CI 里跑，这点报告没撒谎，
+只是没提。）
+
+**根因**：CI 检查只拿 workflow 文本去匹配一张**写死的标准测试命令表**：
+
+```go
+"go test", "pytest", "npm test", "npm run test", "yarn test",
+"pnpm test", "jest", "vitest", "cargo test", "mvn test", "gradle test"
+```
+
+`npm run build` 不在里面 → 判定「没有 workflow 跑测试」→ 报「CI 不跑任何测试」。
+
+**问题不在那张表，在表下面一层**：工具**已经知道** `smoke:css` 是本仓的验证脚本
+—— `HarnessCommands`（3.39 / 3.40 用的那条）读的正是同一份 `package.json`，
+它把 `smoke:css` 和 `verify` 都列成了 harness。**同一个仓，同一份文件，
+两个检查器给出了两份答案**：harness 检查说「这仓有验证命令」，CI 检查说
+「CI 什么也没跑」。
+
+差的那一层是**深度**：`npm run build` 是入口，真正的检查在它的下一层
+（`npm run smoke:css`），再下一层才是脚本文件。CI 检查只看入口那层。
+
+**修复**：新增 `internal/detect/ci_harness.go`，让 CI 检查顺着
+`package.json` 的 scripts 链往下走：
+
+1. 读 `package.json` 的 scripts，展开 CI 里出现的 `npm run X` / `yarn X` /
+   `pnpm run X`（链深上限 4 层，防自环）。
+2. 每一层都问一次：这条命令最终点名的**本仓**脚本文件，是不是某条 harness 的文件？
+3. workflow 里**直接**点名脚本（`- run: node scripts/smoke-test-css.mjs`）
+   同样算数 —— 按行解析，兄弟仓的相对路径（`../other/scripts/check.mjs`）
+   由 `harnessLocalFiles` 挡掉，不算本仓的守卫。
+
+命中之后，结论从「CI 不跑任何测试」改成准的话：
+
+```
+这个仓库的 CI 不跑测试套件 —— 它跑的是自己写的验证脚本
+
+.github/workflows/ 下有 1 个 workflow，没有一个跑测试套件。
+但 CI 最终跑到了这个仓库自己写的验证脚本：
+  npm run build → npm run smoke:css → node scripts/smoke-test-css.mjs
+它们不是摆设 —— 它们盯着的东西坏掉时，CI 会变红。
+它们挡不住的是另一类问题：「逻辑写错了，但类型没错、格式也没错」。
+那一类只有测试套件能挡。
+
+所以这个仓的行为改动，目前仍然没有测试套件看守。
+```
+
+**警告级不变，措辞变准**：「没有测试套件看守这个仓的行为改动」是真的，
+「CI 是摆设」是假的。报告要的是前者。
+
+调用链要摆出来，是因为只写「CI 跑的是 `smoke:css`」读者会去 workflow 里找
+`npm run smoke:css` 而找不到 —— workflow 里写的是 `npm run build`。
+**一个结论如果不能被读者当场核对，它就不是结论，是断言。**
+
+**负对照**（两条路径各拆一次，都要让测试变红）：
+
+| 拆掉的修复 | 变红的用例 | 保持绿 |
+|---|---|---|
+| 脚本链不再展开（`maxScriptChain = 0`） | `TestCIRunningOwnCheckScriptIsNotReportedAsUnguarded`、`TestCIChainOfTwoLevels` | 其余四条 |
+| workflow 直接点名脚本那条路失效 | `TestCINamingOwnCheckScriptDirectly` | 其余五条 |
+
+**同时必须有「真阳性不许被修掉」那一侧**：
+
+| 用例 | 断言 |
+|---|---|
+| `TestCIWithoutAnyLocalCheckIsStillReported` | CI 只跑 `npm run build`（build 不碰本仓任何脚本）→ **仍然报**「CI 不跑任何测试」 |
+| `TestCIRunningSiblingRepositoryScriptIsNotLocalGuard` | CI 只跑兄弟仓的 `../theme-pkg/scripts/check-consumer.mjs` → **不算本仓的守卫**，仍然报 |
+| `TestCIWithoutPackageJSONIsUnaffected` | 没有 `package.json` 的仓（所有 Go 仓）→ 行为不变 |
+
+第一条最要紧：**修误伤不能顺手把真阳性也修了**（3.40 的教训）。只写正例的
+修复，可以靠「什么都不报」通过全部测试。
+
+**6 个被审仓的复核**（改前 / 改后逐条 diff）：
+
+| 仓库 | 改前 | 改后 | 结论 |
+|---|---|---|---|
+| 仓库 A | 3 | 3 | 逐条一致 |
+| 仓库 B | 1 | 1 | 逐条一致 |
+| 仓库 C | 7 | 7 | 逐条一致 |
+| 仓库 D | 1 | 1 | 逐条一致 |
+| **仓库 E** | **2** | **2** | **只有那条错判的措辞和结论变了** |
+| 仓库 F | 1 | 1 | 逐条一致 |
+
+仓库 E 那一条的差异：
+
+```
+- [warn] guard-not-installed | 这个仓库的 CI 不跑任何测试
++ [warn] guard-not-installed | 这个仓库的 CI 不跑测试套件 —— 它跑的是自己写的验证脚本
+```
+
+**审计路径没被碰**：仓库 A 的反事实审计改前改后逐项相同 ——
+`proven 3 · vacuous 0 · 无测试 3 · 无法判定 7 · 不适用 7`
+（`coupled 7 · no-test-for-fix 6`）。这次的改动只碰 `internal/detect` 的 CI 检查，
+不进 counterfactual。
+
+**5 条高危逐条人工核实，全是真阳性，无回归**：
+
+- 仓库 A `app_test.go:115` — `forC, _ := st.EdgesFor("c")` 之后断言
+  `len(forC) != 0`。加载失败时 `forC` 为空 → 断言通过 → 测试报成功，
+  实际什么都没加载到。
+- 仓库 A `cmd/alpha-seed/main.go:91` — `existing, _ := st.List()` 之后
+  `if len(existing) > 0 { ... return }`。读库失败时 `existing` 为空 →
+  「库里有数据就别继续追加」这个检查不执行 → 往一个自己都读不出来的库里写。
+- 仓库 B `.githooks` — `pre-push` 存在且可执行，但 `git config --get
+  core.hooksPath` 退出码 1（未设置）→ 守卫一次都没运行过。
+- 仓库 C `commitcorpus_test.go:22/34` — 跳过条件依赖
+  `experiments/commit-corpus/*.jsonl`，那些文件被 gitignore → CI 和干净 clone
+  里永远跳过。
+
+**教训**：
+
+- **一个仓里有两个检查器在回答同一个问题时，先确认它们看的是不是同一个事实。**
+  这次的错判不是某一条规则写错了，是**一条规则用了另一条规则已经算出来的结论，
+  却没去用它**：`HarnessCommands` 已经把 `smoke:css` 认成验证脚本了，
+  CI 检查没有读那份结果。
+- **「CI 里没有 `npm test`」和「CI 里没有测试」不是一回事。** 前者是查表，
+  后者是要顺着调用链走到底。前者永远为真，后者才有信息。
+- **警告的措辞比警告的级别更要紧。** 这一条级别没变（都是警告），但少了
+  「代码坏了，CI 照样是绿的」这半句假话，报告就从「指控这个仓没守卫」变成
+  「说清这个仓的守卫到哪、还缺哪」。**宁可说窄一点，也不要说错一点。**
+- **修误伤必须配一条「真阳性不许被修掉」的用例。** 只写正例的话，
+  「什么都不报」能让全部测试变绿。

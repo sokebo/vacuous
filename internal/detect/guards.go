@@ -226,23 +226,49 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 	}
 
 	if len(withTests) == 0 && len(opaque) == 0 {
-		detail := fmt.Sprintf(
-			".github/workflows/ 下有 %d 个 workflow，没有一个跑测试。\n"+
-				"这个仓库的 CI 从来不执行测试套件 —— 代码坏了，CI 照样是绿的。",
-			len(workflows))
-		evidence := "扫描到的 workflow: " + strings.Join(workflowNames(workflows), ", ")
-		if len(checks) > 0 {
-			detail += fmt.Sprintf(
-				"\n它有这些检查：%s —— 它们能挡住语法错误和类型错误，"+
-					"但挡不住「测试是空的」或者「逻辑写错了但类型没错」。",
-				strings.Join(dedupe(checks), ", "))
-			evidence += "\n找到的检查: " + strings.Join(dedupe(checks), ", ")
+		// The CI may not run a test suite and still not be a sham: it can
+		// run the repository's own check scripts. "npm run build" hides
+		// "npm run smoke:css" one level down, and the smoke script turns
+		// the build red when the output is broken.
+		//
+		// Saying "the CI never runs any test" about that repository is
+		// two false claims in one sentence - the CI does run checks, and
+		// the code breaking does turn it red. What is genuinely missing is
+		// a test suite, and that is a narrower, more honest finding.
+		ci := newCIContext(repoRoot)
+		var local []ciHarnessRun
+		var localWorkflows []string
+		for _, w := range workflows {
+			hits := ci.harnessRunsIn(w.text)
+			if len(hits) == 0 {
+				continue
+			}
+			localWorkflows = append(localWorkflows, w.name)
+			for _, h := range hits {
+				local = append(local, h)
+			}
 		}
-		out = append(out, finding(core.KindGuardNotInstalled, core.SevWarn,
-			".github/workflows", 0,
-			"这个仓库的 CI 不跑任何测试",
-			detail, evidence,
-			"加一个跑测试的步骤，并让它失败时阻断合并"))
+		if len(local) > 0 {
+			out = append(out, ciRunsOwnChecksFinding(workflows, localWorkflows, local))
+		} else {
+			detail := fmt.Sprintf(
+				".github/workflows/ 下有 %d 个 workflow，没有一个跑测试。\n"+
+					"这个仓库的 CI 从来不执行测试套件 —— 代码坏了，CI 照样是绿的。",
+				len(workflows))
+			evidence := "扫描到的 workflow: " + strings.Join(workflowNames(workflows), ", ")
+			if len(checks) > 0 {
+				detail += fmt.Sprintf(
+					"\n它有这些检查：%s —— 它们能挡住语法错误和类型错误，"+
+						"但挡不住「测试是空的」或者「逻辑写错了但类型没错」。",
+					strings.Join(dedupe(checks), ", "))
+				evidence += "\n找到的检查: " + strings.Join(dedupe(checks), ", ")
+			}
+			out = append(out, finding(core.KindGuardNotInstalled, core.SevWarn,
+				".github/workflows", 0,
+				"这个仓库的 CI 不跑任何测试",
+				detail, evidence,
+				"加一个跑测试的步骤，并让它失败时阻断合并"))
+		}
 	} else if len(withTests) == 0 {
 		// Some workflows are opaque: they call a workflow that lives in
 		// another repository, so the test command is not in this file.
@@ -285,6 +311,55 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 	}
 
 	return out
+}
+
+// ciRunsOwnChecksFinding describes a CI that runs the repository's own
+// check scripts but no test suite.
+//
+// The honest version of this finding is narrower than "the CI runs no
+// tests". The CI does run checks - the repository's own ones - and they do
+// turn the build red when the thing they watch breaks. What is missing is
+// a test suite, and that is still a real gap: a check script can tell you
+// the output is malformed, it cannot tell you the logic is wrong.
+func ciRunsOwnChecksFinding(workflows []workflow, localWorkflows []string, local []ciHarnessRun) core.Finding {
+	var lines, files []string
+	for _, r := range local {
+		if len(r.Chain) > 0 {
+			// "npm run build → npm run smoke:css → node scripts/..."
+			// so the reader can find the check in the workflow.
+			parts := make([]string, 0, len(r.Chain)+2)
+			for _, s := range r.Chain {
+				parts = append(parts, "npm run "+s)
+			}
+			parts = append(parts, "npm run "+r.Script, r.Command)
+			lines = append(lines, "  "+strings.Join(parts, " → "))
+		} else {
+			lines = append(lines, "  "+r.Command)
+		}
+		files = append(files, r.Files...)
+	}
+
+	detail := fmt.Sprintf(
+		".github/workflows/ 下有 %d 个 workflow，没有一个跑测试套件。\n"+
+			"但 CI 最终跑到了这个仓库自己写的验证脚本：\n%s\n"+
+			"它们不是摆设 —— 它们盯着的东西坏掉时，CI 会变红。\n"+
+			"它们挡不住的是另一类问题：「逻辑写错了，但类型没错、格式也没错」。\n"+
+			"那一类只有测试套件能挡。\n\n"+
+			"所以这个仓的行为改动，目前仍然没有测试套件看守。",
+		len(workflows), strings.Join(lines, "\n"))
+
+	evidence := "扫描到的 workflow: " + strings.Join(workflowNames(workflows), ", ")
+	evidence += "\nCI 里跑到了验证脚本的 workflow: " + strings.Join(dedupe(localWorkflows), ", ")
+	evidence += "\nCI 跑到的验证脚本文件:"
+	for _, f := range dedupe(files) {
+		evidence += "\n  " + f
+	}
+
+	return finding(core.KindGuardNotInstalled, core.SevWarn,
+		".github/workflows", 0,
+		"这个仓库的 CI 不跑测试套件 —— 它跑的是自己写的验证脚本",
+		detail, evidence,
+		"把测试接进 CI：加一个跑测试套件的步骤，并让它失败时阻断合并")
 }
 
 // workflowNames lists the workflow file names.
