@@ -107,7 +107,7 @@ func TestClassifyAndConsistencyAgreeOnAHealthyRun(t *testing.T) {
 			{Name: "pkg.TestB", Status: core.StatusPass},
 		},
 	}}
-	verdict := classify(run, nil)
+	verdict := classify(run, nil, nil)
 	if verdict != VerdictProven {
 		t.Fatalf("classify() = %q, want %q", verdict, VerdictProven)
 	}
@@ -178,7 +178,7 @@ func TestContradictionIsCaughtFromTheRawOutput(t *testing.T) {
 		RawFailed: true,
 	}}
 
-	verdict := classify(run, nil)
+	verdict := classify(run, nil, nil)
 	if verdict != VerdictContradictory {
 		t.Fatalf("classify() = %q, want %q — the counts and the runner's own "+
 			"output disagree, and the tool must not conclude on top of that",
@@ -199,7 +199,7 @@ func TestProvenWithoutAFailureInTheOutputIsCaught(t *testing.T) {
 		RawFailed: false,
 	}}
 
-	verdict := classify(run, nil)
+	verdict := classify(run, nil, nil)
 	if verdict != VerdictContradictory {
 		t.Fatalf("classify() = %q, want %q", verdict, VerdictContradictory)
 	}
@@ -215,7 +215,7 @@ func TestConsistentRunIsNotFlagged(t *testing.T) {
 		RawOutput: "ok  \tpkg\t0.01s\nPASS\n",
 		RawFailed: false,
 	}}
-	if verdict := classify(run, nil); verdict == VerdictContradictory {
+	if verdict := classify(run, nil, nil); verdict == VerdictContradictory {
 		t.Fatal("a healthy run must not be reported as contradictory")
 	}
 }
@@ -229,7 +229,7 @@ func TestRunWithoutRawOutputIsNotFlagged(t *testing.T) {
 			{Name: "pkg.TestA", Status: core.StatusPass},
 		},
 	}}
-	if verdict := classify(run, nil); verdict == VerdictContradictory {
+	if verdict := classify(run, nil, nil); verdict == VerdictContradictory {
 		t.Fatal("a run without raw output must not be reported as contradictory")
 	}
 }
@@ -275,11 +275,11 @@ func TestAFailureOutsideTheRawTailIsNotACcontradiction(t *testing.T) {
 		RawFailed: core.MentionsFailure(full),
 	}}
 
-	if verdict := classify(run, nil); verdict == VerdictContradictory {
+	if verdict := classify(run, nil, nil); verdict == VerdictContradictory {
 		t.Fatal("a run whose failure marker sits outside the tail must not be " +
 			"reported as contradictory - the check looked through too small a window")
 	}
-	if verdict := classify(run, nil); verdict != VerdictProven {
+	if verdict := classify(run, nil, nil); verdict != VerdictProven {
 		t.Fatalf("classify() = %q, want %q", verdict, VerdictProven)
 	}
 }

@@ -61,7 +61,7 @@ func TestGoModuleFailuresAreEnvironmentNotCoupling(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			run := &runOutcome{result: core.RunResult{BuildErrors: tc.errs}}
-			verdict := classify(run, isTestFile)
+			verdict := classify(run, isTestFile, nil)
 			if verdict != VerdictEnvironment {
 				t.Fatalf("classify() = %q, want %q — the machine could not resolve a "+
 					"module, which says nothing about whether the test watches the fix",
@@ -82,7 +82,7 @@ func TestGoModuleFailuresAreEnvironmentNotCoupling(t *testing.T) {
 func TestGoModulePatternsAreLoadBearing(t *testing.T) {
 	run := &runOutcome{result: core.RunResult{BuildErrors: moduleLookupDisabled()}}
 
-	if got := classify(run, isTestFile); got != VerdictEnvironment {
+	if got := classify(run, isTestFile, nil); got != VerdictEnvironment {
 		t.Fatalf("classify() = %q, want %q with the table in place", got, VerdictEnvironment)
 	}
 
@@ -107,7 +107,7 @@ func TestGoModulePatternsAreLoadBearing(t *testing.T) {
 	}
 	environmentFailurePatterns = kept
 
-	if got := classify(run, isTestFile); got != VerdictCoupled {
+	if got := classify(run, isTestFile, nil); got != VerdictCoupled {
 		t.Fatalf("classify() = %q without the Go module patterns, want %q — "+
 			"if the table does not change the verdict, it is not doing any work",
 			got, VerdictCoupled)
@@ -161,7 +161,7 @@ func TestRealCouplingIsStillACoupling(t *testing.T) {
 				"pkg/widget_test.go:12:5: undefined: NewThing\n",
 		},
 	}}
-	if got := classify(run, isTestFile); got != VerdictCoupled {
+	if got := classify(run, isTestFile, nil); got != VerdictCoupled {
 		t.Fatalf("classify() = %q, want %q — widening the environment table must not "+
 			"turn real couplings into environment problems", got, VerdictCoupled)
 	}

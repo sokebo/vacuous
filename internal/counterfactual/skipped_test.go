@@ -41,7 +41,7 @@ func skippedRun(skip, pass, fail int) *runOutcome {
 // goes red.
 func TestSkippedVerdictIsReachable(t *testing.T) {
 	run := skippedRun(13, 0, 0)
-	if got := classify(run, nil); got != VerdictSkipped {
+	if got := classify(run, nil, nil); got != VerdictSkipped {
 		t.Fatalf("classify() = %q, want %q — a suite that only skipped must not read as green",
 			got, VerdictSkipped)
 	}
@@ -55,7 +55,7 @@ func TestSkippedVerdictIsReachable(t *testing.T) {
 // they need different findings.
 func TestSkippedIsNotVacuous(t *testing.T) {
 	run := skippedRun(13, 0, 0)
-	if got := classify(run, nil); got == VerdictVacuous {
+	if got := classify(run, nil, nil); got == VerdictVacuous {
 		t.Fatal("a suite where nothing ran must never be judged vacuous")
 	}
 }
@@ -72,7 +72,7 @@ func TestSkippedIsNotVacuous(t *testing.T) {
 // read as a clean pass, and TestSkippedVerdictIsReachable pins it.
 func TestMixedRunIsJudgedOnTheTestsThatRan(t *testing.T) {
 	run := skippedRun(9, 4, 0)
-	if got := classify(run, nil); got != VerdictVacuous {
+	if got := classify(run, nil, nil); got != VerdictVacuous {
 		t.Fatalf("classify() = %q, want %q — the four tests that ran passed without the fix",
 			got, VerdictVacuous)
 	}
@@ -114,7 +114,7 @@ func TestSkipFindingIsCritical(t *testing.T) {
 // test ran and none was even reported as skipped.
 func TestEmptyRunIsSkipped(t *testing.T) {
 	run := &runOutcome{}
-	if got := classify(run, nil); got != VerdictSkipped {
+	if got := classify(run, nil, nil); got != VerdictSkipped {
 		t.Fatalf("classify() = %q, want %q — a run with no test cases is not a pass",
 			got, VerdictSkipped)
 	}
