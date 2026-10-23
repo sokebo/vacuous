@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -68,7 +69,7 @@ func TestWorktreeCheckoutIsExact(t *testing.T) {
 	defer wt.Remove()
 
 	want := treeFiles(t, f.dir, "HEAD")
-	got := checkoutFiles(t, wt.Path())
+	got := checkoutFiles(t, wt.Path(), nil)
 
 	if len(want) != len(got) {
 		t.Fatalf("the checkout has %d files, the tree has %d:\nmissing: %v",
@@ -111,24 +112,72 @@ func repoFingerprint(t *testing.T, dir string) string {
 	} else {
 		b.WriteString("worktreedir=absent\n")
 	}
+	// The submodule stores live inside the repository. Reading objects out
+	// of them must not change a byte.
+	if modules := filepath.Join(dir, ".git", "modules"); exists(modules) {
+		b.WriteString("modules=" + treeFingerprint(t, modules) + "\n")
+	}
 	return b.String()
 }
 
+// treeFingerprint summarises the files under a directory: their paths and
+// their sizes.
+func treeFingerprint(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(dir, path)
+		if rerr != nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		b.WriteString(rel + " " + strconv.FormatInt(info.Size(), 10) + "\n")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return md5Of(b.String())
+}
+
 // treeFiles lists the files in a revision.
+//
+// A submodule is not one of them. The tree holds the commit the submodule
+// is pinned to, and the content of that commit lives in another
+// repository: it is put into the checkout separately and counted
+// separately.
 func treeFiles(t *testing.T, dir, rev string) map[string]bool {
 	t.Helper()
-	out := gitCmd(t, dir, "ls-tree", "-r", "--name-only", rev)
+	out := gitCmd(t, dir, "ls-tree", "-r", "--full-tree", rev)
 	m := map[string]bool{}
 	for _, line := range strings.Split(out, "\n") {
-		if strings.TrimSpace(line) != "" {
-			m[line] = true
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
+		tab := strings.IndexByte(line, '\t')
+		if tab < 0 {
+			continue
+		}
+		if strings.HasPrefix(line, gitlinkMode+" ") {
+			continue // a submodule, not a file of this tree
+		}
+		m[line[tab+1:]] = true
 	}
 	return m
 }
 
-// checkoutFiles lists the files in a directory.
-func checkoutFiles(t *testing.T, dir string) map[string]bool {
+// checkoutFiles lists the files in a directory, leaving out the content of
+// the given submodules.
+//
+// The content of a submodule is not a file of the tree it belongs to: the
+// tree holds the commit the submodule is pinned to. It is checked on its
+// own, against the pinned commit's own tree.
+func checkoutFiles(t *testing.T, dir string, submodules []string) map[string]bool {
 	t.Helper()
 	m := map[string]bool{}
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -139,9 +188,15 @@ func checkoutFiles(t *testing.T, dir string) map[string]bool {
 			return nil
 		}
 		rel, rerr := filepath.Rel(dir, path)
-		if rerr == nil {
-			m[rel] = true
+		if rerr != nil {
+			return nil
 		}
+		for _, sub := range submodules {
+			if rel == sub || strings.HasPrefix(rel, sub+string(filepath.Separator)) {
+				return nil
+			}
+		}
+		m[rel] = true
 		return nil
 	})
 	if err != nil {

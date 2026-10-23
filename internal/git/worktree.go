@@ -75,6 +75,13 @@ func (r *Repo) NewWorktree(rev string) (core.Worktree, error) {
 	// The zero-write path. If it cannot produce an exact tree, fall back
 	// to git's own worktree mechanism.
 	if err := r.extractArchive(rev, dir); err == nil {
+		// The archive carries a submodule's gitlink but not its content.
+		// A checkout without that content is not the project: the build
+		// fails on it and the audit has nothing to say.
+		if err := r.materializeSubmodules(rev, dir); err != nil {
+			_ = os.RemoveAll(outer)
+			return nil, err
+		}
 		wt := &worktree{repo: r, path: dir, outer: outer}
 		r.register(wt)
 		return wt, nil
@@ -87,6 +94,12 @@ func (r *Repo) NewWorktree(rev string) (core.Worktree, error) {
 	if _, err := r.run("worktree", "add", "--detach", dir, rev); err != nil {
 		_ = os.RemoveAll(outer)
 		return nil, fmt.Errorf("git: create a worktree at %q: %w", rev, err)
+	}
+	// The fallback checks out the tree but not the submodules either.
+	if err := r.materializeSubmodules(rev, dir); err != nil {
+		_, _ = r.run("worktree", "remove", "--force", dir)
+		_ = os.RemoveAll(outer)
+		return nil, err
 	}
 	wt := &worktree{repo: r, path: dir, outer: outer, registered: true}
 	r.register(wt)
@@ -105,24 +118,8 @@ func (r *Repo) extractArchive(rev, dir string) error {
 		return err
 	}
 
-	cmd := exec.Command("git", "archive", "--format=tar", rev)
-	// The archive has to come from the repository being audited.
-	cmd.Dir = r.Root()
-	stdout, err := cmd.StdoutPipe()
+	got, err := archiveInto(r.root, "", rev, dir)
 	if err != nil {
-		return err
-	}
-	cmd.Stderr = io.Discard
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	got, err := untar(stdout, dir)
-	if err != nil {
-		_ = cmd.Wait()
-		return err
-	}
-	if err := cmd.Wait(); err != nil {
 		return err
 	}
 	if want > 0 && got != want {
@@ -131,17 +128,77 @@ func (r *Repo) extractArchive(rev, dir string) error {
 	return nil
 }
 
+// archiveInto unpacks a revision into a directory and returns the number of
+// files it unpacked.
+//
+// gitDir is the git directory the objects are read from; an empty gitDir
+// means the repository in workDir. "git archive" only reads: neither the
+// audited repository nor the submodule's own repository is written to.
+func archiveInto(workDir, gitDir, rev, dest string) (int, error) {
+	args := []string{
+		// The repository may well be owned by somebody else (a CI
+		// checkout, a container mount). These are per-invocation
+		// settings; nothing is written.
+		"-c", "safe.directory=*",
+		"-c", "core.quotepath=false",
+		"-c", "color.ui=false",
+	}
+	if gitDir != "" {
+		args = append(args, "--git-dir="+gitDir)
+	}
+	args = append(args, "archive", "--format=tar", rev)
+	cmd := exec.Command("git", args...)
+	// The archive has to come from the repository being audited.
+	cmd.Dir = workDir
+	cmd.Env = gitEnv()
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return 0, err
+	}
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+
+	got, err := untar(stdout, dest)
+	if err != nil {
+		_ = cmd.Wait()
+		return got, err
+	}
+	if err := cmd.Wait(); err != nil {
+		return got, err
+	}
+	return got, nil
+}
+
 // treeFileCount counts the files in a revision's tree.
+//
+// A submodule is not one of them. Its entry in the tree is a gitlink - the
+// commit it is pinned to - and its content lives in another repository, so
+// the archive leaves an empty directory there and the content is put back
+// separately. Counting the gitlink would make every repository with a
+// submodule look like an inexact archive.
 func (r *Repo) treeFileCount(rev string) (int, error) {
-	out, err := r.run("ls-tree", "-r", "--name-only", rev)
+	return treeFileCountIn(r.run, rev)
+}
+
+// treeFileCountIn counts the files in a revision's tree, read through the
+// given runner.
+func treeFileCountIn(run gitRunner, rev string) (int, error) {
+	out, err := run("ls-tree", "-r", "--full-tree", rev)
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, line := range strings.Split(out, "\n") {
-		if strings.TrimSpace(line) != "" {
-			n++
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
+		// "<mode> <type> <sha>\t<path>"
+		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == gitlinkMode {
+			continue // a submodule, not a file of this tree
+		}
+		n++
 	}
 	return n, nil
 }
@@ -200,6 +257,12 @@ func untar(r io.Reader, dir string) (int, error) {
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return files, err
 			}
+			// A symlink is a file of the tree: git counts it as one, and
+			// a checkout without it is not the tree. Leaving it out of
+			// the count made every repository with a symlink look like
+			// an inexact archive - and sent it down the fallback path,
+			// which writes to the audited repository.
+			files++
 		}
 	}
 }

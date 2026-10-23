@@ -405,13 +405,19 @@ func (r *Repo) commitBase(sha string) (string, error) {
 // blobAt resolves path at rev to a blob. The second result is false when the
 // path is not a tracked file there.
 func (r *Repo) blobAt(rev, path string) (string, bool, error) {
+	return blobAt(r.run, rev, path)
+}
+
+// blobAt resolves path at rev to a blob, read through the given runner.
+// The second result is false when the path is not a tracked file there.
+func blobAt(run gitRunner, rev, path string) (string, bool, error) {
 	if strings.TrimSpace(rev) == "" {
 		return "", false, errors.New("git: a revision is required")
 	}
 	if strings.TrimSpace(path) == "" {
 		return "", false, errors.New("git: a path is required")
 	}
-	out, err := r.run("ls-tree", "-z", "--full-tree", rev, "--", path)
+	out, err := run("ls-tree", "-z", "--full-tree", rev, "--", path)
 	if err != nil {
 		return "", false, fmt.Errorf("git: look up %q at %q: %w", path, rev, err)
 	}
