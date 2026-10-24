@@ -91,6 +91,17 @@ func skipFinding(repo gitRepo, repoRoot, rel string, sk goSkip, scope goScope,
 		if read.path == "" {
 			continue
 		}
+		// The read has to be one of the reasons this skip might fire.
+		//
+		// A skip is guarded by a condition, and the file matters to it
+		// when that condition is about the file. A read that the
+		// condition says nothing about is not the skip's dependency, and
+		// blaming the skip for it invents a high-severity finding out of
+		// an unrelated line - and the reader of the report has no way to
+		// tell that apart from a real one.
+		if !readBelongsToSkip(read, sk) {
+			continue
+		}
 		// The path in the source is relative to the file that mentions
 		// it, not to the repository root. A path like
 		// filepath.Join("..", "commit-corpus", "x.jsonl") in
@@ -132,6 +143,51 @@ func skipFinding(repo gitRepo, repoRoot, rel string, sk goSkip, scope goScope,
 				"覆盖率会把它算进去，但它一次都没跑过。", rel, sk.line),
 		sourceLine(lines, sk.line),
 		"确认这条跳过在 CI 里不会触发；如果它依赖某个本地才有的文件，把它入库")
+}
+
+// readBelongsToSkip reports whether a file read is one of the reasons the
+// skip might fire.
+//
+// The skip is guarded by a condition, and the file matters to that
+// condition in three ways:
+//
+//   - the condition is about the error the reading call returned:
+//     "cs, err := loadCorpus(p)" followed by "if err != nil { t.Skip(...) }";
+//   - the condition is about the reading call itself:
+//     "if !fileExists(p) { t.Skip(...) }";
+//   - the skip says so itself: "t.Skip(\"the corpus %s is missing\", p)".
+//
+// A read that none of these mention is not the skip's dependency. The skip
+// may still be reported - a skip is always worth mentioning - but the
+// file that is not in the repository is not the reason for it, and saying
+// otherwise is the kind of confident wrong claim this tool exists to stop
+// making.
+func readBelongsToSkip(r goRead, sk goSkip) bool {
+	if r.path == "" {
+		return false
+	}
+	for _, name := range r.binds {
+		if containsName(sk.guards, name) {
+			return true
+		}
+	}
+	for _, call := range r.calls {
+		if call != "" && containsName(sk.guards, call) {
+			return true
+		}
+	}
+	// The skip names the file itself.
+	return strings.Contains(sk.text, r.path)
+}
+
+// containsName reports whether a list of names holds one name.
+func containsName(names []string, name string) bool {
+	for _, n := range names {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ignoredSuffix describes whether a path is gitignored.

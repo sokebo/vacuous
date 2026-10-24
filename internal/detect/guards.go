@@ -50,6 +50,32 @@ func GuardLivenessWithOptions(root string, scope core.FileScope, opts Options) (
 	return out, nil
 }
 
+// gitHookNames are the names git runs as hooks.
+//
+// Git looks a hook up BY NAME. A file called "setup-dev-env.sh" sitting in
+// the hooks directory is never run by git, no matter how executable it is
+// and no matter what it does.
+//
+// Counting it as a guard means reporting "this guard has never run even
+// once" about a file git was never going to run - a CRITICAL accusation
+// about a script that installs a development environment.
+//
+// The list is the one in githooks(5). A hook git does not know about is
+// not a guard.
+var gitHookNames = map[string]bool{
+	"applypatch-msg": true, "pre-applypatch": true, "post-applypatch": true,
+	"pre-commit": true, "pre-merge-commit": true,
+	"prepare-commit-msg": true, "commit-msg": true, "post-commit": true,
+	"pre-rebase": true, "post-checkout": true, "post-merge": true,
+	"pre-push": true, "pre-receive": true, "update": true,
+	"post-receive": true, "post-update": true, "push-to-checkout": true,
+	"pre-auto-gc": true, "post-rewrite": true, "sendemail-validate": true,
+	"fsmonitor-watchman": true, "reference-transaction": true,
+	"post-index-change": true, "proc-receive": true,
+	"p4-changelist": true, "p4-prepare-changelist": true,
+	"p4-post-changelist": true, "p4-pre-submit": true,
+}
+
 // hookFindings checks the git hooks of a repository.
 func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Options) []core.Finding {
 	var out []core.Finding
@@ -65,6 +91,11 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 		var hooks []string
 		for _, e := range entries {
 			if e.IsDir() {
+				continue
+			}
+			// Git runs a hook by name. A file whose name is not one of
+			// them is not a guard, however executable it is.
+			if !gitHookNames[e.Name()] {
 				continue
 			}
 			// A hook that is not part of the repository is not this
@@ -484,7 +515,7 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 		if !runsAnyCommand(w.text, commands) {
 			continue
 		}
-		if !hasContinueOnError(w.text) {
+		if !continueOnErrorBreaksTests(w.text, commands) {
 			continue
 		}
 		out = append(out, finding(core.KindGuardNotInstalled, core.SevWarn,
@@ -492,9 +523,9 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 			"CI 里的测试失败不会阻断合并",
 			fmt.Sprintf(
 				".github/workflows/%s 里有 `continue-on-error: true`，"+
-					"而且这个 workflow 确实在跑测试。\n"+
+					"而且它落在跑测试的那一步上。\n"+
 					"测试失败的时候，CI 照样是绿的，合并照样能过 —— "+
-					"这个 workflow 存在，但它不拦住任何东西。", w.name),
+					"这一步存在，但它不拦住任何东西。", w.name),
 			"找到: continue-on-error: true",
 			"去掉它，或者让它只作用在真正可选的步骤上"))
 	}
@@ -597,20 +628,140 @@ func callsAnotherWorkflow(text string) bool {
 	return false
 }
 
-// hasContinueOnError reports whether a workflow opts out of failing.
+// wfBlock is one indentation block of a workflow file.
 //
-// Only a literal "true" counts. "continue-on-error: ${{ matrix.experimental }}"
-// is a deliberate choice about one job, and flagging it would be noise.
-func hasContinueOnError(text string) bool {
-	for _, line := range strings.Split(text, "\n") {
-		if !strings.Contains(line, "continue-on-error") {
+// A workflow is a YAML file, and the only thing this needs from YAML is
+// which lines belong together. Indentation says that: a line belongs to
+// the block of the nearest line above it that is indented less.
+type wfBlock struct {
+	indent int
+	start  int
+	end    int
+	step   bool
+}
+
+// workflowBlocks splits a workflow file into its indentation blocks.
+//
+// A block ends at the next line that is indented no further than the
+// block itself, which is how YAML nests.
+func workflowBlocks(lines []string) []wfBlock {
+	var blocks []wfBlock
+	var stack []int
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		if strings.Contains(line, "true") {
+		indent := indentWidth(line)
+		for len(stack) > 0 && blocks[stack[len(stack)-1]].indent >= indent {
+			blocks[stack[len(stack)-1]].end = i
+			stack = stack[:len(stack)-1]
+		}
+		isStep := strings.HasPrefix(trimmed, "- ")
+		if !isStep && !isYAMLKey(trimmed) {
+			continue
+		}
+		blocks = append(blocks, wfBlock{indent: indent, start: i, end: len(lines), step: isStep})
+		stack = append(stack, len(blocks)-1)
+	}
+	return blocks
+}
+
+// blockOwner returns the block a line belongs to.
+//
+// The owner is the innermost block that contains the line and is indented
+// less than the line itself: the step a step's setting belongs to, or the
+// job a job's setting belongs to.
+func blockOwner(blocks []wfBlock, index, indent int) int {
+	owner := -1
+	for i, b := range blocks {
+		if b.start > index || index >= b.end {
+			continue
+		}
+		if b.indent >= indent {
+			continue
+		}
+		if owner < 0 || b.indent > blocks[owner].indent {
+			owner = i
+		}
+	}
+	return owner
+}
+
+// blockRunsCommand reports whether a block mentions one of the commands.
+func blockRunsCommand(lines []string, b wfBlock, commands []string) bool {
+	if b.start < 0 || b.start >= len(lines) {
+		return false
+	}
+	end := b.end
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return runsAnyCommand(strings.Join(lines[b.start:end], "\n"), commands)
+}
+
+// continueOnErrorBreaksTests reports whether the workflow ignores the
+// failure of something that runs the tests.
+//
+// "continue-on-error: true" on a lint step does not make the tests
+// optional: the lint step is allowed to fail, and the test step still runs
+// and still blocks the merge. Only the step that runs the tests can turn a
+// red test run into a green one.
+//
+// The flag belongs to the block it is written in - a step, or a job - and
+// the question is whether THAT block runs the tests.
+func continueOnErrorBreaksTests(text string, commands []string) bool {
+	lines := strings.Split(text, "\n")
+	blocks := workflowBlocks(lines)
+	for i, line := range lines {
+		if !isContinueOnError(line) {
+			continue
+		}
+		owner := blockOwner(blocks, i, indentWidth(line))
+		if owner < 0 {
+			continue
+		}
+		if blockRunsCommand(lines, blocks[owner], commands) {
 			return true
 		}
 	}
 	return false
+}
+
+// isContinueOnError reports whether a line opts out of failing.
+//
+// Only a literal "true" counts. "continue-on-error: ${{ matrix.experimental }}"
+// is a deliberate choice about one job, and flagging it would be noise.
+func isContinueOnError(line string) bool {
+	return strings.Contains(line, "continue-on-error") && strings.Contains(line, "true")
+}
+
+// indentWidth returns how far a line is indented.
+func indentWidth(line string) int {
+	n := 0
+	for _, r := range line {
+		switch r {
+		case ' ', '\t':
+			n++
+		default:
+			return n
+		}
+	}
+	return n
+}
+
+// isYAMLKey reports whether a line starts a mapping key.
+func isYAMLKey(trimmed string) bool {
+	i := strings.Index(trimmed, ":")
+	if i <= 0 {
+		return false
+	}
+	for _, r := range trimmed[:i] {
+		if r == ' ' || r == '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 // matchedCommands returns the commands that the text actually mentions.

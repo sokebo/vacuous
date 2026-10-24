@@ -83,7 +83,7 @@ func errorPathLeavesNonEmpty(idx *funcIndex, callee, method string, verdict empt
 // valueMakesBranchRun reports whether the value an error path returns makes
 // the guarded branch run.
 //
-// The branch is guarded by a comparison against zero, and the operator
+// The branch is guarded by a comparison against a limit, and the operator
 // decides which values make it run:
 //
 //	n != 0   any value other than zero runs the branch
@@ -92,11 +92,17 @@ func errorPathLeavesNonEmpty(idx *funcIndex, callee, method string, verdict empt
 // That difference matters. A -1 sentinel silences "n != 0" — the test fails
 // loudly and is not hollow — but it does NOT silence "n > 0": -1 > 0 is
 // false, the branch stays untaken, and the guard is still skipped.
+//
+// And the limit matters as much as the operator: "n > 5" is a different
+// question from "n > 0". A value of 3 makes the first branch run and
+// leaves the second one untaken, so a checker that keeps the operator and
+// drops the limit answers "n > 5" with the answer to "n > 0" — and reports
+// a test that is not hollow as hollow.
 func valueMakesBranchRun(e ast.Expr, verdict emptinessVerdict) bool {
 	if verdict.direct {
-		return countMakesBranchRun(e, verdict.op)
+		return countMakesBranchRun(e, verdict.op, verdict.limit)
 	}
-	return collectionMakesBranchRun(e)
+	return collectionMakesBranchRun(e, verdict.op, verdict.limit)
 }
 
 // countMakesBranchRun reports whether a returned count makes the guarded
@@ -105,16 +111,16 @@ func valueMakesBranchRun(e ast.Expr, verdict emptinessVerdict) bool {
 // Only a literal can answer this. A count computed by a call, or read from
 // a variable, cannot be known here, and "cannot be known" means the finding
 // stands.
-func countMakesBranchRun(e ast.Expr, op string) bool {
+func countMakesBranchRun(e ast.Expr, op string, limit int64) bool {
 	v, ok := intLiteralValue(e)
 	if !ok {
 		return false
 	}
 	switch op {
 	case "!=":
-		return v != 0
+		return v != limit
 	case ">":
-		return v > 0
+		return v > limit
 	}
 	return false
 }
@@ -124,9 +130,19 @@ func countMakesBranchRun(e ast.Expr, op string) bool {
 //
 // Only a literal with elements answers this. A call cannot: the function
 // that builds the collection may return it empty.
-func collectionMakesBranchRun(e ast.Expr) bool {
+func collectionMakesBranchRun(e ast.Expr, op string, limit int64) bool {
 	lit, ok := e.(*ast.CompositeLit)
-	return ok && len(lit.Elts) > 0
+	if !ok {
+		return false
+	}
+	n := int64(len(lit.Elts))
+	switch op {
+	case "!=":
+		return n != limit
+	case ">":
+		return n > limit
+	}
+	return false
 }
 
 // intLiteralValue returns the value of an integer literal, including a
@@ -176,4 +192,64 @@ func secondResultIsError(fn *ast.FuncDecl) bool {
 	}
 	id, ok := fields[1].Type.(*ast.Ident)
 	return ok && id.Name == "error"
+}
+
+// plainResultTypes are the result types that cannot carry an error.
+//
+// A function whose second result is one of these has no error path at all.
+// "name, _ := lookup(k)" throws away a boolean, not an error - and a report
+// that calls that a discarded error accuses the code of throwing away
+// something it never had.
+var plainResultTypes = map[string]bool{
+	"bool": true, "string": true,
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"uintptr": true, "byte": true, "rune": true,
+	"float32": true, "float64": true,
+	"complex64": true, "complex128": true,
+}
+
+// secondResultIsPlainValue reports whether a function's second result is
+// definitely not an error.
+//
+// "Definitely" is the whole point. A named type that happens to implement
+// error ("type Failure struct{}") cannot be told apart from any other
+// named type without reading its declaration, so a result of that type is
+// NOT plain: the finding stands, because there is no evidence against it.
+//
+// A builtin scalar IS plain. A bool is a bool.
+func secondResultIsPlainValue(fn *ast.FuncDecl) bool {
+	t := secondResultType(fn)
+	if t == nil {
+		return false
+	}
+	id, ok := t.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	return plainResultTypes[id.Name]
+}
+
+// secondResultType returns the type of a function's second result.
+//
+// The results may be written one by one ("(int, error)") or in one group
+// ("(a, b int)"), and the two spellings have to give the same answer.
+func secondResultType(fn *ast.FuncDecl) ast.Expr {
+	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
+		return nil
+	}
+	count := 0
+	for _, f := range fn.Type.Results.List {
+		names := len(f.Names)
+		if names == 0 {
+			names = 1
+		}
+		if count+names >= 2 {
+			// The second result lives in this field, and the field's
+			// type is its type.
+			return f.Type
+		}
+		count += names
+	}
+	return nil
 }

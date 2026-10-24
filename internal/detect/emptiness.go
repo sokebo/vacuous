@@ -108,6 +108,7 @@ func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 		out = append(out, goEmptiness{
 			name:   name,
 			op:     op,
+			limit:  limit,
 			line:   w.line(bin.Pos()),
 			direct: target.direct,
 		})
@@ -208,8 +209,16 @@ func constValue(e ast.Expr) (int64, bool) {
 
 // branchFailsTest reports whether the guarded branch makes the test fail.
 //
-// The names are the ones the testing package uses. A branch that fails the
-// test is an assertion; anything else is ordinary code.
+// The receiver decides, not the method name.
+//
+// "t.Fatal" fails the test. "log.Error" does not: it writes a line and
+// the test carries on, passing. Matching the method name alone turns
+// every logger call in the guarded branch into an assertion - and then the
+// tool reports a hollow test that is not hollow, and accuses a line that
+// only ever logged something.
+//
+// So the names are the ones the testing package uses, and the receiver has
+// to look like a test object.
 func branchFailsTest(body *ast.BlockStmt) bool {
 	if body == nil {
 		return false
@@ -220,18 +229,81 @@ func branchFailsTest(body *ast.BlockStmt) bool {
 		if !ok {
 			return true
 		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		switch sel.Sel.Name {
-		case "Fatal", "Fatalf", "Fatalln", "Error", "Errorf", "Fail", "FailNow":
+		if failsTheTest(call) {
 			found = true
 			return false
 		}
 		return true
 	})
 	return found
+}
+
+// failsTheTest reports whether a call fails the test it runs in.
+//
+// The two families are treated differently on purpose:
+//
+//   - Fatal and Fail only exist on test objects and on process-killing
+//     helpers ("log.Fatal" ends the process). Either way the test run
+//     ends, so the receiver does not have to be recognised - and refusing
+//     to recognise it would lose a real finding on a repository that
+//     wraps its test object in its own type.
+//   - Error and Errorf are everywhere. "log.Error", "logger.Error" and
+//     "l.Error" are the ordinary way to write something down, and none of
+//     them fail a test.
+func failsTheTest(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	recv := receiverName(sel)
+	if recv == "" {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "Fatal", "Fatalf", "Fatalln", "Fail", "FailNow":
+		return true
+	case "Error", "Errorf":
+		return isTestReceiver(recv)
+	}
+	return false
+}
+
+// receiverName returns the name of the receiver a method call goes through.
+func receiverName(sel *ast.SelectorExpr) string {
+	switch x := sel.X.(type) {
+	case *ast.Ident:
+		return x.Name
+	case *ast.SelectorExpr:
+		// "s.t.Fatal" - the receiver is the last name in the chain.
+		return x.Sel.Name
+	}
+	return ""
+}
+
+// isTestReceiver reports whether a receiver name looks like a test object.
+//
+// A test receiver is conventionally one to two lowercase letters ("t", "b",
+// "tb", "tt"), and the assertion libraries have names of their own.
+//
+// Two letters, not three: "log" is three letters, and "log.Error" does
+// not fail anything. The difference between "tt" and "log" is exactly one
+// letter.
+func isTestReceiver(name string) bool {
+	switch name {
+	case "t", "b", "tb", "tt", "st", "tc":
+		return true
+	case "assert", "require", "suite":
+		return true
+	}
+	if len(name) == 0 || len(name) > 2 {
+		return false
+	}
+	for _, r := range name {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
 }
 
 // branchBailsOut reports whether the guarded branch stops the code from
