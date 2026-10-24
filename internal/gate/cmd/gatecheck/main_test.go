@@ -72,6 +72,71 @@ func seedRepo(t *testing.T) string {
 	return dir
 }
 
+// TestRunCheckFailsClosedOnABlindStateFile 守的是命令这一层的同一个洞。
+//
+// 判据在 gate 包里是对的，命令却不一定会把它透出来：check 的退出码必须
+// 把「看不懂的状态」当成「判不出来」（2），不能报成「没变化」（0）。
+//
+// 现场就是真实的那一个：旧版本的 record 写出来的 targets: null。
+func TestRunCheckFailsClosedOnABlindStateFile(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	if rc := runRecord(dir, []string{target}, true, false); rc != 0 {
+		t.Fatalf("记录状态失败，退出码 %d", rc)
+	}
+
+	// 把名单抹掉，不留「有意只盯代码」的标记 —— 旧版本写出来的那种文件。
+	path, err := gate.StateFile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blind := `{"commit":"x","fingerprint":"y","targets":null}`
+	if err := os.WriteFile(path, []byte(blind), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if rc := runCheck(dir, nil); rc != 2 {
+		t.Errorf("看不懂的状态应该是 2（判不出来），实际 %d —— 这等于把「没核验过」说成「没问题」", rc)
+	}
+}
+
+// TestRunCheckIsQuietForADeliberateCodeOnlyState 守的是反向：
+// 有意只盯代码（--force 且不写 -target）是合法的用法，
+// 什么都没动的时候 check 必须安静 —— 退出码 0。
+//
+// 判错的代价是双向的：报成「有变化」，闸门每一轮都重跑完整的六仓 dogfood，
+// 而它本来就一个仓都不盯。
+func TestRunCheckIsQuietForADeliberateCodeOnlyState(t *testing.T) {
+	dir := seedRepo(t)
+
+	// --force 且不带 -target = 明确要求「只盯代码」。
+	if rc := runRecord(dir, nil, true, true); rc != 0 {
+		t.Fatalf("有意只盯代码的记录应该成功，实际退出码 %d", rc)
+	}
+
+	if rc := runCheck(dir, nil); rc != 0 {
+		t.Errorf("有意只盯代码、且什么都没变时应该是 0，实际 %d —— 闸门会每一轮都空跑一遍", rc)
+	}
+}
+
+// TestRunRemoteIsQuietForADeliberateCodeOnlyState 守的是同一件事在
+// remote 这一只眼睛上。
+//
+// 「没有要问的仓」不是「问不出来」：答案就是「没变化」。
+// 报 2 会让 remote 每一轮都喊「有变化」—— 那正是 3.18 那个自毁基线的病。
+func TestRunRemoteIsQuietForADeliberateCodeOnlyState(t *testing.T) {
+	dir := seedRepo(t)
+
+	if rc := runRecord(dir, nil, true, true); rc != 0 {
+		t.Fatalf("有意只盯代码的记录应该成功，实际退出码 %d", rc)
+	}
+
+	if rc := runRemote(dir, nil); rc != 0 {
+		t.Errorf("有意只盯代码时 remote 应该是 0（没有要问的仓），实际 %d", rc)
+	}
+}
+
 // TestRunRecordRefusesToWriteAStateWithoutTargets 是这次修的病根。
 //
 // 判据：一次不带 -target 的 record 绝不能写出一个「没有仓库名单」的状态。

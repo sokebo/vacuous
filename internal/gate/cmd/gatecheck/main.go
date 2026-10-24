@@ -91,6 +91,16 @@ func runRemote(repo string, extraTargets stringList) int {
 			fmt.Println("  判不出来不等于没变化，按「有变化」处理。")
 			return 2
 		}
+		// 这份状态是**有意**只盯代码的 —— 名单是空的，但那是说清楚的。
+		// 「没有要问的仓」不是「问不出来」：答案就是「没变化」。
+		//
+		// 报 2（判不出来）会让闸门每一轮都喊「有变化」，于是每一轮都重跑
+		// 完整的六仓 dogfood —— 而这个仓本来就一个都不盯。
+		// 那正是 3.18 那个自毁基线的病：信号跟现实脱钩了。
+		if st.CodeOnly {
+			fmt.Println("NO CHANGE: 这份状态有意只盯代码，没有要问的被审仓")
+			return 0
+		}
 		for _, t := range st.Targets {
 			targets = append(targets, t.Path)
 		}

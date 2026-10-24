@@ -40,6 +40,22 @@ type State struct {
 
 	// Targets 是被审仓库的路径和它们各自的 HEAD。
 	Targets []Target `json:"targets"`
+
+	// CodeOnly 表示这份状态是**有意**只盯工具代码、不盯任何被审仓。
+	//
+	// 为什么需要这个标记：名单为空有两种完全不同的含义 ——
+	// 「有意不盯」和「名单被写空了」。而在 JSON 里这两种长得一模一样：
+	// 都是 targets 为空、其余字段照旧。于是闸门分不出它们，
+	// 只能一律当成「没变化」—— 后一种情况下闸门对所有被审仓全盲，
+	// 症状是 NO CHANGE、退出码 0，跟「一切正常」完全一样。
+	//
+	// ★ 这个标记**只在有人明确要求「只盯代码」时**才写。
+	// 旧版本写出来的状态文件没有它 —— 那些文件正是「分不出」的，
+	// 所以闸门遇到它们必须 fail closed，而不是替它们猜一个意思。
+	//
+	// 它让「有意为之」和「出了岔子」分得开：前者照常只盯代码，
+	// 后者判不出来（退出码 2），按「有变化」处理。
+	CodeOnly bool `json:"code_only,omitempty"`
 }
 
 // Target 是一个被审仓库。
@@ -281,6 +297,17 @@ func workingContentHash(dir, rel string) string {
 // 读不出来就是读不出来 —— 返回错误，不返回一份空状态。
 // 空状态和「确实什么都没变」在结果上没法区分，拿空状态当「没变化」就是
 // 把「判不出来」报成了「没问题」。
+//
+// ★ 它还要挡一种**读得出来、但没有意义**的状态：名单是空的、而且没标明
+// 「有意只盯代码」。
+//
+// 这种状态在磁盘上真实存在：旧版本的 record 写出来的就是
+// `{"targets": null}` —— 之后每一轮 check 都报 NO CHANGE、退出码 0，
+// 而闸门一个被审仓都不看。**它读得出来，但它没有回答任何问题。**
+//
+// 所以这里不猜：读出来之后验一下「这份状态到底想盯什么」。
+// 答不上来 → 报错 → 退出码 2 → 按「有变化」处理 → 重跑一轮，
+// 重跑完 record 会把状态重新写对。
 func LoadState(repoDir string) (State, error) {
 	path, err := StateFile(repoDir)
 	if err != nil {
@@ -297,7 +324,41 @@ func LoadState(repoDir string) (State, error) {
 	if st.Fingerprint == "" {
 		return State{}, fmt.Errorf("状态文件里没有指纹")
 	}
+	if err := validateScope(st); err != nil {
+		return State{}, err
+	}
 	return st, nil
+}
+
+// validateScope 验的是「这份状态到底想盯什么」。
+//
+// 名单为空有两种完全不同的含义，而 JSON 里长得一模一样：
+//
+//	「有意只盯代码」   —— 人明确要求的，闸门照常只盯代码，安静是对的。
+//	「名单被写空了」   —— 出了岔子，闸门一个被审仓都不看，而它报 NO CHANGE。
+//
+// 第二种在磁盘上真实存在（旧版本的 record 写出来的就是 targets: null）。
+// 分不出的时候**不许替它猜一个意思** —— 猜「有意」的结果是闸门从此静默失明，
+// 症状是 NO CHANGE、退出码 0，跟「一切正常」完全一样。
+//
+// 所以：名单为空就必须有 code_only 标记来表明它是故意的；
+// 没有标记 → 判不出来 → 退出码 2 → 按「有变化」处理。
+//
+// 反过来也不许「有标记就信」：名单不为空却标着 code_only，
+// 两头打架，说不清想盯什么 —— 那也是判不出来。
+func validateScope(st State) error {
+	if len(st.Targets) == 0 && !st.CodeOnly {
+		return fmt.Errorf(
+			"状态文件里没有被审仓的名单，也没有标明「有意只盯代码」—— 闸门分不出这是有意还是出了岔子，" +
+				"而猜错的后果是它对所有被审仓静默失明（报的还是「没变化」）" +
+				"（重新 record 一次，把被审仓名单写回去）")
+	}
+	if len(st.Targets) > 0 && st.CodeOnly {
+		return fmt.Errorf(
+			"状态文件里既有被审仓名单，又标着「只盯代码」—— 这两句话说不到一块去，" +
+				"闸门不知道该听哪一句（重新 record 一次）")
+	}
+	return nil
 }
 
 // SaveState 写下当前状态。
@@ -315,6 +376,16 @@ func SaveState(repoDir string, st State) error {
 }
 
 // CurrentState 采集此刻的状态。
+//
+// ★ 名单为空时，它把「有意只盯代码」这件事**写进状态里**（CodeOnly=true）。
+//
+// 这一步是 load 那边那道校验能成立的前提：空名单之所以能被分辨，
+// 是因为「有意」这件事被记下来了。少了这个标记，磁盘上两种空名单
+// 长得一模一样，闸门只能靠猜 —— 而猜错的后果是静默失明。
+//
+// 谁会走到这一步？只有 record 命令，而 record 在写之前会先问：
+// 一个被审仓都不记，必须显式 --force。所以走到这里的空名单，
+// 一定是有意为之的。
 func CurrentState(repoDir string, targets []string) (State, error) {
 	commit, err := Head(repoDir)
 	if err != nil {
@@ -340,6 +411,7 @@ func CurrentState(repoDir string, targets []string) (State, error) {
 		}
 		st.Targets = append(st.Targets, Target{Path: abs, Head: head, Working: wf})
 	}
+	st.CodeOnly = len(st.Targets) == 0
 	return st, nil
 }
 
@@ -428,8 +500,18 @@ func ExitCode(changes []Change) int {
 //
 // 判不出来的地方一律算成一条 unknown 变更 —— 宁可多跑一次，不要在
 // 「其实判不出来」的情况下报「没问题」。
+//
+// ★ 它自己也要验一遍「这份状态到底想盯什么」（validateScope）。
+//
+// LoadState 已经验过了，命令层走不到这里。但 Check 是导出的函数，
+// 判据得站在**结论产生的那一层**才站得住 ——
+// 一份看不懂的状态落到 Check 手里，报「什么都没变」就是假的。
 func Check(repoDir string, st State) []Change {
 	var changes []Change
+
+	if err := validateScope(st); err != nil {
+		return []Change{{Kind: "unknown", Detail: err.Error()}}
+	}
 
 	fp, err := Fingerprint(repoDir)
 	if err != nil {
