@@ -163,3 +163,71 @@ func TestRunCheckExitCodes(t *testing.T) {
 		t.Errorf("判不出来应该是 2，实际 %d", rc)
 	}
 }
+
+// 远端命令这一层的测试。
+//
+// 判据在 gate 包里，但真正被调用的是这个命令。这里守的是命令会不会把
+// 「读不出来」说成「没变化」—— 那是这个命令最坏的一种错：退出码 0、
+// 输出安静，看起来跟一切正常一模一样。
+//
+// 本地路径当远端，整个测试不联网。
+
+// cloneOf 克隆一个仓（本地路径当远端）。
+func cloneOf(t *testing.T, remote string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cmd := exec.Command("git", "clone", "-q", remote, dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("克隆失败: %v\n%s", err, out)
+	}
+	return dir
+}
+
+func TestRunRemoteReportsLocalCloneBehind(t *testing.T) {
+	remote := seedRepo(t)
+	local := cloneOf(t, remote)
+
+	// 远端往前走一步，本地没 fetch。
+	runGit(t, remote, "commit", "-q", "--allow-empty", "-m", "远端往前走")
+
+	if rc := runRemote(t.TempDir(), stringList{local}); rc != 1 {
+		t.Errorf("本地落后了应该是 1（变了），实际 %d", rc)
+	}
+}
+
+// 负对照：远端读不通必须是 2（判不出来），不是 0（没变化）。
+func TestRunRemoteCannotTellWhenRemoteIsUnreachable(t *testing.T) {
+	remote := seedRepo(t)
+	local := cloneOf(t, remote)
+	runGit(t, local, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "nowhere"))
+
+	if rc := runRemote(t.TempDir(), stringList{local}); rc != 2 {
+		t.Errorf("远端读不通应该是 2（判不出来），实际 %d —— 这等于把「没核验过」说成「没问题」", rc)
+	}
+}
+
+// 远端没往前走时必须安静（0）。
+func TestRunRemoteIsQuietWhenRemoteHasNotMoved(t *testing.T) {
+	remote := seedRepo(t)
+	local := cloneOf(t, remote)
+
+	if rc := runRemote(t.TempDir(), stringList{local}); rc != 0 {
+		t.Errorf("远端没动应该是 0，实际 %d", rc)
+	}
+}
+
+// 不给 -target 时，问的是记录里的那份名单。
+func TestRunRemoteUsesTheRecordedTargets(t *testing.T) {
+	dir := seedRepo(t)
+	remote := seedRepo(t)
+	local := cloneOf(t, remote)
+
+	if rc := runRecord(dir, []string{local}, true, false); rc != 0 {
+		t.Fatalf("记录状态失败，退出码 %d", rc)
+	}
+	runGit(t, remote, "commit", "-q", "--allow-empty", "-m", "远端往前走")
+
+	if rc := runRemote(dir, nil); rc != 1 {
+		t.Errorf("记录里的仓远端前进了应该是 1，实际 %d —— 名单没被用上", rc)
+	}
+}
