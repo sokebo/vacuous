@@ -48,6 +48,8 @@ func main() {
 		fs.Var(&targets, "target", "额外要盯的仓库（可重复）")
 	case "record":
 		fs.Var(&targets, "target", "被审仓库路径（可重复）")
+	case "remote":
+		fs.Var(&targets, "target", "要问远端的仓库（可重复；不给就用记录里的名单）")
 	default:
 		usage()
 		os.Exit(2)
@@ -61,7 +63,87 @@ func main() {
 		os.Exit(runCheck(*repo, targets))
 	case "record":
 		os.Exit(runRecord(*repo, targets, *yes, *force))
+	case "remote":
+		os.Exit(runRemote(*repo, targets))
 	}
+}
+
+// runRemote 问被审仓的远端：「你往前走了吗？」
+//
+// 它和 check 是两只眼睛：check 量本地（HEAD + 工作树），remote 量远端。
+// 本地克隆停在旧提交上时，check 说「没变化」而远端已经往前走了 —— 这时候
+// 唯一能看见那一步的就是这里。
+//
+// 名单默认取记录里的被审仓；-target 可以另外指定。远端读不出来时按
+// 「判不出来」处理，退出码 2 —— 不是「没变化」。
+func runRemote(repo string, extraTargets stringList) int {
+	dir, err := filepath.Abs(repo)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "路径 %s 解析失败: %v\n", repo, err)
+		return 2
+	}
+
+	targets := extraTargets
+	if len(targets) == 0 {
+		st, err := gate.LoadState(dir)
+		if err != nil {
+			fmt.Printf("UNKNOWN:\n  - [remote] 读不出被审仓名单: %v\n", err)
+			fmt.Println("  判不出来不等于没变化，按「有变化」处理。")
+			return 2
+		}
+		for _, t := range st.Targets {
+			targets = append(targets, t.Path)
+		}
+	}
+	if len(targets) == 0 {
+		fmt.Println("UNKNOWN:")
+		fmt.Println("  - [remote] 没有被审仓名单可问")
+		fmt.Println("  判不出来不等于没变化，按「有变化」处理。")
+		return 2
+	}
+
+	var results []gate.RemoteResult
+	for _, t := range targets {
+		abs, err := filepath.Abs(t)
+		if err != nil {
+			results = append(results, gate.RemoteResult{
+				Repo:   t,
+				Status: gate.RemoteUnknown,
+				Detail: fmt.Sprintf("路径 %s 解析失败: %v", t, err),
+			})
+			continue
+		}
+		results = append(results, gate.CheckRemote(abs, "origin"))
+	}
+
+	var changed, unknown []gate.RemoteResult
+	for _, r := range results {
+		switch r.Status {
+		case gate.RemoteChanged:
+			changed = append(changed, r)
+		case gate.RemoteUnknown:
+			unknown = append(unknown, r)
+		}
+	}
+
+	if len(changed) == 0 && len(unknown) == 0 {
+		fmt.Printf("NO CHANGE: %d 个仓的远端都没往前走\n", len(results))
+		return 0
+	}
+	if len(changed) > 0 {
+		fmt.Println("CHANGED:")
+		for _, r := range changed {
+			fmt.Printf("  - [remote] %s: %s\n", filepath.Base(r.Repo), r.Detail)
+		}
+	}
+	if len(unknown) > 0 {
+		fmt.Println("UNKNOWN:")
+		for _, r := range unknown {
+			fmt.Printf("  - [remote] %s: %s\n", filepath.Base(r.Repo), r.Detail)
+		}
+		fmt.Println("  判不出来不等于没变化，按「有变化」处理。")
+	}
+	return gate.RemoteExitCode(results)
 }
 
 func runCheck(repo string, extraTargets stringList) int {
@@ -189,9 +271,13 @@ func workingState(t gate.Target) string {
 func usage() {
 	fmt.Fprint(os.Stderr, `用法:
   gatecheck check [-repo DIR]              判断有没有需要重跑的东西
+  gatecheck remote [-repo DIR]            问被审仓的远端：你往前走了吗
   gatecheck record -yes -target DIR ...    记录此刻的状态（核验完成之后）
 
-退出码: check 0=没变 1=变了 2=判不出来; record 0=记好了 2=拒绝 3=没确认
+退出码: check 0=没变 1=变了 2=判不出来; remote 同左; record 0=记好了 2=拒绝 3=没确认
+
+check 量的是本地：HEAD 和工作树。远端往前走而本地没 fetch 时，它看不见 ——
+那时候要问 remote。remote 读不通时退出码是 2，不是 0。
 
 record 不会悄悄丢掉正在盯的被审仓：不带 -target、或比上次少几个，都会被拒绝。
 确实要放弃盯某个仓，加 --force。

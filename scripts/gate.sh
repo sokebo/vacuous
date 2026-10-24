@@ -12,10 +12,16 @@
 #
 # 用法：
 #   scripts/gate.sh check                     只读地判断有没有需要重跑的东西
+#   scripts/gate.sh remote                    问被审仓的远端：你往前走了吗
 #   scripts/gate.sh record -yes -target DIR    记录此刻的状态（核验完成之后）
 #
-# 退出码（check）：0 = 什么都没变；1 = 有东西变了；2 = 判不出来。
+# 退出码（check / remote）：0 = 什么都没变；1 = 有东西变了；2 = 判不出来。
 # 「判不出来」按「有变化」处理 —— 宁可多跑一次，不要把判不出来说成没问题。
+#
+# check 和 remote 是两只眼睛：check 量**本地**（HEAD + 工作树），不联网；
+# remote 量**远端**（本地 HEAD 追的那条上游分支，远端的尖端是不是本地 HEAD
+# 的祖先），要联网，所以单独一条命令 —— 把网络塞进 check，只会让它天天喊
+# 「判不出来」。两个都不并进对方的退出码语义。
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
