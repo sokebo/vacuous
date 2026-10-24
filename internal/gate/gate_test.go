@@ -391,6 +391,150 @@ func TestCheckFailsClosedWhenTargetIsGone(t *testing.T) {
 	}
 }
 
+// TestLoadStateRefusesABlindStateFile 守的是这次修的病根。
+//
+// 一份「读得出来、但没有意义」的状态：名单是空的，而且没标明「有意只盯代码」。
+//
+// 这种文件在磁盘上真实存在 —— 旧版本的 record 写出来的就是 targets: null。
+// 闸门读到它的时候，一个被审仓都不看，而它报的是 NO CHANGE、退出码 0。
+// **症状和「一切正常」完全一样。**
+//
+// 所以 LoadState 必须报错：读不出来 ≠ 没问题，这里是「读出来了但答不上任何问题」。
+func TestLoadStateRefusesABlindStateFile(t *testing.T) {
+	dir := seedRepo(t)
+
+	st, err := CurrentState(dir, []string{seedRepo(t)})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 把名单抹掉，**并且**不留下「有意只盯代码」的标记 ——
+	// 这正是旧版本写出来的那种文件。
+	path, err := StateFile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blind := `{"commit":"x","fingerprint":"y","targets":null}`
+	if err := os.WriteFile(path, []byte(blind), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadState(dir); err == nil {
+		t.Error("一份没有名单、也没说清意图的状态必须被拒绝 —— 闸门会对着它报「没变化」，而它其实一个仓都没看")
+	}
+}
+
+// TestCheckFailsClosedWhenTheStateIsBlind 守的是同一件事在**判据这一层**。
+//
+// LoadState 已经挡住了，命令层走不到 Check。但 Check 是导出的函数 ——
+// 判据得站在结论产生的那一层才站得住。
+func TestCheckFailsClosedWhenTheStateIsBlind(t *testing.T) {
+	dir := seedRepo(t)
+
+	changes := Check(dir, State{Commit: "x", Fingerprint: "y"})
+	if len(changes) == 0 {
+		t.Fatal("看不懂的状态落到 Check 手里，报「什么都没变」就是假的")
+	}
+	if changes[0].Kind != "unknown" {
+		t.Errorf("应该是 unknown，实际是 %q", changes[0].Kind)
+	}
+}
+
+// TestCurrentStateRecordsCodeOnlyWhenThereAreNoTargets 守的是「有意」这件事
+// 真的被记下来了。
+//
+// 这是整道校验能成立的前提：空名单之所以能被分辨，
+// 是因为「有意只盯代码」被写进了状态文件。少了这个标记，
+// 磁盘上两种空名单长得一模一样。
+func TestCurrentStateRecordsCodeOnlyWhenThereAreNoTargets(t *testing.T) {
+	dir := seedRepo(t)
+
+	st, err := CurrentState(dir, nil)
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if !st.CodeOnly {
+		t.Error("一个被审仓都不记时，必须把「有意只盯代码」记进状态")
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 写出去再读回来，标记得还在 —— 不然这道校验就是空的。
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("有意只盯代码的状态不该被拒绝: %v", err)
+	}
+	if !loaded.CodeOnly {
+		t.Error("code_only 标记在存盘之后丢了")
+	}
+}
+
+// TestCurrentStateIsNotCodeOnlyWhenThereAreTargets 守的是反向：有名单时
+// 不许标「只盯代码」—— 那两句话说不到一块去。
+func TestCurrentStateIsNotCodeOnlyWhenThereAreTargets(t *testing.T) {
+	dir := seedRepo(t)
+
+	st, err := CurrentState(dir, []string{seedRepo(t)})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if st.CodeOnly {
+		t.Error("有被审仓时不许标「只盯代码」")
+	}
+}
+
+// TestCheckIsQuietForADeliberateCodeOnlyState 守的是「宁可漏报不可误伤」。
+//
+// 有意只盯代码的状态是合法的 —— usage 里就写着「确实只想盯代码，就加 --force」。
+// 什么都没动的时候，它必须安静。
+//
+// 判错的代价是双向的：报成「有变化」，闸门就每一轮都喊，于是每一轮都重跑
+// 完整的六仓 dogfood —— 而这个仓本来就一个都不盯（3.18 那个自毁基线的病）。
+func TestCheckIsQuietForADeliberateCodeOnlyState(t *testing.T) {
+	dir := seedRepo(t)
+
+	st, err := CurrentState(dir, nil)
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	if changes := Check(dir, loaded); len(changes) != 0 {
+		t.Errorf("有意只盯代码、且什么都没动时必须安静，却报了: %+v", changes)
+	}
+}
+
+// TestLoadStateRefusesAStateThatSaysBothThings 守的是「有标记就信」的反面。
+//
+// 名单不为空却标着「只盯代码」—— 两句话打架，说不清想盯什么。
+// 那也是判不出来。
+func TestLoadStateRefusesAStateThatSaysBothThings(t *testing.T) {
+	dir := seedRepo(t)
+
+	st, err := CurrentState(dir, []string{seedRepo(t)})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	st.CodeOnly = true
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	if _, err := LoadState(dir); err == nil {
+		t.Error("既有名单又标着「只盯代码」的状态必须被拒绝 —— 闸门不知道该听哪一句")
+	}
+}
+
 // TestValidateRecordTargetsRefusesEmptyList 守的是「静默失明」这个洞。
 //
 // 一次不带 -target 的 record 会写出一个没有仓库名单的状态：从那以后
