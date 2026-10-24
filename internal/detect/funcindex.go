@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // localFunc describes a function defined in the package under inspection.
@@ -58,7 +60,20 @@ func buildFuncIndex(fset *token.FileSet, f *ast.File) *funcIndex {
 //
 // The helper that reads the corpus is often in a different file of the
 // same package than the test that calls it.
-func packageFuncIndex(root, rel string) *funcIndex {
+//
+// The scope decides which files count as "this package". It must be the same
+// list the rest of the analysis is held to — the files the repository
+// actually contains.
+//
+// Why that matters: scanning the directory instead would read files that are
+// not in the repository. An untracked helper on a developer's disk would then
+// change the conclusion: the same HEAD would report "this skip depends on an
+// uncommitted file" (high) with the helper present and "there is a skip
+// statement" (warn) without it. And the gate cannot see that difference —
+// the working-tree fingerprint measures the *tracked* files that differ from
+// HEAD, and an untracked file is not among them. "No change" and "the
+// conclusion changed" would both be true, and neither one would look wrong.
+func packageFuncIndex(root, rel string, scope core.FileScope) *funcIndex {
 	abs := filepath.Join(root, rel)
 	fset, f, err := parseGoFile(abs)
 	if err != nil {
@@ -74,6 +89,13 @@ func packageFuncIndex(root, rel string) *funcIndex {
 	}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		// A file that is not in the scope is not part of this repository.
+		// Reading it would let a file the repository does not contain decide
+		// what the report says.
+		otherRel := joinRepoPath(filepath.ToSlash(filepath.Dir(rel)), e.Name())
+		if !scope.Allows(otherRel) {
 			continue
 		}
 		otherAbs := filepath.Join(dir, e.Name())

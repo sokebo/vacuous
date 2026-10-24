@@ -51,6 +51,19 @@ import (
 type Options struct {
 	// Config overrides the default keywords and directories.
 	Config map[string]any
+
+	// Scope says which files this analysis may read.
+	//
+	// It is the list the conclusion is supposed to be built from: the files
+	// the repository contains. A checker that reads a file outside it lets
+	// that file decide what the report says — and the gate cannot see files
+	// outside it either, so "no change" and "the conclusion changed" would
+	// both be true.
+	//
+	// The zero Options has no scope, which means "no file is in scope". A
+	// checker that needs one must say so rather than silently reading
+	// everything on disk.
+	Scope *core.FileScope
 }
 
 const (
