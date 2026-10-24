@@ -80,6 +80,71 @@ func errorPathLeavesNonEmpty(idx *funcIndex, callee, method string, verdict empt
 	return found
 }
 
+// errorPathValue reports what the error path of the called function leaves
+// behind, when this repository shows it.
+//
+// The second result is a non-zero number when the function returns a sentinel
+// with its error ("return -1, errors.New(...)"), and it is "known" when the
+// repository shows a number at all.
+//
+// Why the report needs this: the sentence "加载失败时 n 是空的（零值）" is a
+// claim about the function behind the call. When the tool has just read that
+// function and seen it leave -1, the sentence is not a cautious assumption -
+// it is a false statement about code in the very repository being audited.
+//
+// The two cases are therefore told apart:
+//
+//   - the value is known and it is zero → the sentence is true, say it;
+//   - the value is known and it is NOT zero → the sentence is false, so the
+//     report must not say it;
+//   - the value is not known (the function is not in this repository, or it
+//     leaves something the tool cannot read) → the sentence is an
+//     assumption, and the report has to mark it as one rather than dress it
+//     up as a fact.
+//
+// "Known" means known HERE: this package's copy of the function. A function
+// in another module can behave differently, and the tool has no evidence
+// about it either way.
+func errorPathValue(idx *funcIndex, callee, method string) (value int64, known bool) {
+	if idx == nil {
+		return 0, false
+	}
+	fn := idx.lookupFunc(callee, method)
+	if fn == nil || fn.Body == nil {
+		return 0, false
+	}
+	if !secondResultIsError(fn) {
+		return 0, false
+	}
+
+	found := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok {
+			return true
+		}
+		if len(ret.Results) != 2 {
+			return true
+		}
+		if isNilIdent(ret.Results[1]) {
+			return true
+		}
+		// Only a literal answers the question. A value computed by a call
+		// cannot be read here, and "cannot be read" is not "is zero".
+		v, ok := intLiteralValue(ret.Results[0])
+		if !ok {
+			return true
+		}
+		value = v
+		found = true
+		return false
+	})
+	return value, found
+}
+
 // valueMakesBranchRun reports whether the value an error path returns makes
 // the guarded branch run.
 //
