@@ -37,14 +37,19 @@ type funcIndex struct {
 	fset   *token.FileSet
 	funcs  map[string]*ast.FuncDecl
 	byFile map[string]*funcIndex
+	// methods holds the methods of this package, by name. A method name
+	// can be shared by several types, so the list keeps them all: a name
+	// that fits more than one of them is a name that cannot be resolved.
+	methods map[string][]*ast.FuncDecl
 }
 
 // buildFuncIndex indexes the functions of one Go file.
 func buildFuncIndex(fset *token.FileSet, f *ast.File) *funcIndex {
 	idx := &funcIndex{
-		fset:   fset,
-		funcs:  map[string]*ast.FuncDecl{},
-		byFile: map[string]*funcIndex{},
+		fset:    fset,
+		funcs:   map[string]*ast.FuncDecl{},
+		byFile:  map[string]*funcIndex{},
+		methods: map[string][]*ast.FuncDecl{},
 	}
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -52,8 +57,43 @@ func buildFuncIndex(fset *token.FileSet, f *ast.File) *funcIndex {
 			continue
 		}
 		idx.funcs[fn.Name.Name] = fn
+		if fn.Recv != nil {
+			idx.methods[fn.Name.Name] = append(idx.methods[fn.Name.Name], fn)
+		}
 	}
 	return idx
+}
+
+// lookupFunc finds the declaration of the function a discarded error came
+// from.
+//
+// A plain name is looked up among this package's functions. A method name is
+// looked up among this package's methods, and only when the name fits
+// exactly one of them: a name that fits several means the call could be any
+// of them, and guessing wrong here would silence a real finding.
+//
+// Nothing found means "cannot tell", and "cannot tell" leaves the finding
+// standing.
+func (idx *funcIndex) lookupFunc(callee, method string) *ast.FuncDecl {
+	if idx == nil {
+		return nil
+	}
+	if callee != "" {
+		fn, ok := idx.funcs[callee]
+		if !ok || fn.Recv != nil {
+			// A method with this name is not the function that was called.
+			return nil
+		}
+		return fn
+	}
+	if method == "" {
+		return nil
+	}
+	fns := idx.methods[method]
+	if len(fns) != 1 {
+		return nil
+	}
+	return fns[0]
 }
 
 // packageFuncIndex indexes every Go file of a package.
@@ -98,6 +138,10 @@ func packageFuncIndex(root, rel string, scope core.FileScope) *funcIndex {
 		if !scope.Allows(otherRel) {
 			continue
 		}
+		if otherRel == rel {
+			// The file this index was built from is already in it.
+			continue
+		}
 		otherAbs := filepath.Join(dir, e.Name())
 		otherFset, otherFile, err := parseGoFile(otherAbs)
 		if err != nil {
@@ -108,6 +152,9 @@ func packageFuncIndex(root, rel string, scope core.FileScope) *funcIndex {
 			if _, exists := idx.funcs[name]; !exists {
 				idx.funcs[name] = fn
 			}
+		}
+		for name, fns := range other.methods {
+			idx.methods[name] = append(idx.methods[name], fns...)
 		}
 	}
 	return idx

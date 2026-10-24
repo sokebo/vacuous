@@ -57,6 +57,23 @@ const (
 	emptinessGuardSkipped
 )
 
+// emptinessVerdict is what a comparison says about the value behind a
+// discarded error.
+//
+// It carries the spelling and the operator as well as the shape, because
+// the shape alone does not say what the value would be on the error path.
+// A collection is empty when the load failed. A count might not be: a
+// function that returns -1 with its error leaves a count that is not zero.
+type emptinessVerdict struct {
+	// shape is what an empty value does to the code that follows.
+	shape emptinessShape
+	// direct is true when the value was compared on its own rather than
+	// through len(): "n != 0" is direct, "len(x) != 0" is not.
+	direct bool
+	// op is the comparison operator: "!=" or ">".
+	op string
+}
+
 // wantsEmpty reports what happens to the code when the value behind a
 // discarded error comes back empty.
 //
@@ -74,17 +91,17 @@ const (
 //
 // Getting this backwards turns the tool into one that cries wolf, and a tool
 // people switch off protects nothing.
-func wantsEmpty(scope goScope, name string) (emptinessShape, bool) {
+func wantsEmpty(scope goScope, name string) (emptinessVerdict, bool) {
 	for _, e := range scope.emptiness {
 		if e.name != name {
 			continue
 		}
 		switch {
 		case e.fails:
-			return emptinessVacuous, true
+			return emptinessVerdict{shape: emptinessVacuous, direct: e.direct, op: e.op}, true
 		case e.bails:
-			return emptinessGuardSkipped, true
+			return emptinessVerdict{shape: emptinessGuardSkipped, direct: e.direct, op: e.op}, true
 		}
 	}
-	return emptinessNone, false
+	return emptinessVerdict{}, false
 }
