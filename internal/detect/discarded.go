@@ -116,6 +116,16 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 				//
 				// A function this repository does not contain leaves the
 				// question open, and an open question keeps the finding.
+				//
+				// What the repository shows is also what the report may
+				// SAY. The report's sentence about the error path is a
+				// claim about that function, so it has to match what the
+				// tool knows: a known zero value may be stated, a known
+				// non-zero value must not be called empty, and an unknown
+				// value has to be marked as an assumption rather than
+				// dressed up as a fact.
+				var errValue int64
+				var errValueKnown bool
 				if idx := packageIndexFor(indices, repoRoot, rel, readScope); idx != nil {
 					// The signature may say there was no error to discard
 					// in the first place: "x, _ := lookup(k)" where lookup
@@ -127,6 +137,35 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 					}
 					if errorPathLeavesNonEmpty(idx, d.callee, d.method, verdict) {
 						continue
+					}
+					errValue, errValueKnown = errorPathValue(idx, d.callee, d.method)
+				}
+
+				// How the report describes what the error path leaves
+				// behind.
+				//
+				// Three cases, three different sentences:
+				//
+				//   - the tool read the function and it leaves zero →
+				//     the plain "it's empty" sentence is true;
+				//   - the tool read the function and it leaves a
+				//     non-zero value → "it's empty" would be false, and
+				//     the report has to name the value it saw;
+				//   - the tool could not read it → the sentence is an
+				//     assumption, and saying so is the honest way to put
+				//     it ("按惯例会留下空值" rather than "是空的").
+				//
+				// The last one is not a weakening of the finding: the
+				// finding stands either way. It is the SENTENCE that has
+				// to match what the tool knows.
+				emptyOnFailure := func(name string) string {
+					switch {
+					case errValueKnown && errValue == 0:
+						return fmt.Sprintf("加载失败时 %s 是空的（零值）", name)
+					case errValueKnown:
+						return fmt.Sprintf("加载失败时 %s 是 %d", name, errValue)
+					default:
+						return fmt.Sprintf("加载失败时 %s 会是空的（零值）", name)
 					}
 				}
 
@@ -149,25 +188,34 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 						summary,
 						fmt.Sprintf(
 							"%s:%d 把 %s 的错误丢掉了（`%s, _ := ...`）。\n"+
-								"加载失败时 %s 是空的（零值），而这条断言要的正是「%s」—— "+
+								"%s，而这条断言要的正是「%s」—— "+
 								"于是断言通过，测试报告成功，实际什么都没读出来。\n"+
 								"（如果断言要求的是非空或具体数量，那反而是安全的，不算问题。）",
-							rel, d.line, d.name, d.name, d.name, quoted),
+							rel, d.line, d.name, d.name, emptyOnFailure(d.name), quoted),
 						sourceLine(lines, d.line),
 						"别丢掉错误：要么处理它，要么在错误时直接失败。"+
 							"读不出来的东西不能当成「没有」"))
 
 				case emptinessGuardSkipped:
+					// The last clause describes what the program carries on
+					// with. When the tool knows the error path leaves a
+					// value that is not zero, "一个空的结果" is a false
+					// sentence about the audited code - the same mistake as
+					// calling the value empty above.
+					carried := "一个空的结果"
+					if errValueKnown && errValue != 0 {
+						carried = fmt.Sprintf("一个 %d 的结果", errValue)
+					}
 					out = append(out, finding(core.KindDiscardsError, core.SevHigh,
 						rel, d.line,
 						"错误被丢掉，一个本该拦住你的检查被跳过了",
 						fmt.Sprintf(
 							"%s:%d 把 %s 的错误丢掉了（`%s, _ := ...`）。\n"+
-								"加载失败时 %s 是空的，于是守着它的那段代码不会执行 —— "+
+								"%s，于是守着它的那段代码不会执行 —— "+
 								"那段代码本来就是为了在这种情况下中止流程的。\n"+
-								"丢掉错误之后，程序带着一个空的结果继续往下走，"+
+								"丢掉错误之后，程序带着%s继续往下走，"+
 								"而这正是它当初要防的那种情况。",
-							rel, d.line, d.name, d.name, d.name),
+							rel, d.line, d.name, d.name, emptyOnFailure(d.name), carried),
 						sourceLine(lines, d.line),
 						"别丢掉错误：要么处理它，要么在错误时直接失败。"+
 							"读不出来的东西不能当成「没有」"))

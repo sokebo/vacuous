@@ -202,7 +202,22 @@ func wantsSpelling(op string, limit int64) (inline, quoted string) {
 			quoted = fmt.Sprintf("不等于 %d", limit)
 		}
 	case "==":
-		quoted = fmt.Sprintf("等于 %d", limit)
+		// The branch runs when the comparison HOLDS, and the branch fails
+		// the test. So "n == 5" demands a value that is NOT 5 - the same
+		// demand "n != 0" makes, with the roles of the two sides swapped.
+		//
+		// Saying "等于 5" here would name the opposite of what the
+		// assertion demands, and the report would read as if the empty
+		// value had satisfied it - which is exactly the thing that did
+		// not happen.
+		//
+		// "n == 0" is the harmless twin and never reaches here (the empty
+		// value makes that branch run, so the failure is loud). The
+		// shape is kept anyway so that the two spellings of the same
+		// question answer the same way.
+		if limit != 0 {
+			quoted = fmt.Sprintf("不等于 %d", limit)
+		}
 	case ">":
 		quoted = fmt.Sprintf("不超过 %d", limit)
 	case ">=":
