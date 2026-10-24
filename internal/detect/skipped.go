@@ -19,6 +19,11 @@ import (
 //
 // Everything weaker is reported at warn severity. The rule is never to
 // upgrade a suspicion into a high finding on a guess.
+//
+// The files list is also the analysis's scope: it says which files this
+// repository contains, and therefore which files the conclusion may be built
+// from. A helper that lives outside it does not exist as far as this checker
+// is concerned — see packageFuncIndex.
 func Skipped(root string, files []string) ([]core.Finding, error) {
 	return SkippedWithOptions(root, files, Options{})
 }
@@ -31,6 +36,13 @@ func SkippedWithOptions(root string, files []string, opts Options) ([]core.Findi
 		// the "depends on an uncommitted file" judgement needs git, so it
 		// is simply not made.
 		repoRoot = root
+	}
+	// The scope defaults to the file list the caller handed over. A caller
+	// that knows better (the command layer, which distinguishes "what is
+	// committed" from "what is on the disk") can say so through Options.
+	scope := core.FileScopeOf(files)
+	if opts.Scope != nil {
+		scope = *opts.Scope
 	}
 	repo := gitRepo{root: repoRoot}
 	var out []core.Finding
@@ -51,10 +63,10 @@ func SkippedWithOptions(root string, files []string, opts Options) ([]core.Findi
 			continue
 		}
 		markers := opts.skipMarkers()
-		idx := packageFuncIndex(repoRoot, rel)
-		for _, scope := range goScopes(fset, f, markers, lines) {
-			for _, sk := range scope.skips {
-				out = append(out, skipFinding(repo, repoRoot, rel, sk, scope, lines, opts, idx))
+		idx := packageFuncIndex(repoRoot, rel, scope)
+		for _, fnScope := range goScopes(fset, f, markers, lines) {
+			for _, sk := range fnScope.skips {
+				out = append(out, skipFinding(repo, repoRoot, rel, sk, fnScope, lines, opts, idx))
 			}
 		}
 	}

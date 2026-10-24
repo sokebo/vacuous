@@ -248,11 +248,18 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 	}
 
 	if opts.Mode == "check" || opts.Mode == "all" {
-		skipped, err := detect.Skipped(root, files)
+		// The scope goes along with the file list: the list says which files
+		// to scan, the scope says which files the conclusion may be built
+		// from. They are the same list in check mode and in all mode, but the
+		// checker still has to be told — otherwise it falls back to reading
+		// whatever is on disk, and a file the repository does not contain
+		// would decide what the report says.
+		skipOpts := detect.Options{Scope: &scope}
+		skipped, err := detect.SkippedWithOptions(root, files, skipOpts)
 		if err != nil {
 			return nil, err
 		}
-		discarded, err := detect.DiscardedErrors(root, files)
+		discarded, err := detect.DiscardedErrorsWithOptions(root, files, skipOpts)
 		if err != nil {
 			return nil, err
 		}
