@@ -23,7 +23,24 @@ import (
 // Both are worth reporting, but they are not the same finding, and a report
 // that describes the second one as "the assertion passes" is simply wrong.
 
-// emptinessChecks finds the len() comparisons in a condition.
+// emptinessChecks finds the comparisons in a condition whose meaning depends
+// on what an EMPTY value would do to the branch they guard.
+//
+// Two spellings of the same question:
+//
+//	if len(x) != 0   the length of a collection
+//	if n != 0        a count the call returned
+//
+// The second is the same shape as the first. When the call failed it left the
+// zero value behind, and an assertion that says "this must be zero" is
+// satisfied by exactly the failure it was supposed to catch. Leaving it out
+// means the tool finds the slice shape and misses the count shape, which is
+// the shape most counters actually take:
+//
+//	n, _ := st.EdgeCount()
+//	if n != 0 {
+//	    t.Fatalf("expected no edges, got %d", n)
+//	}
 //
 // Only the operators where an EMPTY value leaves the branch untaken are
 // interesting, because that is the direction in which a discarded error
@@ -48,17 +65,13 @@ func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 			return true
 		}
 
-		name, ok := lenTarget(bin.X)
-		var other ast.Expr
-		if ok {
-			other = bin.Y
-		} else {
-			name, ok = lenTarget(bin.Y)
-			if !ok {
-				return true
-			}
-			other = bin.X
-			// len() is on the right: rewrite the comparison so that it
+		target, ok := emptinessTarget(bin)
+		if !ok {
+			return true
+		}
+		name, other := target.name, target.other
+		if target.flipped {
+			// The value is on the right: rewrite the comparison so that it
 			// reads the same way. "0 != len(x)" is "len(x) != 0".
 			switch op {
 			case ">":
@@ -97,10 +110,69 @@ func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 			op:   op,
 			line: w.line(bin.Pos()),
 		})
+		// A count compared against zero is an emptiness check just as much
+		// as len(x) is. Record the use, so that the value counts as an
+		// emptiness assertion even when the failure message does not
+		// mention it.
+		if target.direct {
+			w.use(target.ident, useKindZeroCheck)
+		}
 		return true
 	})
 
 	return out
+}
+
+// emptinessTarget says which side of a comparison holds the value whose
+// emptiness matters, and which side holds the number it is compared against.
+//
+// Two spellings of the value are accepted:
+//
+//	len(x)   the length of a collection
+//	x        a count the call returned
+//
+// The number can sit on either side; flipped says which way round it was.
+type emptinessTargetInfo struct {
+	// name is the variable the comparison looks at.
+	name string
+	// other is the expression holding the number it is compared against.
+	other ast.Expr
+	// ident is the variable itself, set only for the direct spelling.
+	ident *ast.Ident
+	// direct is true when the value is compared on its own, rather than
+	// through len().
+	direct bool
+	// flipped is true when the number is on the left and the value on the
+	// right.
+	flipped bool
+}
+
+func emptinessTarget(bin *ast.BinaryExpr) (emptinessTargetInfo, bool) {
+	if name, ok := lenTarget(bin.X); ok {
+		return emptinessTargetInfo{name: name, other: bin.Y}, true
+	}
+	if name, ok := lenTarget(bin.Y); ok {
+		return emptinessTargetInfo{name: name, other: bin.X, flipped: true}, true
+	}
+	if id, ok := plainIdent(bin.X); ok {
+		return emptinessTargetInfo{name: id.Name, other: bin.Y, ident: id, direct: true}, true
+	}
+	if id, ok := plainIdent(bin.Y); ok {
+		return emptinessTargetInfo{name: id.Name, other: bin.X, ident: id, direct: true, flipped: true}, true
+	}
+	return emptinessTargetInfo{}, false
+}
+
+// plainIdent returns the identifier an expression is, when it is just one.
+//
+// A selector ("x.edges") is not an identifier: the tool tracks variables, not
+// fields, and a field has no discarded error of its own.
+func plainIdent(e ast.Expr) (*ast.Ident, bool) {
+	id, ok := e.(*ast.Ident)
+	if !ok || id.Name == "_" {
+		return nil, false
+	}
+	return id, true
 }
 
 // lenTarget returns the variable whose length a comparison looks at.

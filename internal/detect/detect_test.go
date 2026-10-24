@@ -282,6 +282,198 @@ func TestTwoEdges(t *testing.T) {
 	}
 }
 
+// TestDiscardedErrorIsReportedOnACountShape covers the twin of the dangerous
+// shape: the value behind the discarded error is a COUNT, not a collection.
+//
+//	n, _ := st.EdgeCount()
+//	if n != 0 {
+//	    t.Fatalf("expected no edges, got %d", n)
+//	}
+//
+// The failure mode is identical to the slice shape. EdgeCount returns
+// (0, err) when the query fails, the count comes back zero, and the
+// assertion wants zero — so the test passes having checked nothing, on
+// every machine where the query fails.
+//
+// The slice spelling of this shape is caught; the count spelling was not.
+func TestDiscardedErrorIsReportedOnACountShape(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "store_test.go", `package fixture
+
+import "testing"
+
+type store struct{ edges int }
+
+func (s *store) EdgeCount() (int, error) { return s.edges, nil }
+
+func TestDeleteRemovesEdges(t *testing.T) {
+	st := &store{}
+	n, _ := st.EdgeCount()
+	if n != 0 {
+		t.Fatalf("expected no edges, got %d", n)
+	}
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, []string{"store_test.go"})
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	if !hasFinding(findings, string(core.KindDiscardsError), "store_test.go") {
+		t.Fatalf("a discarded error in front of a zero-count assertion must be reported, got %+v", findings)
+	}
+}
+
+// TestDiscardedCountIsReportedWhenTheMessageOmitsTheValue covers the one
+// shape that needs the comparison itself to count as the assertion.
+//
+//	n, _ := st.EdgeCount()
+//	if n != 0 {
+//	    t.Fatal("expected no edges")
+//	}
+//
+// The failure message does not mention n, so n is never passed to an
+// assertion call. What makes this an emptiness assertion is the comparison
+// itself. The slice spelling does not have this problem: len(edges) appears
+// in the condition, so the variable is seen being measured either way.
+func TestDiscardedCountIsReportedWhenTheMessageOmitsTheValue(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "store_test.go", `package fixture
+
+import "testing"
+
+type store struct{ edges int }
+
+func (s *store) EdgeCount() (int, error) { return s.edges, nil }
+
+func TestDeleteRemovesEdges(t *testing.T) {
+	st := &store{}
+	n, _ := st.EdgeCount()
+	if n != 0 {
+		t.Fatal("expected no edges")
+	}
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, []string{"store_test.go"})
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	if !hasFinding(findings, string(core.KindDiscardsError), "store_test.go") {
+		t.Fatalf("a discarded error in front of a zero-count assertion must be reported, got %+v", findings)
+	}
+}
+
+// TestDiscardedCountStaysQuietOnTheHarmlessShape is the precision control
+// for the count shape.
+//
+// The test wants a specific count. A discarded error makes the test fail
+// loudly, which is not a hole.
+func TestDiscardedCountStaysQuietOnTheHarmlessShape(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "store_test.go", `package fixture
+
+import "testing"
+
+type store struct{ edges int }
+
+func (s *store) EdgeCount() (int, error) { return s.edges, nil }
+
+func TestTwoEdges(t *testing.T) {
+	st := &store{}
+	n, _ := st.EdgeCount()
+	if n != 2 {
+		t.Fatalf("expected 2 edges, got %d", n)
+	}
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, []string{"store_test.go"})
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	if hasFinding(findings, string(core.KindDiscardsError), "store_test.go") {
+		t.Fatalf("a discarded error in front of a specific-count assertion is harmless, got %+v", findings)
+	}
+}
+
+// TestDiscardedCountStaysQuietOnTheLoudShape is the other precision control.
+//
+// "n == 0" wants the count to be NON-zero. When the query fails the count is
+// zero, the branch runs, and the test fails loudly. Nothing is hidden.
+func TestDiscardedCountStaysQuietOnTheLoudShape(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "store_test.go", `package fixture
+
+import "testing"
+
+type store struct{ edges int }
+
+func (s *store) EdgeCount() (int, error) { return s.edges, nil }
+
+func TestHasEdge(t *testing.T) {
+	st := &store{}
+	n, _ := st.EdgeCount()
+	if n == 0 {
+		t.Fatal("expected at least one edge")
+	}
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, []string{"store_test.go"})
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	if hasFinding(findings, string(core.KindDiscardsError), "store_test.go") {
+		t.Fatalf("a discarded error in front of a loud assertion is harmless, got %+v", findings)
+	}
+}
+
+// TestDiscardedCountIsReportedWhenTheGuardIsSkipped covers the second shape
+// of the finding: the count is not an assertion but a guard that stops the
+// program.
+//
+//	existing, _ := st.List()
+//	if existing > 0 {
+//	    fmt.Println("库里已有数据，要继续请先清空")
+//	    return
+//	}
+//
+// When the load fails the count comes back zero, the branch does not run,
+// and the program walks straight past the check it was supposed to honour.
+func TestDiscardedCountIsReportedWhenTheGuardIsSkipped(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "seed.go", `package fixture
+
+import "fmt"
+
+type store struct{ items int }
+
+func (s *store) Count() (int, error) { return s.items, nil }
+
+func Seed(st *store) {
+	existing, _ := st.Count()
+	if existing > 0 {
+		fmt.Println("库里已有数据，要继续请先清空")
+		return
+	}
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, []string{"seed.go"})
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	if !hasFinding(findings, string(core.KindDiscardsError), "seed.go") {
+		t.Fatalf("a discarded error in front of a protective guard must be reported, got %+v", findings)
+	}
+}
+
 // TestGuardNotInstalled catches the guard that exists but never runs.
 func TestGuardNotInstalled(t *testing.T) {
 	dir := newRepo(t)

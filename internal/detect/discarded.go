@@ -93,13 +93,13 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 						"错误被丢掉，断言却要求它是空的 —— 加载失败时这条断言照样通过",
 						fmt.Sprintf(
 							"%s:%d 把 %s 的错误丢掉了（`%s, _ := ...`）。\n"+
-								"加载失败时 %s 是空的，而这条断言要的正是「空的」—— "+
-								"于是断言通过，测试报告成功，实际什么都没加载到。\n"+
+								"加载失败时 %s 是空的（零值），而这条断言要的正是「空的」—— "+
+								"于是断言通过，测试报告成功，实际什么都没读出来。\n"+
 								"（如果断言要求的是非空或具体数量，那反而是安全的，不算问题。）",
 							rel, d.line, d.name, d.name, d.name),
 						sourceLine(lines, d.line),
 						"别丢掉错误：要么处理它，要么在错误时直接失败。"+
-							"语料缺失应该是红色，不是绿色"))
+							"读不出来的东西不能当成「没有」"))
 
 				case emptinessGuardSkipped:
 					out = append(out, finding(core.KindDiscardsError, core.SevHigh,
