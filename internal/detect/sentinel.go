@@ -119,8 +119,16 @@ func countMakesBranchRun(e ast.Expr, op string, limit int64) bool {
 	switch op {
 	case "!=":
 		return v != limit
+	case "==":
+		return v == limit
 	case ">":
 		return v > limit
+	case ">=":
+		return v >= limit
+	case "<":
+		return v < limit
+	case "<=":
+		return v <= limit
 	}
 	return false
 }
@@ -139,8 +147,16 @@ func collectionMakesBranchRun(e ast.Expr, op string, limit int64) bool {
 	switch op {
 	case "!=":
 		return n != limit
+	case "==":
+		return n == limit
 	case ">":
 		return n > limit
+	case ">=":
+		return n >= limit
+	case "<":
+		return n < limit
+	case "<=":
+		return n <= limit
 	}
 	return false
 }

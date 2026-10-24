@@ -136,14 +136,14 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 					// empty: "if n > 5" wants a value of at most 5, and the
 					// zero value satisfies that just as well. Saying "空的"
 					// there would be a wrong sentence about a right finding.
-					want := "空的"
-					summary := "错误被丢掉，断言却要求它是空的 —— 加载失败时这条断言照样通过"
-					if verdict.op == ">" && verdict.limit != 0 {
-						want = fmt.Sprintf("不超过 %d", verdict.limit)
-						summary = fmt.Sprintf(
-							"错误被丢掉，断言却要求它不超过 %d —— 加载失败时这条断言照样通过",
-							verdict.limit)
-					}
+					//
+					// So the wording follows the comparison: each operator
+					// demands something different of the value, and the
+					// report has to name that thing.
+					want, quoted := wantsSpelling(verdict.op, verdict.limit)
+					summary := fmt.Sprintf(
+						"错误被丢掉，断言却要求它%s —— 加载失败时这条断言照样通过",
+						want)
 					out = append(out, finding(core.KindDiscardsError, core.SevHigh,
 						rel, d.line,
 						summary,
@@ -152,7 +152,7 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 								"加载失败时 %s 是空的（零值），而这条断言要的正是「%s」—— "+
 								"于是断言通过，测试报告成功，实际什么都没读出来。\n"+
 								"（如果断言要求的是非空或具体数量，那反而是安全的，不算问题。）",
-							rel, d.line, d.name, d.name, d.name, want),
+							rel, d.line, d.name, d.name, d.name, quoted),
 						sourceLine(lines, d.line),
 						"别丢掉错误：要么处理它，要么在错误时直接失败。"+
 							"读不出来的东西不能当成「没有」"))
