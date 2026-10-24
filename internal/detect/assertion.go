@@ -8,6 +8,11 @@ package detect
 //	edges, _ := store.EdgesFor("c")
 //	if len(edges) != 0 { t.Fatal("expected no edges") }
 //
+// and its twin, where the value is a count rather than a collection:
+//
+//	n, _ := store.EdgeCount()
+//	if n != 0 { t.Fatal("expected no edges") }
+//
 // Here the test wants the value to be EMPTY. If the load failed, the value
 // IS empty, so the assertion passes. The test reports success having
 // checked nothing — and it will report that success on every machine where
@@ -33,7 +38,7 @@ func assertionUse(scope goScope, name string) bool {
 			continue
 		}
 		switch u.kind {
-		case "len", "assert-call":
+		case "len", "assert-call", useKindZeroCheck:
 			return true
 		}
 	}

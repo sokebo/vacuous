@@ -46,10 +46,18 @@ type goDiscard struct {
 	text    string
 }
 
+// useKindZeroCheck is the kind of use that records a variable compared
+// against zero on its own: "if n != 0".
+//
+// It is an emptiness check just as much as len(x) is, and the assertion gate
+// has to treat the two the same way. Without it, a count that is compared
+// against zero but never mentioned in the failure message would slip past.
+const useKindZeroCheck = "zero-check"
+
 // goUse is one reference to an identifier.
 type goUse struct {
 	name string
-	kind string // "len", "range", "subscript", "assert-call", "call-arg", "assign", "plain"
+	kind string // "len", "range", "subscript", "assert-call", "call-arg", "assign", "plain", useKindZeroCheck
 	pos  token.Pos
 	line int
 }
