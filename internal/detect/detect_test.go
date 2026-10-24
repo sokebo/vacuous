@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -320,6 +321,141 @@ func TestGuardInstalledIsQuiet(t *testing.T) {
 	}
 	if hasFinding(findings, string(core.KindGuardNotInstalled), ".githooks") {
 		t.Fatalf("a correctly installed guard must not be reported, got %+v", findings)
+	}
+}
+
+// TestGuardInstalledInTheDefaultHooksDirIsQuiet is the negative control for
+// the rule that says a guard is "not installed".
+//
+// The scene is the one from the accident. The guard lives in .githooks/,
+// core.hooksPath is NOT set, and the guard was installed the way git
+// supports in that case: copied into the default hooks directory. git runs
+// it on every push.
+//
+// Telling its owner "this guard has never run even once" is the worst
+// thing this tool can do: it accuses someone of a hole that is not there,
+// and the only way to "fix" it is to stop trusting the report.
+func TestGuardInstalledInTheDefaultHooksDirIsQuiet(t *testing.T) {
+	dir := newRepo(t)
+	marker := filepath.Join(dir, "guard-ran.txt")
+	guard := fmt.Sprintf("#!/bin/sh\necho ran > %q\nexit 1\n", marker)
+
+	write(t, dir, ".githooks/pre-push", guard)
+	if err := os.Chmod(filepath.Join(dir, ".githooks", "pre-push"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, dir)
+
+	// Install it the way git supports when core.hooksPath is not set.
+	write(t, dir, filepath.Join(".git", "hooks", "pre-push"), guard)
+	if err := os.Chmod(filepath.Join(dir, ".git", "hooks", "pre-push"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
+	if err != nil {
+		t.Fatalf("GuardLiveness: %v", err)
+	}
+	if hasFinding(findings, string(core.KindGuardNotInstalled), ".githooks") {
+		t.Fatalf("a guard that git actually runs must not be reported as never installed, got %+v", findings)
+	}
+
+	// And prove the scene is real rather than merely plausible: push, and
+	// check that the guard actually ran. A test that only asserts on a
+	// directory listing would pass even if git never ran it.
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if _, err := runGit(dir, "init", "-q", "--bare", remote); err != nil {
+		t.Fatalf("git init --bare: %v", err)
+	}
+	if _, err := runGit(dir, "remote", "add", "origin", remote); err != nil {
+		t.Fatalf("git remote add: %v", err)
+	}
+	// The guard exits non-zero, so the push is expected to fail.
+	_, _ = runGit(dir, "push", "origin", "main")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the guard did not run on push, so the scene is not the one under test: %v", err)
+	}
+}
+
+// TestGuardUnrelatedToTheDefaultHookIsReported is the other side of the
+// rule above.
+//
+// A file in the hooks directory is not automatically this repository's
+// guard: git will happily run a hook that has nothing to do with it. The
+// guard is still not installed, and that still has to be reported.
+func TestGuardUnrelatedToTheDefaultHookIsReported(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, ".githooks/pre-push", "#!/bin/sh\nexit 1\n")
+	if err := os.Chmod(filepath.Join(dir, ".githooks", "pre-push"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, dir)
+
+	write(t, dir, filepath.Join(".git", "hooks", "pre-push"), "#!/bin/sh\necho unrelated\nexit 0\n")
+	if err := os.Chmod(filepath.Join(dir, ".git", "hooks", "pre-push"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
+	if err != nil {
+		t.Fatalf("GuardLiveness: %v", err)
+	}
+	if !hasFinding(findings, string(core.KindGuardNotInstalled), ".githooks") {
+		t.Fatalf("an unrelated hook in the hooks directory is not this guard, got %+v", findings)
+	}
+}
+
+// TestGuardCopyThatIsNotExecutableIsReported keeps the executable bit part
+// of the question. git only runs a hook that is executable, so a
+// non-executable copy guards exactly as much as no copy at all.
+func TestGuardCopyThatIsNotExecutableIsReported(t *testing.T) {
+	dir := newRepo(t)
+	guard := "#!/bin/sh\nexit 1\n"
+	write(t, dir, ".githooks/pre-push", guard)
+	if err := os.Chmod(filepath.Join(dir, ".githooks", "pre-push"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commit(t, dir)
+
+	// Same bytes, but not executable.
+	write(t, dir, filepath.Join(".git", "hooks", "pre-push"), guard)
+
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
+	if err != nil {
+		t.Fatalf("GuardLiveness: %v", err)
+	}
+	if !hasFinding(findings, string(core.KindGuardNotInstalled), ".githooks") {
+		t.Fatalf("a guard git cannot execute is not installed, got %+v", findings)
+	}
+}
+
+// TestGuardMissingFromTheConfiguredHooksDirIsReported covers the other
+// direction of core.hooksPath.
+//
+// Setting core.hooksPath makes git ignore .git/hooks entirely and look
+// only in the configured directory. A guard that is not there does not run,
+// and the directory existing is not the same as the guard being in it.
+func TestGuardMissingFromTheConfiguredHooksDirIsReported(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, ".githooks/pre-push", "#!/bin/sh\nexit 1\n")
+	if err := os.Chmod(filepath.Join(dir, ".githooks", "pre-push"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "otherhooks/keep.txt", "x\n")
+	commit(t, dir)
+
+	cmd := exec.Command("git", "config", "core.hooksPath", "otherhooks")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v\n%s", err, out)
+	}
+
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
+	if err != nil {
+		t.Fatalf("GuardLiveness: %v", err)
+	}
+	if !hasFinding(findings, string(core.KindGuardNotInstalled), ".githooks") {
+		t.Fatalf("a guard that is not in the configured hooks directory does not run, got %+v", findings)
 	}
 }
 
