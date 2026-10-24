@@ -8,6 +8,28 @@ import (
 	"testing"
 )
 
+// TestFixtureCommitsCarryThePinnedTimestamp is the negative control for the
+// timestamp pin in Repo.Git.
+//
+// Without the pin, a fixture commit's sha moves with the wall clock, and
+// nothing complains: the commit succeeds, the fixture works, the sha simply
+// comes out different every time. A comparison between two fixtures then
+// compares two COMMITS instead of the one file it meant to differ in.
+//
+// So the pin needs a check of its own - one that fails EVERY time the pin is
+// missing, not one that fails when two commits happen to land in different
+// seconds.
+//
+// Both dates are checked. Each one of them is part of the commit's sha, so a
+// pin that covers only the author still leaves the sha moving.
+func TestFixtureCommitsCarryThePinnedTimestamp(t *testing.T) {
+	m := NewRepo(t)
+	m.Write(t, "greet.go", "package greet\n")
+	m.Init(t)
+
+	AssertPinnedCommitDates(t, m.Dir)
+}
+
 // TestFixturesAreRealRepositories proves that every fixture is a genuine git
 // repository with a genuine history, not a mock.
 //

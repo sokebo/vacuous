@@ -9,7 +9,30 @@ import (
 	"testing"
 
 	"github.com/sokebo/vacuous/internal/core"
+	"github.com/sokebo/vacuous/internal/testfixtures"
 )
+
+// TestFixtureCommitsCarryThePinnedTimestamp is the negative control for the
+// timestamp pin in commit().
+//
+// The pin is what makes two fixtures with the same content share a HEAD, and
+// scope_test.go depends on that to compare their conclusions. Without the pin
+// the sha moves with the wall clock - and the comparison then fails only when
+// the two commits land in different seconds, so it is red about half the
+// time. A signal that is red half the time is a signal nobody trusts.
+//
+// This check is deterministic: remove the pin and it fails on every single
+// run.
+//
+// Both dates are checked. Each one of them is part of the commit's sha, so a
+// pin that covers only the author still leaves the sha moving.
+func TestFixtureCommitsCarryThePinnedTimestamp(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "go.mod", "module demo\n\ngo 1.21\n")
+	commit(t, dir)
+
+	testfixtures.AssertPinnedCommitDates(t, dir)
+}
 
 // newRepo creates a real git repository in a temp directory.
 //
@@ -58,6 +81,11 @@ func commit(t *testing.T, dir string) {
 			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
 			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
 		)
+		// Pin the timestamps. Without them the commit's sha moves with the
+		// wall clock, so two fixtures holding the same content get different
+		// shas - and a comparison between them measures the commit instead
+		// of the one file it was supposed to differ in.
+		cmd.Env = append(cmd.Env, testfixtures.PinnedCommitEnv()...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 		}

@@ -8,7 +8,27 @@ import (
 	"testing"
 
 	"github.com/sokebo/vacuous/internal/gate"
+	"github.com/sokebo/vacuous/internal/testfixtures"
 )
+
+// TestFixtureCommitsCarryThePinnedTimestamp is the negative control for the
+// timestamp pin in runGit.
+//
+// The pin is what makes a fixture's commit sha reproducible. Without it the
+// sha moves with the wall clock: the same fixture built twice produces two
+// different shas, and a comparison between them measures the commit instead
+// of the one thing it meant to differ in.
+//
+// This check is deterministic: remove the pin and it fails on every single
+// run.
+//
+// Both dates are checked. Each one of them is part of the commit's sha, so a
+// pin that covers only the author still leaves the sha moving.
+func TestFixtureCommitsCarryThePinnedTimestamp(t *testing.T) {
+	dir := seedRepo(t)
+
+	testfixtures.AssertPinnedCommitDates(t, dir)
+}
 
 // 这些测试守的是**命令这一层**的行为。
 //
@@ -30,6 +50,10 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	// Pin the timestamps: a fixture's commit sha moves with the wall clock
+	// otherwise, so the same fixture built twice produces two different shas
+	// and nothing says so.
+	cmd.Env = append(os.Environ(), testfixtures.PinnedCommitEnv()...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s 失败: %v\n%s", strings.Join(args, " "), err, out)

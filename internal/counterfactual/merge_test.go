@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sokebo/vacuous/internal/core"
+	"github.com/sokebo/vacuous/internal/testfixtures"
 )
 
 // A merge commit is not a change anybody made.
@@ -31,11 +32,37 @@ func gitCmd(t *testing.T, dir string, args ...string) string {
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
 		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
 	)
+	// Pin the timestamps: a commit's sha moves with the wall clock otherwise,
+	// and the fixture's sha stops being reproducible.
+	cmd.Env = append(cmd.Env, testfixtures.PinnedCommitEnv()...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return string(out)
+}
+
+// TestFixtureCommitsCarryThePinnedTimestamp is the negative control for the
+// timestamp pin in gitCmd.
+//
+// Without the pin, the fixture's commit sha moves with the wall clock, so the
+// same fixture built twice produces two different shas and nothing says so.
+// A test that compares two fixtures then compares two commits instead of the
+// one thing it meant to differ in.
+//
+// This check is deterministic: remove the pin and it fails on every single
+// run.
+//
+// Both dates are checked. Each one of them is part of the commit's sha, so a
+// pin that covers only the author still leaves the sha moving.
+func TestFixtureCommitsCarryThePinnedTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	gitCmd(t, dir, "init", "-q", "-b", "main")
+	writeFile(t, dir, "go.mod", "module example.com/merge\n\ngo 1.26\n")
+	gitCmd(t, dir, "add", "-A")
+	gitCmd(t, dir, "commit", "-q", "-m", "initial")
+
+	testfixtures.AssertPinnedCommitDates(t, dir)
 }
 
 // TestAuditLeavesMergeCommitsAlone proves the tool does not blame a merge

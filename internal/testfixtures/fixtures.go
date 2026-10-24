@@ -23,6 +23,85 @@ import (
 	"testing"
 )
 
+// PinnedCommitDate is the timestamp every fixture commit carries.
+//
+// Why pin it: a git commit's sha contains its timestamps. A fixture commit
+// made with the wall clock therefore produces a DIFFERENT sha every time the
+// same content is committed - two fixtures that are supposed to differ only in
+// one untracked file end up differing in their commit as well, and a
+// comparison between them stops measuring the untracked file and starts
+// measuring the commit.
+//
+// That is not a theoretical problem. It showed up as a test that is red
+// locally and green in CI: CI commits fast enough for both fixtures to land
+// inside the same second, so both get the same sha. A check that is red half
+// of the time is worse than no check at all - people learn to ignore it.
+//
+// The value matches the one internal/git already uses; that package pinned
+// its timestamps long ago for the same reason.
+const PinnedCommitDate = "2026-01-02T03:04:05Z"
+
+// PinnedCommitEnv returns the environment entries that pin a fixture commit's
+// timestamps.
+//
+// Both dates have to be pinned: the author's date and the committer's date
+// are both part of the commit's sha, so leaving either one on the wall clock
+// leaves the sha moving.
+func PinnedCommitEnv() []string {
+	return []string{
+		"GIT_AUTHOR_DATE=" + PinnedCommitDate,
+		"GIT_COMMITTER_DATE=" + PinnedCommitDate,
+	}
+}
+
+// CommitDates reads the author date and the committer date of a repository's
+// HEAD commit.
+//
+// Both are returned because both are part of the commit's sha: a fixture that
+// pins only one of them still produces a sha that moves.
+func CommitDates(t *testing.T, dir string) (author, committer string) {
+	t.Helper()
+	cmd := exec.Command("git", "log", "-1", "--format=%aI%x1f%cI")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git log -1 in %s: %v\n%s", dir, err, out)
+	}
+	parts := strings.Split(strings.TrimSpace(string(out)), "\x1f")
+	if len(parts) != 2 {
+		t.Fatalf("unexpected git log output in %s: %q", dir, string(out))
+	}
+	return parts[0], parts[1]
+}
+
+// AssertPinnedCommitDates fails the test unless the repository's HEAD commit
+// carries the pinned timestamps.
+//
+// It is the shared judgement behind every package's own negative control for
+// the pin: each package has a test that calls this on a fixture built by that
+// package's own helper, so removing the pin from any one of them turns that
+// package's test red.
+//
+// The message explains why it matters, because "the sha moved" on its own
+// looks like trivia.
+func AssertPinnedCommitDates(t *testing.T, dir string) {
+	t.Helper()
+	author, committer := CommitDates(t, dir)
+	if author != PinnedCommitDate {
+		t.Fatalf("the fixture commit's author date is %q, want %q\n\n"+
+			"Without a pinned date the commit's sha moves with the wall clock, "+
+			"so two fixtures holding the same content stop sharing a HEAD - and "+
+			"a comparison between them measures the commit instead of the file "+
+			"it was supposed to differ in.", author, PinnedCommitDate)
+	}
+	if committer != PinnedCommitDate {
+		t.Fatalf("the fixture commit's committer date is %q, want %q\n\n"+
+			"The committer's date is part of the commit's sha too, so a pin "+
+			"that covers only the author still leaves the sha moving.",
+			committer, PinnedCommitDate)
+	}
+}
+
 // Repo is a throwaway git repository with no language attached.
 //
 // It is the right fixture for questions about what vacuous does in a
@@ -82,6 +161,7 @@ func (r *Repo) Git(t *testing.T, args ...string) string {
 		"GIT_COMMITTER_NAME=fixture",
 		"GIT_COMMITTER_EMAIL=fixture@example.com",
 	)
+	cmd.Env = append(cmd.Env, PinnedCommitEnv()...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
