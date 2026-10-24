@@ -88,6 +88,13 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 		markers := opts.skipMarkers()
 		for _, scope := range goScopes(fset, f, markers, lines) {
 			for _, d := range scope.discards {
+				// Two variables with the same name in one function: the
+				// tool cannot tell which one the later assertion is
+				// about, and a report that picks the wrong one points at
+				// one line and talks about another.
+				if scope.ambiguousName(d.name) {
+					continue
+				}
 				if !assertionUse(scope, d.name) {
 					continue
 				}
@@ -110,6 +117,14 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 				// A function this repository does not contain leaves the
 				// question open, and an open question keeps the finding.
 				if idx := packageIndexFor(indices, repoRoot, rel, readScope); idx != nil {
+					// The signature may say there was no error to discard
+					// in the first place: "x, _ := lookup(k)" where lookup
+					// returns (string, bool) throws away a boolean. The
+					// signature is in this repository, so this is evidence
+					// and not a guess.
+					if fn := idx.lookupFunc(d.callee, d.method); fn != nil && secondResultIsPlainValue(fn) {
+						continue
+					}
 					if errorPathLeavesNonEmpty(idx, d.callee, d.method, verdict) {
 						continue
 					}
@@ -117,15 +132,27 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 
 				switch verdict.shape {
 				case emptinessVacuous:
+					// The assertion does not always want the value to be
+					// empty: "if n > 5" wants a value of at most 5, and the
+					// zero value satisfies that just as well. Saying "空的"
+					// there would be a wrong sentence about a right finding.
+					want := "空的"
+					summary := "错误被丢掉，断言却要求它是空的 —— 加载失败时这条断言照样通过"
+					if verdict.op == ">" && verdict.limit != 0 {
+						want = fmt.Sprintf("不超过 %d", verdict.limit)
+						summary = fmt.Sprintf(
+							"错误被丢掉，断言却要求它不超过 %d —— 加载失败时这条断言照样通过",
+							verdict.limit)
+					}
 					out = append(out, finding(core.KindDiscardsError, core.SevHigh,
 						rel, d.line,
-						"错误被丢掉，断言却要求它是空的 —— 加载失败时这条断言照样通过",
+						summary,
 						fmt.Sprintf(
 							"%s:%d 把 %s 的错误丢掉了（`%s, _ := ...`）。\n"+
-								"加载失败时 %s 是空的（零值），而这条断言要的正是「空的」—— "+
+								"加载失败时 %s 是空的（零值），而这条断言要的正是「%s」—— "+
 								"于是断言通过，测试报告成功，实际什么都没读出来。\n"+
 								"（如果断言要求的是非空或具体数量，那反而是安全的，不算问题。）",
-							rel, d.line, d.name, d.name, d.name),
+							rel, d.line, d.name, d.name, d.name, want),
 						sourceLine(lines, d.line),
 						"别丢掉错误：要么处理它，要么在错误时直接失败。"+
 							"读不出来的东西不能当成「没有」"))

@@ -17,10 +17,27 @@ import (
 
 // goRead is a call that reads a file from disk.
 type goRead struct {
-	path   string // the path exactly as written in the source
-	errVar string // the identifier the error is bound to, if any
-	pos    token.Pos
-	line   int
+	path string // the path exactly as written in the source
+	// calls are the names of the calls that lead to this path.
+	//
+	// It is what ties a read to the condition that guards a skip. A skip
+	// that fires because of this read mentions the call - "if
+	// loadCorpus() == "" { t.Skip(...) }" - or the error it returned, or
+	// the path itself. A read that none of those mention has nothing to
+	// do with the skip.
+	//
+	// The list has more than one name when the read happens inside a
+	// helper: the helper the test calls, and the call inside the helper.
+	calls []string
+	// binds are the names the call's result was assigned to: "err" for
+	// "cs, err := loadCorpus(...)".
+	//
+	// The same tie: a skip whose condition is "if err != nil" is about
+	// this read, and a skip whose condition says nothing about these names
+	// is not.
+	binds []string
+	pos   token.Pos
+	line  int
 }
 
 // goStr is a local variable bound to a string literal.
@@ -85,6 +102,14 @@ type goScope struct {
 	// emptiness are the len() comparisons whose meaning depends on what
 	// the branch they guard does.
 	emptiness []goEmptiness
+	// decls counts how many times each name is declared in this function.
+	//
+	// Two declarations of one name mean two variables: the second one
+	// shadows the first inside its own block. A later use of the name
+	// refers to whichever declaration is in scope there, so a check that
+	// matches a discarded value with a later assertion BY NAME may be
+	// matching two different variables.
+	decls map[string]int
 }
 
 // goEmptiness is one len() comparison in a condition.
@@ -105,6 +130,14 @@ type goEmptiness struct {
 	// op is the comparison operator, normalised so that len() is on the
 	// left: "!=" or ">".
 	op string
+	// limit is the number the value is compared against.
+	//
+	// It is part of the comparison, and dropping it changes what the
+	// comparison means. "n > 0" and "n > 5" are different questions: a
+	// value of 3 makes the first branch run and leaves the second one
+	// untaken. A checker that keeps the operator and drops the limit
+	// answers both questions with the first one's answer.
+	limit int64
 	// line is the 1-indexed line of the comparison.
 	line int
 	// direct is true when the value was compared on its own rather than
@@ -232,6 +265,14 @@ func (w *goWalker) stmt(s ast.Stmt, guards []string) {
 		if x.Value != nil {
 			w.expr(x.Value, guards)
 		}
+		// "for i, v := range xs" declares i and v.
+		if x.Tok == token.DEFINE {
+			for _, e := range []ast.Expr{x.Key, x.Value} {
+				if id, ok := e.(*ast.Ident); ok {
+					w.declare(id.Name)
+				}
+			}
+		}
 		w.stmt(x.Body, guards)
 	case *ast.SwitchStmt:
 		if x.Init != nil {
@@ -344,6 +385,26 @@ func (w *goWalker) assign(x *ast.AssignStmt, guards []string) {
 	for _, e := range x.Rhs {
 		w.expr(e, guards)
 	}
+	// The names this call's result was bound to. They are what ties the
+	// call to a condition: a skip guarded by "if err != nil" is about the
+	// call that produced err.
+	if len(x.Rhs) == 1 {
+		if call, ok := x.Rhs[0].(*ast.CallExpr); ok {
+			if binds := boundNames(x.Lhs); len(binds) > 0 {
+				w.bindCall(call.Pos(), binds)
+			}
+		}
+	}
+	// A short variable declaration introduces a name. The second
+	// declaration of a name introduces a DIFFERENT variable that shadows
+	// the first one, and that is what the scope check has to know.
+	if x.Tok == token.DEFINE {
+		for _, lhs := range x.Lhs {
+			if id, ok := lhs.(*ast.Ident); ok {
+				w.declare(id.Name)
+			}
+		}
+	}
 	for _, lhs := range x.Lhs {
 		if id, ok := lhs.(*ast.Ident); ok {
 			w.use(id, "assign")
@@ -351,6 +412,63 @@ func (w *goWalker) assign(x *ast.AssignStmt, guards []string) {
 		}
 		w.expr(lhs, guards)
 	}
+}
+
+// boundNames returns the names an assignment binds, without the blank one.
+func boundNames(lhs []ast.Expr) []string {
+	var out []string
+	for _, e := range lhs {
+		id, ok := e.(*ast.Ident)
+		if !ok || id.Name == "_" {
+			continue
+		}
+		out = append(out, id.Name)
+	}
+	return out
+}
+
+// bindCall records which names a call's result was bound to.
+//
+// The reads recorded at the call's position - the file it opens, and the
+// path it was handed - are the ones those names stand for.
+func (w *goWalker) bindCall(pos token.Pos, binds []string) {
+	for i := range w.scope.reads {
+		if w.scope.reads[i].pos == pos {
+			w.scope.reads[i].binds = append(w.scope.reads[i].binds, binds...)
+		}
+	}
+	for i := range w.scope.callPaths {
+		if w.scope.callPaths[i].pos == pos {
+			w.scope.callPaths[i].binds = append(w.scope.callPaths[i].binds, binds...)
+		}
+	}
+}
+
+// declare records that a name is declared in this function.
+func (w *goWalker) declare(name string) {
+	if name == "_" {
+		return
+	}
+	if w.scope.decls == nil {
+		w.scope.decls = map[string]int{}
+	}
+	w.scope.decls[name]++
+}
+
+// ambiguousName reports whether a name is declared more than once in this
+// function.
+//
+// Two declarations mean two variables. The second one shadows the first
+// inside its own block, and a later use of the name refers to whichever
+// declaration is in scope there.
+//
+// The checker matches a discarded value with a later assertion BY NAME, so
+// when the name is ambiguous the match may be between two different
+// variables - and then the report points at one line and talks about
+// another. Not knowing which one is which is not the same as knowing there
+// is a problem, and this rule is an accusation.
+func (s goScope) ambiguousName(name string) bool {
+	return s.decls[name] > 1
 }
 
 // expr walks an expression, recording calls, reads and identifier uses.
@@ -371,7 +489,12 @@ func (w *goWalker) expr(e ast.Expr, guards []string) {
 			})
 		}
 		if p, ok := w.readPath(x); ok {
-			w.scope.reads = append(w.scope.reads, goRead{path: p, pos: x.Pos(), line: w.line(x.Pos())})
+			w.scope.reads = append(w.scope.reads, goRead{
+				path:  p,
+				calls: []string{calledNameOne(x)},
+				pos:   x.Pos(),
+				line:  w.line(x.Pos()),
+			})
 		}
 		// Remember the local functions this body calls. The file a skip
 		// depends on is often read by a helper, not by the test itself.
@@ -391,9 +514,14 @@ func (w *goWalker) expr(e ast.Expr, guards []string) {
 					continue
 				}
 				w.scope.callPaths = append(w.scope.callPaths, goRead{
-					path: p,
-					pos:  a.Pos(),
-					line: w.line(a.Pos()),
+					path:  p,
+					calls: []string{ident.Name},
+					// The position is the CALL's, not the argument's: the
+					// names the call binds are what tie this path to the
+					// condition that guards a skip, and they are bound at
+					// the call.
+					pos:  x.Pos(),
+					line: w.line(x.Pos()),
 				})
 			}
 		}
@@ -537,12 +665,32 @@ func (w *goWalker) readPath(call *ast.CallExpr) (string, bool) {
 			}
 			return p, true
 		}
-	case "filepath":
-		if sel.Sel.Name == "Join" {
-			return w.joinArgs(call.Args)
-		}
 	}
+	// A path.Join is not here on purpose: it BUILDS a path, it does not
+	// read anything. Counting it as a read invents a file dependency out
+	// of a string concatenation - and the skip checker then blames that
+	// invented dependency on a skip that has nothing to do with it.
 	return "", false
+}
+
+// isPathJoin reports whether a call is filepath.Join or path.Join.
+//
+// The difference matters: "os.ReadFile(filepath.Join("a", "b"))" reads the
+// file, and the join is how the path is spelled. "p := filepath.Join("a",
+// "b")" reads nothing at all.
+func isPathJoin(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	if sel.Sel.Name != "Join" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	return pkg.Name == "filepath" || pkg.Name == "path"
 }
 
 // looksLikeFilePath reports whether a string has the shape of a path to a
@@ -618,6 +766,11 @@ func (w *goWalker) pathArg(e ast.Expr) (string, bool) {
 	case *ast.Ident:
 		return w.lookupStr(x.Name, x.Pos())
 	case *ast.CallExpr:
+		// A join is how a path is spelled, and it reads nothing by
+		// itself - but it IS how the path of a read is written.
+		if isPathJoin(x) {
+			return w.joinArgs(x.Args)
+		}
 		return w.readPath(x)
 	case *ast.BinaryExpr:
 		if x.Op != token.ADD {
@@ -740,6 +893,19 @@ func calledName(e ast.Expr) (callee string, method string) {
 		return "", fun.Sel.Name
 	}
 	return "", ""
+}
+
+// calledNameOne returns the name a call goes by: the plain function name,
+// or the method name for a selector call.
+//
+// It is the name a condition would mention: "if !fileExists(p)" names the
+// call that checks the file.
+func calledNameOne(call *ast.CallExpr) string {
+	callee, method := calledName(call)
+	if callee != "" {
+		return callee
+	}
+	return method
 }
 
 // isLenCall reports whether a call is the builtin len.

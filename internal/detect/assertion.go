@@ -72,6 +72,12 @@ type emptinessVerdict struct {
 	direct bool
 	// op is the comparison operator: "!=" or ">".
 	op string
+	// limit is the number the value was compared against.
+	//
+	// It belongs to the comparison: "n > 0" and "n > 5" are different
+	// questions, and a value that answers one of them does not answer
+	// the other.
+	limit int64
 }
 
 // wantsEmpty reports what happens to the code when the value behind a
@@ -98,9 +104,9 @@ func wantsEmpty(scope goScope, name string) (emptinessVerdict, bool) {
 		}
 		switch {
 		case e.fails:
-			return emptinessVerdict{shape: emptinessVacuous, direct: e.direct, op: e.op}, true
+			return emptinessVerdict{shape: emptinessVacuous, direct: e.direct, op: e.op, limit: e.limit}, true
 		case e.bails:
-			return emptinessVerdict{shape: emptinessGuardSkipped, direct: e.direct, op: e.op}, true
+			return emptinessVerdict{shape: emptinessGuardSkipped, direct: e.direct, op: e.op, limit: e.limit}, true
 		}
 	}
 	return emptinessVerdict{}, false

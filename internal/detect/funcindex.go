@@ -248,6 +248,10 @@ func pathsForSkip(idx *funcIndex, scope goScope, markers map[string]bool, lines 
 		}
 		seen["call:"+call] = true
 		for _, r := range idx.pathsReadByFunc(call, markers, lines) {
+			// The helper's own name goes first: it is the name the
+			// calling code mentions, and the condition that guards a skip
+			// is written in terms of it ("if loadCorpus() == \"\"").
+			r.calls = append([]string{call}, r.calls...)
 			add(r)
 		}
 		readers[call] = len(idx.pathsReadByFunc(call, markers, lines)) > 0
