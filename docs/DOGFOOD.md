@@ -4651,3 +4651,111 @@ pytest 配置）**全都是提交过的**，作用域对它们没有影响。修
   这一轮改的是作用域，而 `all` 模式的作用域和 `check` 不同（它还含未跟踪
   文件）。只量 `check` 就收工，会漏掉「`all` 那一档被改坏了」这种可能 ——
   哪怕它当时看不出来。
+
+
+### 3.69 有运行器的仓，一个测试文件都没有 —— 报告里一个字都不提
+
+**现象**：三个最小现场（Go / Node / Python），每个都是：源码在、**运行器也在**
+（`go.mod` / `package.json` 的 test 脚本 / `pytest.ini`）、**一个测试文件都没有**。
+三个都报同一句：
+
+```
+vacuous — 这一轮没有可判的提交（0 个不适用）
+统计: proven 0 · vacuous 0 · 无测试 0 · 无法判定 0 · 不适用 0 · 审不了 0
+按类别: 无
+```
+
+退出码 0。一个字都没有。
+
+而**同一个仓去掉 `go.mod`**（运行器没了）→ 立刻报高危：
+
+```
+[HIGH] no-test-for-fix
+这个仓库有代码，但一个测试文件都没有
+```
+
+**根因**：`internal/cli/cli.go` 里那一条门：
+
+```go
+if adapter == nil {
+    rep.Add(noRunnerFinding(root, files))
+}
+```
+
+`noRunnerFinding`（`internal/cli/coverage.go`）管着四条发现，其中两条问的是
+**测试**，不是运行器：
+
+- `src > 0 && tests == 0 && len(harness) == 0` → 高危 `no-test-for-fix`
+- `len(harness) > 0` → 信息级 `unsupported-tests`
+
+这两条的成立与否**跟有没有运行器无关**。可是整个函数挂在 `adapter == nil`
+底下 —— 只有「连运行器都没有」的仓才够得着。
+
+→ **有运行器的仓，那条判决永远够不着。** 而「有代码、一个测试都没有」恰恰是
+最常见的那种没保护。
+
+跑器在的时候，`go test ./...` 落在没有测试文件的包上 → 「no test files」→
+绿的。改坏了什么都不会变红。这跟没有运行器时的那条高危，说的是同一件事。
+
+**它跟文档里写着的规矩是反的**：
+
+- 3.2：「`check` 模式不再依赖适配器……**最该被提醒的仓库，原本恰恰是唯一
+  没有输出的仓库。**」
+- `internal/cli/cli_test.go` 开头：「the repositories that most need telling are
+  the ones with no tests at all, and they were the ones that got silence.」
+
+3.2 那次修的是「没有运行器 → 直接报错退出」。它把判决放在了**没有运行器的
+那一侧**，于是有运行器的这一侧一直空着 —— 三十多轮下来没人发现，因为六个仓
+恰好一个都没落在这个形状上（四个有测试，两个连运行器都没有）。
+
+**修复**：把「一个测试都没有」这条判决从运行器这条线上摘下来，两边都判。
+
+- 新增 `internal/cli/notests.go`：`noTestsAtAll`（判决）+ `noTestForFixFinding`
+  （那条高危发现）。
+- `internal/cli/cli.go`：调用点改成「有运行器也判」。
+- `internal/cli/coverage.go`：原来内联的那条发现改用同一个构造函数 ——
+  措辞一字不改。
+
+**为什么不改措辞**：两边的句子只差半句（「也没有能跑测试的命令」只在没有
+运行器时是真的）。抽成一个构造函数，用一个布尔量控制那半句，六仓的输出因此
+一字不变。少运行器时那句仍然一字不差。
+
+**负对照**：两条，都在**判据所在的同一层**：
+
+1. 调用点改成「判了但不报告」（`rep.Add(f)` → `_ = f`）→ 变异后**编译通过**
+   （Go 不报未使用的函数），`TestCheckOnARepoWithARunnerAndNoTestsSaysSo` 在
+   `notests_test.go:38` 变红 —— 红的正是断言，不是 build failed。
+2. `noTestsAtAll` 永远返回「没什么可报」→ 同一条测试在同一行变红。
+
+反过来说，这条负对照也是这条 bug 的**判定依据**：旧的
+`TestCheckOnRepoWithCodeButNoTests` 在夹具里特意写了
+
+```go
+// No go.mod: without a module the Go adapter does not claim the repo,
+// which is exactly the situation under test.
+```
+
+—— 它测的正是「没有运行器」那一侧。**有运行器的那一侧从来没有被测过**，
+所以这个洞一直在。
+
+**六仓逐条不变**：
+
+| 仓库 | 修之前 | 修之后 |
+|---|---|---|
+| 仓库 A / B / C / D | 有测试 | **逐条一致**（判决够不着的那条路） |
+| 仓库 E / F | 0 个测试文件，但连运行器都没有 → 信息级 `unsupported-tests` | **逐条一致** |
+
+四个仓有测试（判决的前提不成立），两个仓自带验证命令（那条信息级照样在）。
+修完之后六仓的静态体检与反事实审计**逐条与基线一致**。
+
+**修完之后，四个最小现场各自报什么**：
+
+| 现场 | 修之前 | 修之后 |
+|---|---|---|
+| Go：`go.mod` + 源码，0 个测试 | 沉默 | 高危 `no-test-for-fix` |
+| Node：`package.json` test 脚本 + 源码，0 个测试 | 沉默 | 高危 `no-test-for-fix` |
+| Python：`pytest.ini` + 源码，0 个测试 | 沉默 | 高危 `no-test-for-fix` |
+| 有运行器 + 自带验证命令 + 0 个测试 | 沉默 | 信息级 `unsupported-tests`（检查在，这个工具驱不动） |
+
+最后一行是**另一个形状，同一个根因**：那些检查确实存在，这个工具确实驱不动，
+报告确实应该说明这一点 —— 只是它从来没走到那条路上。
