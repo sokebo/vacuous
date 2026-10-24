@@ -59,6 +59,15 @@ func TestCheckIgnoresAnUntrackedGoMod(t *testing.T) {
 		t.Errorf("退出码 = %d，期望 %d：一个没提交的 go.mod 不该让高危消失。\nstdout: %s",
 			code, ExitFindings, stdout)
 	}
+	// 这一句更要紧：工具必须仍然认为「这个仓没有能跑的运行器」。
+	//
+	// 高危那条发现有两个来源 —— 「没有运行器」的那一侧，和「有运行器」的
+	// 那一侧（3.68 之后）。两边的**标题**一模一样，只有这句话在不在。
+	// 所以只断言标题的话，这条测试就分不出「运行器被正确地忽略了」和
+	// 「运行器被错误地认了」—— 而那正是这条修复要防的事。
+	if !strings.Contains(stdout, "也没有能跑测试的命令") {
+		t.Errorf("这个仓没有提交 go.mod，工具必须仍然说它没有能跑的运行器。\nstdout: %s", stdout)
+	}
 }
 
 // TestCheckIgnoresAnUntrackedPackageJSONWithATestScript 守的是同一族的另一半。
@@ -82,6 +91,11 @@ func TestCheckIgnoresAnUntrackedPackageJSONWithATestScript(t *testing.T) {
 	}
 	if code != ExitFindings {
 		t.Errorf("退出码 = %d，期望 %d。\nstdout: %s", code, ExitFindings, stdout)
+	}
+	// 高危那条发现有两个来源（见 TestCheckIgnoresAnUntrackedGoMod 的说明），
+	// 标题一模一样，只有这句话在不在 —— 所以这里要断的是它。
+	if !strings.Contains(stdout, "也没有能跑测试的命令") {
+		t.Errorf("这个仓没有提交 package.json，工具必须仍然说它没有能跑的运行器。\nstdout: %s", stdout)
 	}
 }
 
