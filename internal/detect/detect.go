@@ -330,3 +330,13 @@ func finding(kind core.Kind, sev core.Severity, file string, line int, summary, 
 func errUnsupportedFile(rel string, err error) error {
 	return fmt.Errorf("detect: cannot analyse %s: %w", rel, err)
 }
+
+// joinRepoPath 拼出一个仓库相对路径：目录 + 里面的文件名。
+//
+// 路径一律用 / 分隔 —— 范围里存的是这种形状，比较的时候必须一致。
+func joinRepoPath(dir, name string) string {
+	if dir == "" || dir == "." {
+		return name
+	}
+	return filepath.ToSlash(filepath.Join(dir, name))
+}

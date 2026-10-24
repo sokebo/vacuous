@@ -34,7 +34,7 @@ func TestATestdataDirectoryIsNotASuite(t *testing.T) {
 	writeFile(t, root, "testdata2/real_test.py", "import unittest\n")
 	writeFile(t, root, "pkg/testutils/test_helper.py", "import unittest\n")
 
-	got := UnittestSuites(root)
+	got := UnittestSuites(root, core.FileScopeAll())
 
 	if suiteListHas(got, "testdata") {
 		t.Errorf("UnittestSuites() = %v, want no \"testdata\" suite: a directory "+
@@ -68,7 +68,7 @@ func TestAFixtureDirectoryDoesNotBreakTheRun(t *testing.T) {
 		"import unittest\nfrom fixtures.helper import VALUE\n\nclass S(unittest.TestCase):\n    def test_sample(self):\n        self.assertEqual(VALUE, 1)\n")
 
 	a := NewPython()
-	if !a.Detect(root) {
+	if !a.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the adapter did not detect the fixture")
 	}
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})

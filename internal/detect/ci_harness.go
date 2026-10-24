@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // This file answers a question the CI check could not ask before:
@@ -58,6 +60,8 @@ type ciContext struct {
 	// testCommands are the commands that run a test suite the tool knows
 	// about.
 	testCommands []string
+	// scope says which files this context may look at.
+	scope core.FileScope
 }
 
 // newCIContext reads the repository's package.json.
@@ -65,17 +69,18 @@ type ciContext struct {
 // A repository without one - every Go repository, and a Node library that
 // never registered a script - has no harness to look for, and every
 // question asked of it has the answer "nothing to see".
-func newCIContext(repoRoot string, testCommands []string) *ciContext {
+func newCIContext(repoRoot string, testCommands []string, scope core.FileScope) *ciContext {
 	c := &ciContext{
 		root:         repoRoot,
-		scripts:      packageScripts(repoRoot),
+		scripts:      packageScripts(repoRoot, scope),
 		targets:      map[string]string{},
 		testCommands: testCommands,
+		scope:        scope,
 	}
 	if len(c.scripts) == 0 {
 		return c
 	}
-	c.harness = harnessFromScripts(repoRoot, c.scripts)
+	c.harness = harnessFromScripts(repoRoot, c.scripts, scope)
 	for _, h := range c.harness {
 		for _, f := range h.Files {
 			c.targets[f] = h.Script
@@ -193,7 +198,7 @@ func (c *ciContext) harnessRunsIn(text string) []ciHarnessRun {
 	// repository's script, not this one's, and harnessLocalFiles is
 	// what draws that line.
 	for _, line := range strings.Split(text, "\n") {
-		for _, f := range harnessLocalFiles(c.root, line) {
+		for _, f := range harnessLocalFiles(c.root, line, c.scope) {
 			if s, ok := c.targets[f]; ok {
 				add(s, nil)
 			}
@@ -221,7 +226,7 @@ func (c *ciContext) reach(name string, depth int) [][]string {
 	}
 	var out [][]string
 	// The command may name the check script directly.
-	for _, f := range harnessLocalFiles(c.root, cmd) {
+	for _, f := range harnessLocalFiles(c.root, cmd, c.scope) {
 		if s, ok := c.targets[f]; ok {
 			if s == name {
 				out = append(out, []string{name})
@@ -289,8 +294,15 @@ func runScriptNames(cmd string) []string {
 }
 
 // packageScripts reads the scripts section of a repository's package.json.
-func packageScripts(root string) map[string]string {
+//
+// The package.json has to be inside the scope. It is the file that says
+// what this repository runs, and a package.json the repository does not
+// contain says nothing about it.
+func packageScripts(root string, scope core.FileScope) map[string]string {
 	if root == "" {
+		return nil
+	}
+	if !scope.Allows("package.json") {
 		return nil
 	}
 	b, err := os.ReadFile(filepath.Join(root, "package.json"))

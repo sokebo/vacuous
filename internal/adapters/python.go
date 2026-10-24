@@ -38,6 +38,9 @@ type Python struct {
 	// test files that sit next to a changed file. Without it the adapter
 	// declines to narrow a run instead of guessing.
 	root string
+	// scope says which files the detection may be based on. Detect records
+	// it so ScopeFor narrows to the same suites the detection found.
+	scope core.FileScope
 	// mode says which runner this project uses.
 	//
 	// It is decided once, by Detect, and only read afterwards. The engine
@@ -64,13 +67,19 @@ func (p *Python) Name() string { return "python" }
 // supported test runner found" about such a repository is not true in the
 // way a reader takes it: it sounds like the project has no tests. It has
 // tests; the tool simply could not run them. Now it can.
-func (p *Python) Detect(root string) bool {
+//
+// The scope says which files the answer may be based on. A pytest config
+// or a test file that is not part of the repository is not this project's
+// test setup - it is a leftover on disk, and believing it made the tool
+// stop saying that a repository has no tests at all.
+func (p *Python) Detect(root string, scope core.FileScope) bool {
 	p.root = root
-	if p.detectPytest(root) {
+	p.scope = scope
+	if p.detectPytest(root, scope) {
 		p.mode = modePytest
 		return true
 	}
-	if len(UnittestSuites(root)) > 0 {
+	if len(UnittestSuites(root, scope)) > 0 {
 		p.mode = modeUnittest
 		return true
 	}
@@ -79,8 +88,11 @@ func (p *Python) Detect(root string) bool {
 }
 
 // detectPytest reports whether root configures pytest.
-func (p *Python) detectPytest(root string) bool {
+func (p *Python) detectPytest(root string, scope core.FileScope) bool {
 	for _, name := range []string{"pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg"} {
+		if !scope.Allows(name) {
+			continue
+		}
 		if !fileExists(filepath.Join(root, name)) {
 			continue
 		}
@@ -577,7 +589,9 @@ func unittestTopDir(root, suite string) string {
 // against a worktree of the parent commit, and that worktree is what holds
 // the tests.
 func (p *Python) planUnittest(req core.PlanRequest) (core.Plan, error) {
-	suites := UnittestSuites(req.Root)
+	// The checkout IS the scope here: it holds exactly the files of the
+	// commit being audited, and nothing else.
+	suites := UnittestSuites(req.Root, core.FileScopeAll())
 	if len(suites) == 0 {
 		return core.Plan{}, fmt.Errorf(
 			"python adapter: no unittest suite found under %s", req.Root)
@@ -703,7 +717,7 @@ func (p *Python) scopeForUnittest(changedNonTestFiles []string) []string {
 	if p.root == "" || len(changedNonTestFiles) == 0 {
 		return nil
 	}
-	suites := UnittestSuites(p.root)
+	suites := UnittestSuites(p.root, p.scope)
 	if len(suites) == 0 {
 		return nil
 	}
@@ -1535,7 +1549,7 @@ func skipUnittestDir(base string) bool {
 // The root is returned as "." because that is what a relative path looks
 // like, and because one vocabulary for both shapes keeps the suite list
 // readable.
-func UnittestSuites(root string) []string {
+func UnittestSuites(root string, scope core.FileScope) []string {
 	if root == "" {
 		return nil
 	}
@@ -1543,6 +1557,9 @@ func UnittestSuites(root string) []string {
 	// Find the directories that configure pytest. A suite below one of
 	// them is a pytest suite, even when the configuration sits in an
 	// ancestor: the project decides for the whole tree.
+	//
+	// A configuration that is not part of the repository does not decide
+	// anything: it is not this project's configuration.
 	pytestRoots := map[string]bool{}
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -1555,13 +1572,18 @@ func UnittestSuites(root string) []string {
 			return filepath.SkipDir
 		}
 		for _, name := range []string{"pyproject.toml", "pytest.ini", "tox.ini"} {
-			if fileExists(filepath.Join(path, name)) {
-				rel, relErr := filepath.Rel(root, path)
-				if relErr == nil {
-					pytestRoots[rel] = true
-				}
+			if !fileExists(filepath.Join(path, name)) {
+				continue
+			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
 				return filepath.SkipDir
 			}
+			if !scope.Allows(suiteRelPath(rel, name)) {
+				continue
+			}
+			pytestRoots[rel] = true
+			return filepath.SkipDir
 		}
 		return nil
 	})
@@ -1603,7 +1625,7 @@ func UnittestSuites(root string) []string {
 		if underPytest(rel) {
 			return filepath.SkipDir
 		}
-		if !seen[rel] && dirHoldsPythonTests(path) {
+		if !seen[rel] && dirHoldsPythonTests(path, rel, scope) {
 			seen[rel] = true
 			out = append(out, rel)
 		}
@@ -1613,8 +1635,20 @@ func UnittestSuites(root string) []string {
 	return out
 }
 
+// suiteRelPath 拼出一个目录里某个文件的仓库相对路径。
+func suiteRelPath(rel, name string) string {
+	if rel == "" || rel == "." {
+		return name
+	}
+	return filepath.ToSlash(filepath.Join(rel, name))
+}
+
 // dirHoldsPythonTests reports whether dir contains Python test files.
-func dirHoldsPythonTests(dir string) bool {
+//
+// The files have to be inside the scope: a test file the repository does
+// not contain is not a test this repository runs, and a suite made only of
+// such files is not a suite of this repository.
+func dirHoldsPythonTests(dir, rel string, scope core.FileScope) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
@@ -1623,7 +1657,10 @@ func dirHoldsPythonTests(dir string) bool {
 		if e.IsDir() {
 			continue
 		}
-		if isPythonTestFile(e.Name()) {
+		if !isPythonTestFile(e.Name()) {
+			continue
+		}
+		if scope.Allows(suiteRelPath(rel, e.Name())) {
 			return true
 		}
 	}

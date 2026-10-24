@@ -60,7 +60,7 @@ class CalcTests(unittest.TestCase):
 func TestPythonDetectsUnittestProjects(t *testing.T) {
 	root := unittestProject(t)
 	a := NewPython()
-	if !a.Detect(root) {
+	if !a.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the Python adapter did not detect a project with unittest tests")
 	}
 	if a.mode != modeUnittest {
@@ -78,7 +78,7 @@ func TestPythonPrefersPytestOverUnittest(t *testing.T) {
 	writeFile(t, root, "pyproject.toml", "[tool.pytest.ini_options]\n")
 
 	a := NewPython()
-	if !a.Detect(root) {
+	if !a.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the Python adapter did not detect the pytest project")
 	}
 	if a.mode != modePytest {
@@ -94,7 +94,7 @@ func TestPythonWithoutAnyTestsIsNotDetected(t *testing.T) {
 	writeFile(t, root, "pkg/calc.py", "def add(a, b):\n    return a + b\n")
 
 	a := NewPython()
-	if a.Detect(root) {
+	if a.Detect(root, core.FileScopeAll()) {
 		t.Error("the adapter detected a project with no tests at all")
 	}
 }
@@ -108,7 +108,7 @@ func TestPythonWithoutAnyTestsIsNotDetected(t *testing.T) {
 func TestUnittestPlanBuildsDiscoverCommand(t *testing.T) {
 	root := unittestProject(t)
 	a := NewPython()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
@@ -171,7 +171,7 @@ func TestUnittestTopDir(t *testing.T) {
 func TestUnittestRunsRealSuite(t *testing.T) {
 	root := unittestProject(t)
 	a := NewPython()
-	if !a.Detect(root) {
+	if !a.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the adapter did not detect the fixture")
 	}
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
@@ -450,7 +450,7 @@ func TestUnittestScopeFor(t *testing.T) {
 	writeFile(t, root, "other/tests/test_other.py", "import unittest\n")
 
 	a := NewPython()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 
 	got := a.ScopeFor([]string{"pkg/calc.py"})
 	if len(got) != 1 || got[0] != "pkg/tests" {
@@ -550,7 +550,7 @@ class FineTests(unittest.TestCase):
 `)
 
 	a := NewPython()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -579,7 +579,7 @@ class FineTests(unittest.TestCase):
 func TestUnittestRunReportsNoRunnerIsNotAPass(t *testing.T) {
 	root := unittestProject(t)
 	a := NewPython()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -608,7 +608,7 @@ func TestUnittestSuiteDiscoveryFindsEverySuite(t *testing.T) {
 	writeFile(t, root, "c/runners/test_c.py", "import unittest\n")
 
 	a := NewPython()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -639,7 +639,7 @@ func TestUnittestNarrowingKeepsTheSuiteNearTheChange(t *testing.T) {
 	writeFile(t, root, "other/tests/test_other.py", "import unittest\n")
 
 	a := NewPython()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 
 	plan, err := a.Plan(context.Background(), core.PlanRequest{
 		Root:   root,
@@ -704,7 +704,7 @@ func TestUnittestCommandNamesEverySuiteThatRan(t *testing.T) {
 	}
 
 	a := NewPython()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -732,7 +732,7 @@ func TestUnittestDoesNotWriteIntoTheProject(t *testing.T) {
 	before := dirEntries(t, root)
 
 	a := NewPython()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
 		t.Fatalf("plan: %v", err)

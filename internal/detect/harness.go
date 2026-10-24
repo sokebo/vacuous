@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // A repository can have its own command for running its checks, and this
@@ -88,11 +90,16 @@ type HarnessCommand struct {
 //   - "build": "node scripts/build.mjs"            -> not a harness
 //   - "check:theme": "node ../other/check.mjs x"   -> not this repository's
 //   - "test": "jest"                               -> a runner the tool drives
-func HarnessCommands(root string) []HarnessCommand {
+//
+// The scope says which files this looks at. package.json and the scripts it
+// names have to be part of the repository: a harness the repository does not
+// contain is not a harness this repository runs, and treating it as one
+// silently downgrades a HIGH finding to an INFO one.
+func HarnessCommands(root string, scope core.FileScope) []HarnessCommand {
 	if root == "" {
 		return nil
 	}
-	return harnessFromScripts(root, packageScripts(root))
+	return harnessFromScripts(root, packageScripts(root, scope), scope)
 }
 
 // harnessFromScripts selects the scripts that are checks rather than build
@@ -102,7 +109,7 @@ func HarnessCommands(root string) []HarnessCommand {
 // that every part of the tool reads the same file the same way. The CI
 // check needs the scripts table too - to follow the chain from
 // "npm run build" down to the script that actually checks something.
-func harnessFromScripts(root string, scripts map[string]string) []HarnessCommand {
+func harnessFromScripts(root string, scripts map[string]string, scope core.FileScope) []HarnessCommand {
 	names := make([]string, 0, len(scripts))
 	for name := range scripts {
 		names = append(names, name)
@@ -121,7 +128,7 @@ func harnessFromScripts(root string, scripts map[string]string) []HarnessCommand
 		if namesSupportedRunner(cmd) {
 			continue
 		}
-		files := harnessLocalFiles(root, cmd)
+		files := harnessLocalFiles(root, cmd, scope)
 		if len(files) == 0 {
 			continue
 		}
@@ -288,7 +295,11 @@ func localCheckCommand(ext, rel string) string {
 // Only files inside this repository count. A command that runs a script
 // from a sibling checkout is that sibling's harness, and this repository
 // says nothing about it.
-func harnessLocalFiles(root, cmd string) []string {
+//
+// "Inside this repository" means inside the scope: a script file that the
+// repository does not contain is not a harness this repository runs. It is
+// on disk, and it is not part of the answer.
+func harnessLocalFiles(root, cmd string, scope core.FileScope) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, token := range strings.Fields(cmd) {
@@ -311,6 +322,9 @@ func harnessLocalFiles(root, cmd string) []string {
 			continue
 		}
 		rel = strings.TrimPrefix(rel, "./")
+		if !scope.Allows(rel) {
+			continue
+		}
 		full := filepath.Join(root, filepath.FromSlash(rel))
 		info, err := os.Stat(full)
 		if err != nil || info.IsDir() {

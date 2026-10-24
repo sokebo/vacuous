@@ -24,12 +24,19 @@ import (
 //   - a guard installed by absolute path, which breaks the moment the
 //     repository moves;
 //   - a CI workflow that never runs a test.
-func GuardLiveness(root string) ([]core.Finding, error) {
-	return GuardLivenessWithOptions(root, Options{})
+//
+// The scope says which files these checks are allowed to look at. It is not
+// a detail: the question being asked here is "what does THIS repository
+// guard", and a workflow or a hook that is not in the repository is not
+// part of its answer. Reading them anyway made the conclusion depend on
+// files the repository does not have - and the gate cannot see those files,
+// so "no change" and "the conclusion changed" could both be true at once.
+func GuardLiveness(root string, scope core.FileScope) ([]core.Finding, error) {
+	return GuardLivenessWithOptions(root, scope, Options{})
 }
 
 // GuardLivenessWithOptions is GuardLiveness with configurable options.
-func GuardLivenessWithOptions(root string, opts Options) ([]core.Finding, error) {
+func GuardLivenessWithOptions(root string, scope core.FileScope, opts Options) ([]core.Finding, error) {
 	repoRoot, err := gitToplevel(root)
 	if err != nil {
 		repoRoot = root
@@ -37,13 +44,13 @@ func GuardLivenessWithOptions(root string, opts Options) ([]core.Finding, error)
 	repo := gitRepo{root: repoRoot}
 
 	var out []core.Finding
-	out = append(out, hookFindings(repo, repoRoot, opts)...)
-	out = append(out, workflowFindings(repoRoot, opts)...)
+	out = append(out, hookFindings(repo, repoRoot, scope, opts)...)
+	out = append(out, workflowFindings(repoRoot, scope, opts)...)
 	return out, nil
 }
 
 // hookFindings checks the git hooks of a repository.
-func hookFindings(repo gitRepo, repoRoot string, opts Options) []core.Finding {
+func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Options) []core.Finding {
 	var out []core.Finding
 
 	hookDirs := append([]string{".githooks", ".git-hooks", "hooks"}, opts.list(cfgHookDirs)...)
@@ -57,6 +64,13 @@ func hookFindings(repo gitRepo, repoRoot string, opts Options) []core.Finding {
 		var hooks []string
 		for _, e := range entries {
 			if e.IsDir() {
+				continue
+			}
+			// A hook that is not part of the repository is not this
+			// repository's guard. Counting it would report a guard that
+			// nobody installed - a CRITICAL finding about a file the
+			// repository does not contain.
+			if !scope.Allows(joinRepoPath(dir, e.Name())) {
 				continue
 			}
 			info, err := e.Info()
@@ -109,7 +123,7 @@ func hookFindings(repo gitRepo, repoRoot string, opts Options) []core.Finding {
 
 		// A guard wired up by absolute path. It works today and breaks the
 		// day the repository moves.
-		if abs := absoluteHookInstall(repoRoot, dir, opts); abs != "" {
+		if abs := absoluteHookInstall(repoRoot, dir, scope, opts); abs != "" {
 			out = append(out, finding(core.KindGuardNotPortable, core.SevWarn,
 				"scripts/install-hooks.sh", 0,
 				"守卫用绝对路径安装 —— 目录一搬就失效",
@@ -126,10 +140,17 @@ func hookFindings(repo gitRepo, repoRoot string, opts Options) []core.Finding {
 
 // absoluteHookInstall returns the absolute path an install script writes
 // into core.hooksPath, if any.
-func absoluteHookInstall(repoRoot, dir string, opts Options) string {
+//
+// The script has to be part of the repository. An install script that is not
+// in it describes nothing about how this repository installs its guards.
+func absoluteHookInstall(repoRoot, dir string, scope core.FileScope, opts Options) string {
 	scripts := append([]string{"install-hooks.sh", "install_hooks.sh"}, opts.list(cfgInstallScripts)...)
 	for _, name := range scripts {
-		data, err := os.ReadFile(filepath.Join(repoRoot, "scripts", name))
+		rel := joinRepoPath("scripts", name)
+		if !scope.Allows(rel) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
 		if err != nil {
 			continue
 		}
@@ -168,7 +189,7 @@ type workflow struct {
 //
 // The one per-workflow finding that survives is continue-on-error: a job
 // that DOES run the tests and then ignores the failures.
-func workflowFindings(repoRoot string, opts Options) []core.Finding {
+func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []core.Finding {
 	wfDir := filepath.Join(repoRoot, ".github", "workflows")
 	entries, err := os.ReadDir(wfDir)
 	if err != nil {
@@ -197,6 +218,15 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 		if !strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml") {
 			continue
 		}
+		// The question is about THIS repository's CI. A workflow that is
+		// not in the repository is not part of that CI - and letting it
+		// answer the question both ways: it could hide a real gap (a
+		// committed workflow that never runs the tests, next to a local
+		// draft that does) and it could invent one (a local draft that
+		// runs no tests at all).
+		if !scope.Allows(joinRepoPath(".github/workflows", name)) {
+			continue
+		}
 		data, err := os.ReadFile(filepath.Join(wfDir, name))
 		if err != nil {
 			continue
@@ -210,7 +240,7 @@ func workflowFindings(repoRoot string, opts Options) []core.Finding {
 	// instead of naming it outright ("npm run ci" ending in
 	// "npm run test"). Both forms run the tests, so both have to be
 	// recognised the same way.
-	ci := newCIContext(repoRoot, commands)
+	ci := newCIContext(repoRoot, commands, scope)
 
 	// Does any workflow run the tests?
 	var withTests []string

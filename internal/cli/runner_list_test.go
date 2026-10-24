@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sokebo/vacuous/internal/adapters"
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // The sentence the tool says when it cannot drive a repository's tests
@@ -35,7 +36,7 @@ import (
 // uses unittest reads the list of runners the tool can drive and counts
 // itself out of the covered set.
 func TestTheNoRunnerMessageNamesEveryRunnerTheToolCanDrive(t *testing.T) {
-	msg := noRunnerMessage("/tmp/repo", nil)
+	msg := noRunnerMessage(t.TempDir(), core.FileScopeOf(nil))
 
 	for _, r := range adapters.SupportedRunners {
 		if !strings.Contains(msg, r) {
@@ -50,7 +51,7 @@ func TestTheNoRunnerMessageNamesEveryRunnerTheToolCanDrive(t *testing.T) {
 // The two sentences describe the same tool, so they have to promise the
 // same reach. A reader who gets one of them is not reading the other.
 func TestTheUnittestMessageNamesEveryRunnerTheToolCanDrive(t *testing.T) {
-	msg := noRunnerMessage("/tmp/repo", []string{"tests"})
+	msg := noRunnerMessage(unittestRepo(t))
 
 	for _, r := range adapters.SupportedRunners {
 		if !strings.Contains(msg, r) {
@@ -66,7 +67,7 @@ func TestTheUnittestMessageNamesEveryRunnerTheToolCanDrive(t *testing.T) {
 // these tests. The tool drives them. A reader who believes the sentence
 // goes looking for a different tool.
 func TestTheUnittestMessageDoesNotSayTheToolCannotDriveUnittest(t *testing.T) {
-	msg := noRunnerMessage("/tmp/repo", []string{"tests"})
+	msg := noRunnerMessage(unittestRepo(t))
 
 	for _, lie := range []string{"只会驱动 pytest", "跑不了它们"} {
 		if strings.Contains(msg, lie) {
@@ -82,7 +83,7 @@ func TestTheUnittestMessageDoesNotSayTheToolCannotDriveUnittest(t *testing.T) {
 // message has to say what the tool does drive, so that the next step is
 // obvious.
 func TestTheUnittestMessageSaysWhatTheToolCanDrive(t *testing.T) {
-	msg := noRunnerMessage("/tmp/repo", []string{"tests"})
+	msg := noRunnerMessage(unittestRepo(t))
 
 	if !strings.Contains(msg, "python -m unittest") {
 		t.Errorf("the message does not mention the runner the tool uses:\n%s", msg)

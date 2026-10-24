@@ -245,12 +245,21 @@ func WorkingFingerprint(dir string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// workingContentHash 算出工作树里某个文件的内容哈希。
+// workingContentHash 算出工作树里某个文件的指纹。
+//
+// 指纹里有两样东西：**权限位**和**内容**。
+//
+// 权限位不是可有可无的。check 的一条结论就建立在它上面 —— 一个 hook 文件
+// 是不是可执行，决定了工具会不会说「这个守卫从来没被装上」。只哈希内容的话，
+// 把一个文件从 644 改成 755（内容一个字没动）算不出任何变化，闸门于是报
+// 「没变化」，而结论已经变了 —— 那正是这个工具最不该有的那种错：说得
+// 很像真的，症状和「一切正常」完全一样。
 //
 // 文件被从工作树里删掉也是一种「和 HEAD 不同」，用固定标记表示 ——
 // 免得「删掉了」和「改成了空文件」算出同一个值。
 func workingContentHash(dir, rel string) string {
-	data, err := os.ReadFile(filepath.Join(dir, rel))
+	full := filepath.Join(dir, rel)
+	info, err := os.Stat(full)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "<deleted>"
@@ -259,8 +268,12 @@ func workingContentHash(dir, rel string) string {
 		// 但它仍然是个稳定的标记，所以不会让闸门天天响。
 		return "<unreadable>"
 	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return "<unreadable>"
+	}
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return fmt.Sprintf("%o:%s", info.Mode().Perm(), hex.EncodeToString(sum[:]))
 }
 
 // LoadState 读出记录的状态。

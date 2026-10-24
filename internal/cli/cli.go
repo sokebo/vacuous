@@ -211,24 +211,43 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 	// around.
 	sup := newSuppressor(root)
 
+	// The file scope of this analysis: which files the checks are allowed
+	// to look at, and therefore which files the conclusion may depend on.
+	//
+	// The list comes from HEAD - the repository as it is committed. "all"
+	// mode adds the untracked files on top, because that mode is
+	// explicitly the "look at everything on disk" one.
+	//
+	// This list is not a detail. A check that reads a file outside it makes
+	// the conclusion depend on something the repository does not contain -
+	// and the gate cannot see those files, so "no change" and "the
+	// conclusion changed" could both be true at once.
+	files, err := repo.TrackedFiles("HEAD")
+	if err != nil {
+		if opts.Mode != "audit" {
+			return nil, err
+		}
+		// There is no HEAD, so there is no commit to audit and no list to
+		// speak of. Nothing can depend on it.
+		files = nil
+	}
+	scope := core.FileScopeOf(files)
+	if opts.Mode == "all" {
+		files = append(files, untrackedPaths(root)...)
+		scope = core.FileScopeOf(files)
+	}
+
 	// The adapter is only needed by the counterfactual audit, which has to
 	// actually run a test suite. The static checks read files, so they work
 	// in any repository - including the ones with no test runner at all,
 	// which is exactly where "there are no tests" is the finding.
-	adaptersFound := adapters.Detect(root)
+	adaptersFound := adapters.Detect(root, scope)
 	var adapter core.Adapter
 	if len(adaptersFound) > 0 {
 		adapter = adaptersFound[0]
 	}
 
 	if opts.Mode == "check" || opts.Mode == "all" {
-		files, err := repo.TrackedFiles("HEAD")
-		if err != nil {
-			return nil, err
-		}
-		if opts.Mode == "all" {
-			files = append(files, untrackedPaths(root)...)
-		}
 		skipped, err := detect.Skipped(root, files)
 		if err != nil {
 			return nil, err
@@ -237,7 +256,7 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 		if err != nil {
 			return nil, err
 		}
-		guards, err := detect.GuardLiveness(root)
+		guards, err := detect.GuardLiveness(root, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -250,7 +269,7 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 			rep.Add(f)
 		}
 		if adapter == nil {
-			rep.Add(noRunnerFinding(root, files))
+			rep.Add(noRunnerFinding(root, files, scope))
 		}
 		// Say out loud which tests the report does not cover.
 		for _, f := range detect.UnsupportedTests(root, files) {
@@ -268,7 +287,7 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 			// Say which of the two situations this is. The sentence
 			// itself, and why it reads the way it does, live in
 			// noRunnerMessage.
-			return nil, fmt.Errorf("%s", noRunnerMessage(root, adapters.UnittestSuites(root)))
+			return nil, fmt.Errorf("%s", noRunnerMessage(root, scope))
 		}
 		if err := runAudit(ctx, opts, repo, adapter, rep); err != nil {
 			return nil, err
@@ -294,7 +313,8 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 //
 // The same sentence used to say the tool "only drives pytest", which
 // stopped being true the moment the unittest adapter landed.
-func noRunnerMessage(root string, suites []string) string {
+func noRunnerMessage(root string, scope core.FileScope) string {
+	suites := adapters.UnittestSuites(root, scope)
 	if len(suites) > 0 {
 		return fmt.Sprintf(
 			"这个仓的 Python 测试用的是 python -m unittest（%s），"+

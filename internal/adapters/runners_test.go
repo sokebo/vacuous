@@ -3,6 +3,8 @@ package adapters
 import (
 	"strings"
 	"testing"
+
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // The tool's reach
@@ -46,7 +48,7 @@ func TestTheToolCanDriveEveryRunnerItClaims(t *testing.T) {
 	root := unittestRunnerProject(t)
 
 	p := NewPython()
-	if !p.Detect(root) {
+	if !p.Detect(root, core.FileScopeAll()) {
 		t.Fatalf("the python adapter did not claim a unittest project")
 	}
 	if p.mode != modeUnittest {
@@ -73,7 +75,7 @@ func TestTheToolCanDriveEveryRunnerItClaims(t *testing.T) {
 func TestTheToolClaimsNoRunnerItCannotDrive(t *testing.T) {
 	root := unittestRunnerProject(t)
 	p := NewPython()
-	if !p.Detect(root) {
+	if !p.Detect(root, core.FileScopeAll()) {
 		t.Fatalf("the python adapter did not claim a unittest project")
 	}
 

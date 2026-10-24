@@ -39,6 +39,47 @@ func writeFile(t *testing.T, dir, rel, content string) {
 	}
 }
 
+// diskScope returns a scope holding every file under dir.
+//
+// The checkers outside a git repository have no tracked list to speak of;
+// listing the files on disk is the closest equivalent, and it still
+// exercises the scope - a path that is not in it stays invisible.
+func diskScope(t *testing.T, dir string) core.FileScope {
+	t.Helper()
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return core.FileScopeOf(files)
+}
+
+// unittestRepo builds a repository that has one unittest suite, and the
+// scope that covers it.
+//
+// The message the tool says when it cannot drive a repository's tests
+// depends on whether the repository has unittest suites - and that is now
+// decided by the scope, so the test has to build one it can point at.
+func unittestRepo(t *testing.T) (string, core.FileScope) {
+	t.Helper()
+	dir := t.TempDir()
+	writeFile(t, dir, "tests/test_thing.py", "import unittest\n")
+	return dir, core.FileScopeOf([]string{"tests/test_thing.py"})
+}
+
 // TestNoRunnerFindingDoesNotCallACheckedRepoUnprotected is the case the
 // bug was found on.
 func TestNoRunnerFindingDoesNotCallACheckedRepoUnprotected(t *testing.T) {
@@ -51,7 +92,7 @@ func TestNoRunnerFindingDoesNotCallACheckedRepoUnprotected(t *testing.T) {
 `)
 	writeFile(t, dir, "scripts/verify/run-all.mjs", "process.exit(0)\n")
 
-	f := noRunnerFinding(dir, []string{"package.json", "scripts/verify/run-all.mjs", "src/app.js"})
+	f := noRunnerFinding(dir, []string{"package.json", "scripts/verify/run-all.mjs", "src/app.js"}, diskScope(t, dir))
 
 	if f.Kind == core.KindNoTestForFix {
 		t.Fatalf("the repository runs its own checks; it must not be reported as untested: %+v", f)
@@ -80,7 +121,7 @@ func TestNoRunnerFindingStillReportsARepositoryWithNoChecks(t *testing.T) {
 `)
 	writeFile(t, dir, "src/patterns/theme-reveal.js", "export const x = 1\n")
 
-	f := noRunnerFinding(dir, []string{"package.json", "src/patterns/theme-reveal.js"})
+	f := noRunnerFinding(dir, []string{"package.json", "src/patterns/theme-reveal.js"}, diskScope(t, dir))
 
 	if f.Kind != core.KindNoTestForFix {
 		t.Errorf("kind = %q, want %q", f.Kind, core.KindNoTestForFix)
@@ -106,7 +147,7 @@ func TestNoRunnerFindingStillReportsARepositoryWithOnlyABuildScript(t *testing.T
 `)
 	writeFile(t, dir, "scripts/build.mjs", "process.exit(0)\n")
 
-	f := noRunnerFinding(dir, []string{"package.json", "scripts/build.mjs", "src/app.js"})
+	f := noRunnerFinding(dir, []string{"package.json", "scripts/build.mjs", "src/app.js"}, diskScope(t, dir))
 
 	if f.Kind != core.KindNoTestForFix {
 		t.Errorf("kind = %q, want %q", f.Kind, core.KindNoTestForFix)
@@ -140,7 +181,7 @@ func TestNoRunnerFindingStillReportsARepositoryWhoseCheckIsElsewhere(t *testing.
 	writeFile(t, dir, "src/styles/index.css", "body {}\n")
 	writeFile(t, parent, "theme-pkg/scripts/check-consumer.mjs", "process.exit(0)\n")
 
-	f := noRunnerFinding(dir, []string{"package.json", "src/styles/index.css", "src/app.js"})
+	f := noRunnerFinding(dir, []string{"package.json", "src/styles/index.css", "src/app.js"}, diskScope(t, dir))
 
 	if f.Kind != core.KindNoTestForFix {
 		t.Errorf("kind = %q, want %q", f.Kind, core.KindNoTestForFix)
@@ -170,7 +211,7 @@ func TestNoRunnerFindingStillReportsARepositoryWhoseCheckIsARunner(t *testing.T)
 `)
 	writeFile(t, dir, "scripts/legacy.mjs", "test('x', () => {})\n")
 
-	f := noRunnerFinding(dir, []string{"package.json", "scripts/legacy.mjs", "src/app.js"})
+	f := noRunnerFinding(dir, []string{"package.json", "scripts/legacy.mjs", "src/app.js"}, diskScope(t, dir))
 
 	if f.Kind == core.KindUnsupportedTests {
 		t.Errorf("a runner the tool drives must not be reported as a blind spot: %+v", f)
@@ -241,7 +282,7 @@ func TestNoRunnerFindingDoesNotCallALibraryPackageUnprotected(t *testing.T) {
 		"package.json",
 		"scripts/check-consumer.mjs",
 		"src/patterns/theme-reveal.js",
-	})
+	}, diskScope(t, dir))
 
 	if f.Kind == core.KindNoTestForFix {
 		t.Fatalf("the repository ships a check; it must not be reported as untested: %+v", f)
@@ -276,7 +317,7 @@ func TestNoRunnerFindingStillReportsALibraryWithOnlyABuildScript(t *testing.T) {
 		"package.json",
 		"scripts/build-font-subset.mjs",
 		"src/patterns/theme-reveal.js",
-	})
+	}, diskScope(t, dir))
 
 	if f.Kind != core.KindNoTestForFix {
 		t.Errorf("kind = %q, want %q", f.Kind, core.KindNoTestForFix)

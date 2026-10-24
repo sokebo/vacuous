@@ -63,6 +63,56 @@ func commit(t *testing.T, dir string) {
 	}
 }
 
+// trackedScope returns the scope of a test repository: the files git
+// tracks in it.
+//
+// This is what production uses - the list of files the repository actually
+// contains. A test that used "everything on disk" instead would pass even
+// if the scope were ignored, and the scope is the thing under test here.
+func trackedScope(t *testing.T, dir string) core.FileScope {
+	t.Helper()
+	out, err := runGit(dir, "ls-files")
+	if err != nil {
+		t.Fatalf("git ls-files: %v", err)
+	}
+	var files []string
+	for _, f := range strings.Split(out, "\n") {
+		if f = strings.TrimSpace(f); f != "" {
+			files = append(files, f)
+		}
+	}
+	return core.FileScopeOf(files)
+}
+
+// diskScope returns a scope holding every file under dir.
+//
+// Some detectors are tested outside a git repository, where there is no
+// tracked list to speak of. Listing the files on disk is the closest
+// equivalent - and it still exercises the scope, because a path that is
+// not in the scope stays invisible.
+func diskScope(t *testing.T, dir string) core.FileScope {
+	t.Helper()
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return core.FileScopeOf(files)
+}
+
 // hasFinding reports whether a finding of the given kind and file is present.
 func hasFinding(fs []core.Finding, kind, file string) bool {
 	for _, f := range fs {
@@ -240,7 +290,7 @@ func TestGuardNotInstalled(t *testing.T) {
 	}
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -264,7 +314,7 @@ func TestGuardInstalledIsQuiet(t *testing.T) {
 		t.Fatalf("git config: %v\n%s", err, out)
 	}
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -305,7 +355,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -353,7 +403,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -386,7 +436,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -415,7 +465,7 @@ func TestGuardAbsolutePathIsReported(t *testing.T) {
 		t.Fatalf("git config: %v\n%s", err, out)
 	}
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}

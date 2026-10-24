@@ -102,6 +102,7 @@ internal/counterfactual/  反事实引擎（owner 保留）
 以下接口在 `internal/core` 中已定义，实现方**不得修改**：
 
 - `core.Adapter` — 语言适配器契约（Detect / Plan / Run）
+- `core.FileScope` — 一次分析允许看的文件集合（见 4.5）
 - `core.Repo` / `core.Worktree` / `core.WorktreeFactory` — git 契约
 - `core.Finding` / `core.Report` / `core.RunResult` / `core.TestOutcome` — 数据模型
 
@@ -143,7 +144,9 @@ func (r *Repo) NewWorktree(rev string) (core.Worktree, error)
 package adapters
 
 // Detect 返回能驱动 root 项目的所有适配器（按优先级排序）。
-func Detect(root string) []core.Adapter
+// 标记文件（go.mod / package.json / pytest 配置）必须在 scope 里，
+// 否则这个项目不算被驱动。
+func Detect(root string, scope core.FileScope) []core.Adapter
 
 // IsTestDataPath 判断该路径是不是落在名为 testdata 的目录里。
 // 名字精确匹配，任意深度都算。
@@ -209,13 +212,41 @@ func Skipped(root string, files []string) ([]core.Finding, error)
 func DiscardedErrors(root string, files []string) ([]core.Finding, error)
 
 // GuardLiveness 查出「守卫文件在但没装上」「守卫装了但不随目录搬家」。
-func GuardLiveness(root string) ([]core.Finding, error)
+// 只看 scope 里的文件：仓里没有的 hook / workflow 不是这个仓的守卫。
+func GuardLiveness(root string, scope core.FileScope) ([]core.Finding, error)
 
 type Options struct {
     // Config 覆盖默认的跳过条件关键词等。
     Config map[string]any
 }
 ```
+
+### 4.5 `internal/core` 的文件作用域
+
+```go
+package core
+
+// FileScope 说清楚一次分析允许看哪些文件。
+type FileScope struct { /* ... */ }
+
+// FileScopeOf 让分析只看给定的这些仓库相对路径。
+func FileScopeOf(paths []string) FileScope
+
+// FileScopeAll 让分析看整个磁盘。
+// 只给「一次临时检出的内容本身就是范围」或「测试夹具不是 git 仓」用。
+func FileScopeAll() FileScope
+
+// Allows 报告这个路径在不在范围里。
+func (s FileScope) Allows(rel string) bool
+```
+
+**为什么它是一等公民**：一次分析的结论只能取决于它看的那份文件清单，和
+这些文件在工作树里的内容。任何越过清单去读磁盘的动作，都会让结论取决于
+这个仓里**并不存在**的东西 —— 而闸门看不见那种东西，于是「没变化」和
+「结论变了」可以同时成立。
+
+`check` 模式的作用域是 HEAD 的被跟踪文件；`all` 模式再加上未跟踪的文件
+（那一档本来就是「磁盘上有什么都看」）。
 
 ### 4.4 `internal/report` 须导出
 

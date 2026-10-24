@@ -28,7 +28,7 @@ func newAuditor(t *testing.T, dir string) *Auditor {
 	t.Cleanup(func() { repo.CleanupWorktrees() })
 
 	adapter := adapters.NewGo()
-	if !adapter.Detect(dir) {
+	if !adapter.Detect(dir, core.FileScopeAll()) {
 		t.Fatalf("go adapter did not detect the fixture at %s", dir)
 	}
 

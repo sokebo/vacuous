@@ -90,7 +90,7 @@ func TestUnittestSuitesFindsTheRootSuite(t *testing.T) {
 	writeFile(t, root, "test_thing.py", "import unittest\n")
 	writeFile(t, root, "calc.py", "def add(a, b):\n    return a + b\n")
 
-	got := UnittestSuites(root)
+	got := UnittestSuites(root, core.FileScopeAll())
 	if !suiteListHas(got, ".") {
 		t.Fatalf("UnittestSuites() = %v, want the root (\".\") in the list: a "+
 			"project whose tests sit at the top is a unittest project the tool "+
@@ -254,7 +254,7 @@ func TestThePythonAdapterClaimsARootLevelUnittestProject(t *testing.T) {
 	writeFile(t, root, "calc.py", "def add(a, b):\n    return a + b\n")
 
 	p := NewPython()
-	if !p.Detect(root) {
+	if !p.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the python adapter did not claim a project whose tests sit at the " +
 			"top of the tree")
 	}
@@ -292,7 +292,7 @@ func TestTheRootSuiteIsNearEveryChange(t *testing.T) {
 	writeFile(t, root, "test_thing.py", "import unittest\n")
 	writeFile(t, root, "pkg/deep/inside/calc.py", "x = 1\n")
 
-	suites := UnittestSuites(root)
+	suites := UnittestSuites(root, core.FileScopeAll())
 	near, complete := unittestSuitesNear(suites, root, []string{"pkg/deep/inside/calc.py"})
 	if !complete {
 		t.Fatal("a change deep in the tree found no suite at all, so the mapping " +
@@ -386,7 +386,7 @@ func TestARunCountsATestOnce(t *testing.T) {
 		"import unittest\n\nclass T(unittest.TestCase):\n    def test_b(self):\n        self.assertTrue(True)\n")
 
 	a := NewPython()
-	if !a.Detect(root) {
+	if !a.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the adapter did not detect the fixture")
 	}
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
@@ -429,7 +429,7 @@ func TestARunOfARootLevelSuiteDragsInNothing(t *testing.T) {
 		"import unittest\nfrom helper import VALUE\n\nclass T(unittest.TestCase):\n    def test_sub(self):\n        self.assertEqual(VALUE, 42)\n")
 
 	a := NewPython()
-	if !a.Detect(root) {
+	if !a.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the adapter did not detect the fixture")
 	}
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})

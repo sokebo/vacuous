@@ -73,7 +73,7 @@ test('the fixed behaviour', () => {
 	testfixtures.NodeRunner(t, root)
 
 	a := NewNode()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 
 	plan, err := a.Plan(context.Background(), core.PlanRequest{
 		Root:   root,
@@ -165,7 +165,7 @@ test('the fixed behaviour', () => {
 	testfixtures.NodeRunner(t, root)
 
 	a := NewNode()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{
 		Root:   root,
 		Target: core.TestTarget{Files: []string{"test/helpers.mjs"}},
@@ -211,7 +211,7 @@ test('the fixed behaviour', () => {
 	testfixtures.NodeRunner(t, root)
 
 	a := NewNode()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{
 		Root:   root,
 		Target: core.TestTarget{Files: []string{"src/calc.test.js"}},
@@ -261,7 +261,7 @@ test('never runs', () => {
 	testfixtures.NodeRunner(t, root)
 
 	a := NewNode()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
 		t.Fatalf("plan: %v", err)

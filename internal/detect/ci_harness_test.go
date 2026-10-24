@@ -48,7 +48,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -99,7 +99,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -134,7 +134,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -170,7 +170,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -212,7 +212,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -242,7 +242,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -289,7 +289,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
@@ -324,7 +324,7 @@ jobs:
 `)
 	commit(t, dir)
 
-	findings, err := GuardLiveness(dir)
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {
 		t.Fatalf("GuardLiveness: %v", err)
 	}
