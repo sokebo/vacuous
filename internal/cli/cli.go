@@ -268,8 +268,15 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 			checkFindings = append(checkFindings, f)
 			rep.Add(f)
 		}
+		// The "no tests at all" verdict does not depend on the runner, so
+		// it is evaluated either way: a repository with a working runner
+		// and not a single test file is exactly as unprotected as one
+		// without a runner. Only the runner-specific findings ("there are
+		// tests but nobody runs them") need the runner to be missing.
 		if adapter == nil {
 			rep.Add(noRunnerFinding(root, files, scope))
+		} else if f, ok := noTestsAtAll(root, files, scope); ok {
+			rep.Add(f)
 		}
 		// Say out loud which tests the report does not cover.
 		for _, f := range detect.UnsupportedTests(root, files) {

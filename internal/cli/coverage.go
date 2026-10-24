@@ -128,19 +128,7 @@ func noRunnerFinding(root string, files []string, scope core.FileScope) core.Fin
 
 	switch {
 	case src > 0 && tests == 0 && len(harness) == 0:
-		return core.Finding{
-			Kind:     core.KindNoTestForFix,
-			Severity: core.SevHigh,
-			Summary:  "这个仓库有代码，但一个测试文件都没有",
-			Detail: fmt.Sprintf(
-				"仓库里有 %d 个源文件，但没有找到任何测试文件，也没有能跑测试的命令。\n"+
-					"这意味着这里的每一次行为修改都没有对应的断言 —— "+
-					"改错了，没有任何东西会变红。",
-				src),
-			Evidence: "检查过的源文件数: " + strconv.Itoa(src) + " · 找到的测试文件数: 0",
-			Hint: "先给最关键的那条路径补一个测试。" +
-				"不需要全套 —— 一个能在改坏时变红的测试就够了",
-		}
+		return noTestForFixFinding(src, true)
 
 	case len(harness) > 0:
 		return harnessFinding(harness, src, tests)
