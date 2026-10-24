@@ -72,7 +72,11 @@ type RemoteResult struct {
 // 读不出来的时候报「判不出来」，不报「没变化」：远端读不通时 git 的 stdout
 // 是空的，而「空的输出」和「远端真的没有这个分支」在脚本里长得一模一样。
 // 把前者当成后者，就是把「判不出来」悄悄说成「没问题」。
-func CheckRemote(localDir, remoteName string) RemoteResult {
+//
+// 问的远端就是**分支自己追的那个** —— 那是 git 真正会 fetch 的地方。
+// 不给「问哪个远端」留口子：分支追的是 A 就问 A，问 B 只会得到一个
+// 「本地跟 B 是什么关系」的答案，而那不是有人想知道的事。
+func CheckRemote(localDir string) RemoteResult {
 	res := RemoteResult{Repo: localDir, Status: RemoteUnknown}
 
 	branch := strings.TrimSpace(gitOutputOrEmpty(localDir, "symbolic-ref", "--quiet", "--short", "HEAD"))
@@ -92,11 +96,6 @@ func CheckRemote(localDir, remoteName string) RemoteResult {
 	}
 	remote := fields[0]
 	remoteBranch := strings.TrimPrefix(fields[1], "refs/heads/")
-	if remoteName != "" && remoteName != "origin" {
-		// 调用方点名了远端就听它的；但分支的上游说的是另一条远端时，
-		// 以调用方为准 —— 它问的就是那个远端。
-		remote = remoteName
-	}
 	res.RemoteBranch = remoteBranch
 
 	out, err := gitOutput(localDir, "ls-remote", "--heads", remote, "refs/heads/"+remoteBranch)

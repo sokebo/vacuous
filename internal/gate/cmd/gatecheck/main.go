@@ -113,7 +113,7 @@ func runRemote(repo string, extraTargets stringList) int {
 			})
 			continue
 		}
-		results = append(results, gate.CheckRemote(abs, "origin"))
+		results = append(results, gate.CheckRemote(abs))
 	}
 
 	var changed, unknown []gate.RemoteResult
