@@ -71,9 +71,11 @@ vacuous 的独特点：**用真实 git 历史做反事实执行**。不改代码
   - 若空值让**保护性中止**（`return` / `os.Exit`）被跳过 → 程序带着空结果
     继续往下走 ❌
   - 两种形状分开报告，措辞不同
-- `guard-not-installed` — 守卫文件在，但 `core.hooksPath` 没设 / hook 没装 /
-  CI 里没跑测试 / CI 里有 `continue-on-error: true`。守卫没装上，没有任何症状，
-  直到出事那天。
+- `guard-not-installed` — 守卫文件在，但 git 实际找 hook 的那个目录里没有它。
+  那个目录是 `core.hooksPath` 指的地方，没设时是默认的 `.git/hooks/` ——
+  **两者互相排斥**：设了 `core.hooksPath`，git 就完全不看 `.git/hooks/`。
+  也包括 hook 没装 / CI 里没跑测试 / CI 里有 `continue-on-error: true`。
+  守卫没装上，没有任何症状，直到出事那天。
 - `guard-not-portable` — 守卫用绝对路径安装，目录一搬就失效。
 - `no-test-for-fix` / `no-test-runner` — 仓库里**一个测试文件都没有**，
   或者有测试文件却没有能跑它们的命令。
