@@ -102,14 +102,14 @@ func testCount(files []string) int {
 //   - its own check command: the checks exist, this tool cannot drive
 //     them. INFO - the repository is not empty, the report is blind.
 //   - neither: there is simply nothing here to test. INFO.
-func noRunnerFinding(root string, files []string) core.Finding {
+func noRunnerFinding(root string, files []string, scope core.FileScope) core.Finding {
 	src := sourceCount(files)
 	tests := testCount(files)
 	// The repository may run its own checks. "No test file the tool
 	// recognises" is not the same as "no checks" - and the difference
 	// decides what the reader does next: write tests, or ask for an
 	// adapter.
-	harness := detect.HarnessCommands(root)
+	harness := detect.HarnessCommands(root, scope)
 	if tests == 0 {
 		// A repository can also ship its check as a plain script that
 		// nobody registered in package.json. A library package usually

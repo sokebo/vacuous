@@ -30,8 +30,15 @@ func NewNode() *Node { return &Node{} }
 func (n *Node) Name() string { return "node" }
 
 // Detect reports whether root holds a package.json with a test script.
-func (n *Node) Detect(root string) bool {
+//
+// The package.json has to be inside the scope: it is what says this
+// project has a test script, and a package.json the project does not
+// contain says nothing about it.
+func (n *Node) Detect(root string, scope core.FileScope) bool {
 	n.root = root
+	if !scope.Allows("package.json") {
+		return false
+	}
 	pkg, err := readNodePackage(root)
 	if err != nil {
 		return false

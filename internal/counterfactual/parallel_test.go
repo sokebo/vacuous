@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sokebo/vacuous/internal/adapters"
+	"github.com/sokebo/vacuous/internal/core"
 	"github.com/sokebo/vacuous/internal/git"
 	"github.com/sokebo/vacuous/internal/testfixtures"
 )
@@ -36,7 +37,7 @@ func newParallelAuditor(t *testing.T, dir string, concurrency int, timeout time.
 	t.Cleanup(func() { repo.CleanupWorktrees() })
 
 	adapter := adapters.NewGo()
-	if !adapter.Detect(dir) {
+	if !adapter.Detect(dir, core.FileScopeAll()) {
 		t.Fatalf("go adapter did not detect the fixture at %s", dir)
 	}
 

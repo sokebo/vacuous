@@ -618,3 +618,63 @@ func TestSaveStateDoesNotDirtyTheRepository(t *testing.T) {
 		t.Errorf("写状态动了 HEAD：%s → %s", headBefore, headAfter)
 	}
 }
+
+// TestCheckReportsTargetWorkingTreeModeChange 守的是指纹的权限位那一半。
+//
+// 一个文件的内容一个字没动，只是从 644 变成了 755 —— 而 check 的结论可能
+// 就变了：一个 hook 是不是可执行，决定了工具会不会说「这个守卫从来没被装
+// 上」。指纹只哈希内容的话，这种变化算不出来，闸门于是报「没变化」。
+//
+// 症状和「一切正常」完全一样：NO CHANGE、退出码 0、CI 绿。
+func TestCheckReportsTargetWorkingTreeModeChange(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	// 先让这个文件脏起来 —— 它已经在「与 HEAD 不同的那些文件」里。
+	// 剩下的差别就只有权限位，测的才是权限位本身。
+	writeFile(t, target, "main.go", "package main\n\nfunc main() { println(1) }\n")
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 内容一个字没动，只改权限。
+	if err := os.Chmod(filepath.Join(target, "main.go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	changes := Check(dir, loaded)
+	if len(changes) != 1 {
+		t.Fatalf("权限位变了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+	}
+	if changes[0].Kind != "target-dirty" {
+		t.Errorf("应该是 target-dirty，实际是 %q", changes[0].Kind)
+	}
+}
+
+// TestWorkingFingerprintIsQuietWhenNothingChanged 守的是「宁可漏报不可误伤」。
+//
+// 指纹多算了一样东西（权限位），就得确认它没有变成「天天响」的理由：
+// 什么都没动的时候，指纹必须和上次一模一样。
+func TestWorkingFingerprintIsQuietWhenNothingChanged(t *testing.T) {
+	target := seedRepo(t)
+
+	first, err := WorkingFingerprint(target)
+	if err != nil {
+		t.Fatalf("算指纹失败: %v", err)
+	}
+	second, err := WorkingFingerprint(target)
+	if err != nil {
+		t.Fatalf("算指纹失败: %v", err)
+	}
+	if first != second {
+		t.Errorf("什么都没动，指纹却变了:\n%s\n%s", first, second)
+	}
+}

@@ -33,7 +33,7 @@ func TestHarnessCommandsFindsTheVerifyScript(t *testing.T) {
 `)
 	write(t, dir, "scripts/verify/run-all.mjs", "process.exit(0)\n")
 
-	got := HarnessCommands(dir)
+	got := HarnessCommands(dir, diskScope(t, dir))
 	if len(got) != 1 {
 		t.Fatalf("HarnessCommands() = %+v, want exactly one harness", got)
 	}
@@ -58,7 +58,7 @@ func TestHarnessCommandsFindsAQualifiedScriptName(t *testing.T) {
 `)
 	write(t, dir, "scripts/smoke-test-css.mjs", "process.exit(0)\n")
 
-	got := HarnessCommands(dir)
+	got := HarnessCommands(dir, diskScope(t, dir))
 	if len(got) != 1 {
 		t.Fatalf("HarnessCommands() = %+v, want exactly one harness", got)
 	}
@@ -81,7 +81,7 @@ func TestHarnessCommandsIgnoresABuildScript(t *testing.T) {
 `)
 	write(t, dir, "scripts/build.mjs", "process.exit(0)\n")
 
-	if got := HarnessCommands(dir); len(got) != 0 {
+	if got := HarnessCommands(dir, diskScope(t, dir)); len(got) != 0 {
 		t.Fatalf("HarnessCommands() = %+v, want none: a build is not a check", got)
 	}
 }
@@ -105,7 +105,7 @@ func TestHarnessCommandsIgnoresARunnerTheToolDrives(t *testing.T) {
 		write(t, dir, "package.json", `{"scripts": {"test": "`+cmd+`"}}`)
 		write(t, dir, "scripts/legacy.mjs", "test('x', () => {})\n")
 
-		if got := HarnessCommands(dir); len(got) != 0 {
+		if got := HarnessCommands(dir, diskScope(t, dir)); len(got) != 0 {
 			t.Errorf("HarnessCommands() = %+v for %q, want none: the tool drives that runner", got, cmd)
 		}
 	}
@@ -134,7 +134,7 @@ func TestHarnessCommandsIgnoresScriptsOutsideTheRepository(t *testing.T) {
 	write(t, repo, "src/styles/index.css", "body {}\n")
 	write(t, parent, "theme-pkg/scripts/check-consumer.mjs", "process.exit(0)\n")
 
-	if got := HarnessCommands(repo); len(got) != 0 {
+	if got := HarnessCommands(repo, diskScope(t, repo)); len(got) != 0 {
 		t.Fatalf("HarnessCommands() = %+v, want none: the script is in another repository", got)
 	}
 }
@@ -153,7 +153,7 @@ func TestHarnessCommandsIgnoresANonScriptFile(t *testing.T) {
 `)
 	write(t, dir, "config.json", "{}\n")
 
-	if got := HarnessCommands(dir); len(got) != 0 {
+	if got := HarnessCommands(dir, diskScope(t, dir)); len(got) != 0 {
 		t.Fatalf("HarnessCommands() = %+v, want none: a data file is not a script", got)
 	}
 }
@@ -174,7 +174,7 @@ func TestHarnessCommandsIgnoresADirectoryNamedLikeAScript(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	if got := HarnessCommands(dir); len(got) != 0 {
+	if got := HarnessCommands(dir, diskScope(t, dir)); len(got) != 0 {
 		t.Fatalf("HarnessCommands() = %+v, want none: that path is a directory", got)
 	}
 }
@@ -188,7 +188,7 @@ func TestHarnessCommandsIgnoresCommandsThatNameNoLocalFile(t *testing.T) {
 		dir := t.TempDir()
 		write(t, dir, "package.json", `{"scripts": {"check": "`+cmd+`"}}`)
 
-		if got := HarnessCommands(dir); len(got) != 0 {
+		if got := HarnessCommands(dir, diskScope(t, dir)); len(got) != 0 {
 			t.Errorf("HarnessCommands() = %+v for %q, want none", got, cmd)
 		}
 	}
@@ -211,7 +211,7 @@ func TestHarnessCommandsIgnoresADirectoryArgument(t *testing.T) {
 
 	// check.mjs is a real local file, so this one IS a harness. The
 	// directory argument must not add a second entry.
-	got := HarnessCommands(dir)
+	got := HarnessCommands(dir, diskScope(t, dir))
 	if len(got) != 1 {
 		t.Fatalf("HarnessCommands() = %+v, want exactly one harness", got)
 	}
@@ -226,7 +226,7 @@ func TestHarnessCommandsIsEmptyWithoutPackageJSON(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "main.go", "package main\n")
 
-	if got := HarnessCommands(dir); len(got) != 0 {
+	if got := HarnessCommands(dir, diskScope(t, dir)); len(got) != 0 {
 		t.Fatalf("HarnessCommands() = %+v, want none", got)
 	}
 }
@@ -240,7 +240,7 @@ func TestHarnessCommandsIgnoresAMalformedPackageJSON(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "package.json", "{not json at all")
 
-	if got := HarnessCommands(dir); len(got) != 0 {
+	if got := HarnessCommands(dir, diskScope(t, dir)); len(got) != 0 {
 		t.Fatalf("HarnessCommands() = %+v, want none", got)
 	}
 }
@@ -259,7 +259,7 @@ func TestHarnessCommandsNamesTheCommandItFound(t *testing.T) {
 `)
 	write(t, dir, "scripts/verify/run-all.mjs", "process.exit(0)\n")
 
-	got := HarnessCommands(dir)
+	got := HarnessCommands(dir, diskScope(t, dir))
 	if len(got) != 1 {
 		t.Fatalf("HarnessCommands() = %+v, want exactly one harness", got)
 	}

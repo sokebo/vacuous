@@ -103,7 +103,13 @@ type Adapter interface {
 	Name() string
 
 	// Detect reports whether this adapter can drive the project at root.
-	Detect(root string) bool
+	//
+	// The file scope says which files the answer may be based on. A marker
+	// file that is not in the scope is not part of the project - an
+	// untracked go.mod is a scratch file somebody left behind, and
+	// treating it as the project's marker made the tool stop reporting
+	// that a repository has no tests at all.
+	Detect(root string, scope FileScope) bool
 
 	// Plan resolves a target into a runnable command.
 	Plan(ctx context.Context, req PlanRequest) (Plan, error)

@@ -23,9 +23,15 @@ import (
 // Detect returns the adapters that can drive the project at root, most
 // specific first.
 //
+// The scope says which files the answer may be based on: the marker files
+// that make a project drivable (go.mod, package.json, a pytest config) have
+// to be part of the repository. One that is not is a scratch file on
+// somebody's disk, and letting it decide made the tool say things about a
+// repository it had never looked at.
+//
 // The first entry is the primary adapter: the one whose opinion counts when
 // the project could plausibly be read several ways.
-func Detect(root string) []core.Adapter {
+func Detect(root string, scope core.FileScope) []core.Adapter {
 	candidates := []core.Adapter{
 		NewGo(),
 		NewPython(),
@@ -33,7 +39,7 @@ func Detect(root string) []core.Adapter {
 	}
 	var out []core.Adapter
 	for _, a := range candidates {
-		if a.Detect(root) {
+		if a.Detect(root, scope) {
 			out = append(out, a)
 		}
 	}
@@ -106,25 +112,32 @@ func NewGo() *Go { return &Go{} }
 func (g *Go) Name() string { return "go" }
 
 // Detect reports whether root holds a Go module or workspace.
-func (g *Go) Detect(root string) bool {
-	if fileExists(filepath.Join(root, "go.mod")) {
+//
+// The go.mod (or go.work) has to be inside the scope. An untracked one
+// means the repository has no Go module - it is a leftover, and the
+// repository it sits next to is still a repository the tool cannot drive.
+func (g *Go) Detect(root string, scope core.FileScope) bool {
+	if scope.Allows("go.mod") && fileExists(filepath.Join(root, "go.mod")) {
 		return true
 	}
-	if fileExists(filepath.Join(root, "go.work")) {
+	if scope.Allows("go.work") && fileExists(filepath.Join(root, "go.work")) {
 		return true
 	}
 	// A repository can hold several independent modules, each in its own
 	// directory. A project that keeps its code in submodules still has Go
 	// tests, and refusing to look at it would leave the most interesting
 	// repositories unaudited.
-	return len(g.findModuleRoots(root)) > 0
+	return len(g.findModuleRoots(root, scope)) > 0
 }
 
 // findModuleRoots locates the go.mod files under a repository root.
 //
 // The search is bounded: it does not descend into a directory that already
 // contains a module, and it skips the usual noise directories.
-func (g *Go) findModuleRoots(root string) []string {
+//
+// A module counts only when its go.mod is inside the scope, for the same
+// reason the root one does.
+func (g *Go) findModuleRoots(root string, scope core.FileScope) []string {
 	var out []string
 	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -146,6 +159,9 @@ func (g *Go) findModuleRoots(root string) []string {
 			return filepath.SkipDir
 		}
 		if fileExists(filepath.Join(path, "go.mod")) {
+			if !scope.Allows(filepath.ToSlash(filepath.Join(rel, "go.mod"))) {
+				return nil
+			}
 			out = append(out, rel)
 			// A module's own subdirectories belong to it.
 			return filepath.SkipDir
@@ -244,7 +260,9 @@ func (g *Go) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, error) 
 	// tests. Running only the root module would silently ignore the rest,
 	// and "the tests passed" would be a statement about a fraction of the
 	// suite. The plan therefore names every module, and Run walks them.
-	modules := g.findModuleRoots(req.Root)
+	// The checkout IS the scope here: it holds exactly the files of the
+	// commit being audited, and nothing else.
+	modules := g.findModuleRoots(req.Root, core.FileScopeAll())
 	if len(modules) > 0 {
 		env = append(env, "VACUOUS_GO_MODULES="+strings.Join(modules, ","))
 	}

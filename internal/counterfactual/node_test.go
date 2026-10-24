@@ -104,7 +104,7 @@ func newNodeAuditor(t *testing.T, dir string) *Auditor {
 	t.Cleanup(func() { repo.CleanupWorktrees() })
 
 	adapter := adapters.NewNode()
-	if !adapter.Detect(dir) {
+	if !adapter.Detect(dir, core.FileScopeAll()) {
 		t.Fatalf("the Node adapter did not detect the fixture at %s", dir)
 	}
 

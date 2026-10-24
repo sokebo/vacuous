@@ -103,7 +103,7 @@ func removeArg(args []string, arg string) []string {
 // comes first, because the engine treats the first one as the truth.
 func TestDetectOrdersAdaptersByPriority(t *testing.T) {
 	root := copyFixture(t, "multilang")
-	got := Detect(root)
+	got := Detect(root, core.FileScopeAll())
 	var names []string
 	for _, a := range got {
 		names = append(names, a.Name())
@@ -124,7 +124,7 @@ func TestDetectOrdersAdaptersByPriority(t *testing.T) {
 func TestGoAdapterRunsRealSuite(t *testing.T) {
 	root := copyFixture(t, "goproj")
 	a := NewGo()
-	if !a.Detect(root) {
+	if !a.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the Go adapter did not detect the fixture")
 	}
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
@@ -173,7 +173,7 @@ func TestGoAdapterRunsRealSuite(t *testing.T) {
 func TestGoAdapterReportsBuildErrors(t *testing.T) {
 	root := copyFixture(t, "goproj-broken")
 	a := NewGo()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -197,7 +197,7 @@ func TestGoAdapterReportsBuildErrors(t *testing.T) {
 func TestGoAdapterGreenSuite(t *testing.T) {
 	root := copyFixture(t, "goproj-green")
 	a := NewGo()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -236,7 +236,7 @@ func TestGoAdapterGreenSuite(t *testing.T) {
 func TestGoAdapterRunsModuleInSubdirectory(t *testing.T) {
 	root := copyFixture(t, "goproj-subdir")
 	a := NewGo()
-	if !a.Detect(root) {
+	if !a.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the Go adapter did not detect the fixture")
 	}
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
@@ -269,7 +269,7 @@ func TestGoAdapterRunsModuleInSubdirectory(t *testing.T) {
 func TestGoAdapterDefeatsTheTestCache(t *testing.T) {
 	root := copyFixture(t, "goproj-green")
 	a := NewGo()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -352,7 +352,7 @@ func TestPythonAdapterRunsRealSuite(t *testing.T) {
 	requirePytest(t)
 	root := copyFixture(t, "pyproj")
 	a := NewPython()
-	if !a.Detect(root) {
+	if !a.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the Python adapter did not detect the fixture")
 	}
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
@@ -400,7 +400,7 @@ func TestPythonAdapterReportsCollectionError(t *testing.T) {
 	requirePytest(t)
 	root := copyFixture(t, "pycoll")
 	a := NewPython()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
 	if err != nil {
 		t.Fatalf("plan: %v", err)
@@ -442,7 +442,7 @@ func TestPythonIsTestPath(t *testing.T) {
 func TestPythonScopeFor(t *testing.T) {
 	root := copyFixture(t, "pyproj")
 	a := NewPython()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	got := a.ScopeFor([]string{"calc.py"})
 	if len(got) != 1 || got[0] != "test_calc.py" {
 		t.Fatalf("ScopeFor = %v, want [test_calc.py]", got)
@@ -458,7 +458,7 @@ func TestNodeAdapterRunsRealSuite(t *testing.T) {
 	root := copyFixture(t, "nodeproj")
 	requireNodeRunner(t, root)
 	a := NewNode()
-	if !a.Detect(root) {
+	if !a.Detect(root, core.FileScopeAll()) {
 		t.Fatal("the Node adapter did not detect the fixture")
 	}
 	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
@@ -516,7 +516,7 @@ func TestNodeIsTestPath(t *testing.T) {
 func TestNodeScopeFor(t *testing.T) {
 	root := copyFixture(t, "nodeproj")
 	a := NewNode()
-	a.Detect(root)
+	a.Detect(root, core.FileScopeAll())
 	got := a.ScopeFor([]string{"sum.js"})
 	if len(got) != 1 || got[0] != "sum.test.js" {
 		t.Fatalf("ScopeFor = %v, want [sum.test.js]", got)
@@ -652,7 +652,7 @@ func TestUnittestSuitesFindsUnittestProjects(t *testing.T) {
 	// Not a test file.
 	write("scripts/helper.py", "print('hi')\n")
 
-	got := UnittestSuites(dir)
+	got := UnittestSuites(dir, core.FileScopeAll())
 	want := map[string]bool{
 		"workbench/tests":                  true,
 		"revenue_margin/history_query_app": true,
@@ -686,7 +686,7 @@ func TestUnittestSuitesIsEmptyForAPytestProject(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	if got := UnittestSuites(dir); len(got) != 0 {
+	if got := UnittestSuites(dir, core.FileScopeAll()); len(got) != 0 {
 		t.Fatalf("UnittestSuites() = %v, want empty — a pytest project is not a unittest project", got)
 	}
 }
