@@ -3,6 +3,7 @@ package detect
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sokebo/vacuous/internal/core"
@@ -115,8 +116,437 @@ func TestAtMostFiveItemsLoudly(t *testing.T) {
 	}
 }
 
-// TestDiscardedBooleanIsNotAnError is the control for the signature.
+// TestGreaterOrEqualIsAskedTheSameQuestion is the control for ">=".
 //
+// The rule is one question asked of every operator: does an empty value
+// leave the guarded branch untaken? For "n >= 5" it does - the empty value
+// is 0, and "0 >= 5" is false - so the branch never runs, and the test
+// reports success without having checked anything.
+//
+// A checker that holds a list of two operators answers a different question
+// than the one the code was written to ask, and the hollow test it misses
+// stays hollow. That is what happened: "n >= 5" was invisible.
+//
+// Negative control: take ">=" out of the operator gate and this test fails.
+func TestGreaterOrEqualIsAskedTheSameQuestion(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "go.mod", "module demo\n\ngo 1.21\n")
+	write(t, dir, "store.go", `package demo
+
+import "errors"
+
+// CountThree leaves 3 on the error path.
+func CountThree() (int, error) { return 3, errors.New("boom") }
+
+// ItemsThree leaves a 3-element slice on the error path.
+func ItemsThree() ([]string, error) { return []string{"a", "b", "c"}, errors.New("boom") }
+`)
+	write(t, dir, "count_test.go", `package demo
+
+import "testing"
+
+// The error path leaves 3.
+//
+// "3 >= 5" is false, so the branch never runs: the test passes without
+// having checked anything.
+func TestAtLeastFive(t *testing.T) {
+	n, _ := CountThree()
+	if n >= 5 {
+		t.Fatalf("expected at least 5, got %d", n)
+	}
+}
+
+// "3 >= 3" is true, so the branch runs and the test fails loudly.
+func TestAtLeastThreeLoudly(t *testing.T) {
+	n, _ := CountThree()
+	if n >= 3 {
+		t.Fatalf("expected less than 3, got %d", n)
+	}
+}
+
+// Three elements are not five.
+func TestAtLeastFiveItems(t *testing.T) {
+	x, _ := ItemsThree()
+	if len(x) >= 5 {
+		t.Fatalf("expected at least 5, got %d", len(x))
+	}
+}
+
+// Three elements ARE at least three.
+func TestAtLeastThreeItemsLoudly(t *testing.T) {
+	x, _ := ItemsThree()
+	if len(x) >= 3 {
+		t.Fatalf("expected less than 3, got %d", len(x))
+	}
+}
+
+// The number on the left: "5 <= len(x)" is "len(x) >= 5".
+func TestAtLeastFiveFlipped(t *testing.T) {
+	x, _ := ItemsThree()
+	if 5 <= len(x) {
+		t.Fatalf("expected at least 5, got %d", len(x))
+	}
+}
+
+// The other way round: "5 >= len(x)" is "len(x) <= 5", and three
+// elements are at most five, so the branch runs.
+func TestAtMostFiveFlippedLoudly(t *testing.T) {
+	x, _ := ItemsThree()
+	if 5 >= len(x) {
+		t.Fatalf("expected more than 5, got %d", len(x))
+	}
+}
+
+// "5 <= len(x)" is true for three elements, so the branch runs.
+func TestAtLeastThreeFlippedLoudly(t *testing.T) {
+	x, _ := ItemsThree()
+	if 3 <= len(x) {
+		t.Fatalf("expected less than 3, got %d", len(x))
+	}
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, trackedFiles(t, dir))
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	// The finding is reported on the line that throws the error away.
+	for _, line := range []int{10, 26, 42} {
+		if !findingOnLine(findings, line) {
+			t.Errorf("line %d must be reported: an empty value leaves the branch "+
+				"untaken, so the assertion is a decoration. Findings: %+v", line, findings)
+		}
+	}
+	for _, line := range []int{18, 34, 51, 59} {
+		if findingOnLine(findings, line) {
+			t.Errorf("line %d must not be reported: the error path leaves a value that "+
+				"makes the branch run, so the test fails loudly. Findings: %+v",
+				line, findings)
+		}
+	}
+}
+
+// TestEqualWithANonZeroLimitIsAskedTheSameQuestion is the control for "==".
+//
+// "n == 5" asks the same question as "n != 0": the branch fails the test
+// when it holds, so the test demands the value be something else, and the
+// empty value (0) satisfies that demand without anything being checked.
+//
+// The harmless twin is "n == 0": the empty value makes the branch run, the
+// failure is loud, and there is nothing to report.
+//
+// Negative control: make branchRunsWhenEmpty answer "yes" for "==" and this
+// test fails.
+func TestEqualWithANonZeroLimitIsAskedTheSameQuestion(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "go.mod", "module demo\n\ngo 1.21\n")
+	write(t, dir, "store.go", `package demo
+
+import "errors"
+
+// CountThree leaves 3 on the error path.
+func CountThree() (int, error) { return 3, errors.New("boom") }
+`)
+	write(t, dir, "count_test.go", `package demo
+
+import "testing"
+
+// The error path leaves 3.
+//
+// "3 == 5" is false, so the branch never runs.
+func TestExactlyFive(t *testing.T) {
+	n, _ := CountThree()
+	if n == 5 {
+		t.Fatalf("expected not 5, got %d", n)
+	}
+}
+
+// "3 == 3" is true, so the branch runs and the test fails loudly.
+func TestExactlyThreeLoudly(t *testing.T) {
+	n, _ := CountThree()
+	if n == 3 {
+		t.Fatalf("expected not 3, got %d", n)
+	}
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, trackedFiles(t, dir))
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	if !findingOnLine(findings, 9) {
+		t.Errorf("line 9 must be reported: an empty value leaves the branch "+
+			"untaken, so the assertion is a decoration. Findings: %+v", findings)
+	}
+	if findingOnLine(findings, 17) {
+		t.Errorf("line 17 must not be reported: the error path leaves a value that "+
+			"makes the branch run, so the test fails loudly. Findings: %+v", findings)
+	}
+}
+
+// TestLessThanWithANonPositiveLimitIsAskedTheSameQuestion is the control
+// for "<".
+//
+// "n < 0" is the shape that asks for a non-negative count. The empty value
+// is 0, and "0 < 0" is false, so the branch never runs and the assertion is
+// a decoration.
+//
+// The harmless twin is "n < 5": "0 < 5" is true, the branch runs, the
+// failure is loud.
+//
+// Negative control: make branchRunsWhenEmpty answer "yes" for "<" and this
+// test fails.
+func TestLessThanWithANonPositiveLimitIsAskedTheSameQuestion(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "go.mod", "module demo\n\ngo 1.21\n")
+	write(t, dir, "store.go", `package demo
+
+import "errors"
+
+// CountThree leaves 3 on the error path.
+func CountThree() (int, error) { return 3, errors.New("boom") }
+`)
+	write(t, dir, "count_test.go", `package demo
+
+import "testing"
+
+// The error path leaves 3.
+//
+// "3 < 0" is false, so the branch never runs.
+func TestNotNegative(t *testing.T) {
+	n, _ := CountThree()
+	if n < 0 {
+		t.Fatalf("expected non-negative, got %d", n)
+	}
+}
+
+// "3 < 5" is true, so the branch runs.
+func TestBelowFiveLoudly(t *testing.T) {
+	n, _ := CountThree()
+	if n < 5 {
+		t.Fatalf("expected at least 5, got %d", n)
+	}
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, trackedFiles(t, dir))
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	if !findingOnLine(findings, 9) {
+		t.Errorf("line 9 must be reported: an empty value leaves the branch "+
+			"untaken, so the assertion is a decoration. Findings: %+v", findings)
+	}
+	if findingOnLine(findings, 17) {
+		t.Errorf("line 17 must not be reported: the error path leaves a value that "+
+			"makes the branch run, so the test fails loudly. Findings: %+v", findings)
+	}
+}
+
+// TestLessOrEqualWithANegativeLimitIsAskedTheSameQuestion is the control
+// for "<=".
+//
+// "n <= -1" asks for a count above -1. The empty value is 0, and
+// "0 <= -1" is false, so the branch never runs.
+//
+// The harmless twin is "n <= 5": "0 <= 5" is true, the branch runs, the
+// failure is loud.
+//
+// Negative control: make branchRunsWhenEmpty answer "yes" for "<=" and this
+// test fails.
+func TestLessOrEqualWithANegativeLimitIsAskedTheSameQuestion(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "go.mod", "module demo\n\ngo 1.21\n")
+	write(t, dir, "store.go", `package demo
+
+import "errors"
+
+// CountThree leaves 3 on the error path.
+func CountThree() (int, error) { return 3, errors.New("boom") }
+`)
+	write(t, dir, "count_test.go", `package demo
+
+import "testing"
+
+// The error path leaves 3.
+//
+// "3 <= -1" is false, so the branch never runs.
+func TestNotAtMostMinusOne(t *testing.T) {
+	n, _ := CountThree()
+	if n <= -1 {
+		t.Fatalf("expected more than -1, got %d", n)
+	}
+}
+
+// "3 <= 5" is true, so the branch runs.
+func TestAtMostFiveLoudly(t *testing.T) {
+	n, _ := CountThree()
+	if n <= 5 {
+		t.Fatalf("expected more than 5, got %d", n)
+	}
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, trackedFiles(t, dir))
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	if !findingOnLine(findings, 9) {
+		t.Errorf("line 9 must be reported: an empty value leaves the branch "+
+			"untaken, so the assertion is a decoration. Findings: %+v", findings)
+	}
+	if findingOnLine(findings, 17) {
+		t.Errorf("line 17 must not be reported: the error path leaves a value that "+
+			"makes the branch run, so the test fails loudly. Findings: %+v", findings)
+	}
+}
+
+// TestTheGuardShapeAsksTheSameQuestion is the control for the other shape.
+//
+// The same question is asked of a branch that stops the code instead of
+// failing the test:
+//
+//	if len(existing) >= 1 {
+//	    fmt.Println("库里已有数据，要继续请先清空")
+//	    return
+//	}
+//
+// The check exists to stop the program. When the load failed, the value is
+// empty, the branch does not run, and the program walks straight past the
+// check it was written to have.
+//
+// Negative control: take ">=" out of the operator gate and this test fails.
+func TestTheGuardShapeAsksTheSameQuestion(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "go.mod", "module demo\n\ngo 1.21\n")
+	write(t, dir, "store.go", `package demo
+
+import "errors"
+
+// List leaves an empty slice on the error path.
+func List() ([]string, error) {
+	return nil, errors.New("boom")
+}
+
+// ListOne leaves one entry on the error path.
+func ListOne() ([]string, error) {
+	return []string{"a"}, errors.New("boom")
+}
+`)
+	write(t, dir, "seed.go", `package demo
+
+import "fmt"
+
+func Seed() {
+	existing, _ := List()
+	if len(existing) >= 1 {
+		fmt.Println("库里已有数据，要继续请先清空")
+		return
+	}
+	fmt.Println("开始播种")
+}
+`)
+	write(t, dir, "seed_one.go", `package demo
+
+import "fmt"
+
+func SeedOne() {
+	existing, _ := ListOne()
+	if len(existing) >= 1 {
+		fmt.Println("库里已有数据")
+		return
+	}
+	fmt.Println("开始播种")
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, trackedFiles(t, dir))
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	// The guard that never ran.
+	if !hasFindingOnFileLine(findings, "seed.go", 6) {
+		t.Errorf("seed.go:6 must be reported: the guard is skipped because "+
+			"the value is empty. Findings: %+v", findings)
+	}
+	// The loud twin: the error path leaves one entry, "1 >= 1" is true, the
+	// guard runs, and there is nothing to report.
+	if hasFindingOnFileLine(findings, "seed_one.go", 6) {
+		t.Errorf("seed_one.go:6 must not be reported: the error path leaves a "+
+			"value that makes the branch run, so the guard does its job. Findings: %+v",
+			findings)
+	}
+}
+
+// hasFindingOnFileLine reports whether a finding sits on a given file and line.
+func hasFindingOnFileLine(findings []core.Finding, file string, line int) bool {
+	for _, f := range findings {
+		if f.File == file && f.Line == line {
+			return true
+		}
+	}
+	return false
+}
+
+// A right finding described in the wrong words is still a wrong report.
+// "这条断言要的正是「空的」" is true of "if len(x) != 0" and false of
+// "if n >= 5", where the assertion wants a value below 5.
+//
+// Negative control: make wantsSpelling answer "空的" for everything and
+// this test fails.
+func TestTheReportDescribesTheComparisonItFound(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "go.mod", "module demo\n\ngo 1.21\n")
+	write(t, dir, "store.go", `package demo
+
+import "errors"
+
+// CountThree leaves 3 on the error path.
+func CountThree() (int, error) { return 3, errors.New("boom") }
+`)
+	write(t, dir, "count_test.go", `package demo
+
+import "testing"
+
+func TestAtLeastFive(t *testing.T) {
+	n, _ := CountThree()
+	if n >= 5 {
+		t.Fatalf("expected at least 5, got %d", n)
+	}
+}
+`)
+	commit(t, dir)
+
+	findings, err := DiscardedErrors(dir, trackedFiles(t, dir))
+	if err != nil {
+		t.Fatalf("DiscardedErrors: %v", err)
+	}
+	var got string
+	for _, f := range findings {
+		if f.Line == 6 {
+			got = f.Summary
+		}
+	}
+	if got == "" {
+		t.Fatalf("the finding on line 6 is missing: %+v", findings)
+	}
+	// "少于 5" is what "n >= 5" demands of the value.
+	if !strings.Contains(got, "少于 5") {
+		t.Errorf("the report must name what the assertion demands of the value "+
+			"(\"少于 5\" for \"n >= 5\"), got: %s", got)
+	}
+	// "空的" would be a false sentence about this comparison.
+	if strings.Contains(got, "空的") {
+		t.Errorf("the report must not describe \"n >= 5\" as wanting an empty "+
+			"value, got: %s", got)
+	}
+}
+
 // "name, _ := lookup(k)" throws away a BOOLEAN when lookup returns
 // (string, bool). There was no error to throw away, and a report that says
 // "this test throws its errors away" accuses the code of throwing away

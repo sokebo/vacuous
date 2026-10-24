@@ -1,9 +1,8 @@
 package detect
 
 import (
+	"fmt"
 	"go/ast"
-	"go/token"
-	"strconv"
 )
 
 // This file answers one question: when a function throws an error away, what
@@ -48,8 +47,22 @@ import (
 //
 //	!= 0   empty → 0 != 0 is false → the branch does not run
 //	> 0    empty → 0 > 0 is false → the branch does not run
+//	>= 5   empty → 0 >= 5 is false → the branch does not run
+//	== 5   empty → 0 == 5 is false → the branch does not run
+//	< 0    empty → 0 < 0 is false → the branch does not run
+//	<= -1  empty → 0 <= -1 is false → the branch does not run
+//
+// And the other side of the same question, which is harmless because the
+// failure stays loud:
+//
 //	== 0   empty → the branch runs → the failure is loud → harmless
 //	< 1    empty → the branch runs → the failure is loud → harmless
+//
+// Every one of these is the same question asked of a different operator, so
+// the rule is asked once, of all of them — see branchRunsWhenEmpty. Listing
+// the operators instead of asking the question is how "n >= 5" ends up
+// invisible: a list that holds {"!=", ">"} answers a different question than
+// the one the code was written to ask.
 func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 	var out []goEmptiness
 
@@ -60,7 +73,7 @@ func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 		}
 		op := bin.Op.String()
 		switch op {
-		case "!=", ">", "==", "<":
+		case "!=", "==", ">", ">=", "<", "<=":
 		default:
 			return true
 		}
@@ -78,30 +91,28 @@ func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 				op = "<"
 			case "<":
 				op = ">"
+			case ">=":
+				op = "<="
+			case "<=":
+				op = ">="
 			}
 		}
 
 		// The comparison has to be against a number for "empty" to have a
 		// meaning.
-		limit, isNum := constValue(other)
+		//
+		// intLiteralValue reads a negated literal too ("-1" is a unary
+		// expression, not a literal), so a comparison against a negative
+		// number is asked the same question as any other.
+		limit, isNum := intLiteralValue(other)
 		if !isNum {
 			return true
 		}
 
 		// Keep only the comparisons where an empty value leaves the
-		// branch untaken.
-		switch op {
-		case "!=":
-			if limit != 0 {
-				return true
-			}
-		case ">":
-			if limit < 0 {
-				return true
-			}
-		default:
-			// "== 0" and "< 1" run the branch when the value is empty,
-			// so the failure is loud. Not a finding.
+		// branch untaken. This is one question, asked of whichever
+		// operator the code happened to use.
+		if branchRunsWhenEmpty(op, limit) {
 			return true
 		}
 
@@ -123,6 +134,89 @@ func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 	})
 
 	return out
+}
+
+// branchRunsWhenEmpty reports whether the guarded branch still runs when the
+// value behind it is empty.
+//
+// This is the whole rule, and it is one question asked of every operator.
+//
+// The branch that fails the test (or that stops the code) is the interesting
+// one. If the empty value leaves that branch untaken, the code carries on
+// past a check that was supposed to fire, and the test reports success
+// without having checked anything:
+//
+//	if len(x) != 0 { t.Fatal(...) }   empty → 0 != 0 is false → untaken
+//	if n > 5        { t.Fatal(...) }   empty → 0 > 5 is false → untaken
+//	if n >= 5       { t.Fatal(...) }   empty → 0 >= 5 is false → untaken
+//	if n == 5       { t.Fatal(...) }   empty → 0 == 5 is false → untaken
+//	if n < 0        { t.Fatal(...) }   empty → 0 < 0 is false → untaken
+//	if n <= -1      { t.Fatal(...) }   empty → 0 <= -1 is false → untaken
+//
+// The other side of the same question is harmless: the branch runs, the
+// failure is loud, and the test does the job it was written to do.
+//
+//	if n == 0       { t.Fatal(...) }   empty → 0 == 0 is true → taken
+//	if n < 1        { t.Fatal(...) }   empty → 0 < 1 is true → taken
+//
+// Asking the question of each operator in turn is what keeps "n >= 5" from
+// being invisible. A checker that holds a list of two operators answers a
+// different question than the one the code was written to ask, and the
+// hollow test it misses is a hollow test that stays hollow.
+func branchRunsWhenEmpty(op string, limit int64) bool {
+	switch op {
+	case "!=":
+		return 0 != limit
+	case "==":
+		return 0 == limit
+	case ">":
+		return 0 > limit
+	case ">=":
+		return 0 >= limit
+	case "<":
+		return 0 < limit
+	case "<=":
+		return 0 <= limit
+	}
+	// An operator this code does not know about: assume the branch runs.
+	// Reporting on a guess is how a checker cries wolf.
+	return true
+}
+
+// wantsSpelling describes what the assertion demands of the value, in the
+// terms of the comparison that guards it.
+//
+// The report has to say it right. "这条断言要的正是「空的」" is a true
+// sentence about "if len(x) != 0" and a false one about "if n >= 5", where
+// the assertion wants a value below 5 — and a report that describes a right
+// finding in the wrong words is still a wrong report.
+//
+// The first return value is the form that reads inside a sentence
+// ("断言却要求它是空的"); the second is the form the report quotes
+// ("而这条断言要的正是「空的」").
+func wantsSpelling(op string, limit int64) (inline, quoted string) {
+	quoted = "空的"
+	switch op {
+	case "!=":
+		if limit != 0 {
+			quoted = fmt.Sprintf("不等于 %d", limit)
+		}
+	case "==":
+		quoted = fmt.Sprintf("等于 %d", limit)
+	case ">":
+		quoted = fmt.Sprintf("不超过 %d", limit)
+	case ">=":
+		quoted = fmt.Sprintf("少于 %d", limit)
+	case "<":
+		quoted = fmt.Sprintf("至少是 %d", limit)
+	case "<=":
+		quoted = fmt.Sprintf("大于 %d", limit)
+	}
+	// "是空的" reads as a sentence; "是等于 5" does not.
+	if quoted == "空的" {
+		return "是空的", quoted
+	}
+	return quoted, quoted
 }
 
 // emptinessTarget says which side of a comparison holds the value whose
@@ -192,19 +286,6 @@ func lenTarget(e ast.Expr) (string, bool) {
 		return "", false
 	}
 	return arg.Name, true
-}
-
-// constValue returns the integer value of an expression, when it is one.
-func constValue(e ast.Expr) (int64, bool) {
-	lit, ok := e.(*ast.BasicLit)
-	if !ok || lit.Kind != token.INT {
-		return 0, false
-	}
-	v, err := strconv.ParseInt(lit.Value, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return v, true
 }
 
 // branchFailsTest reports whether the guarded branch makes the test fail.
