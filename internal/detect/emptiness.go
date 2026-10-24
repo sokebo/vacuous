@@ -106,9 +106,10 @@ func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 		}
 
 		out = append(out, goEmptiness{
-			name: name,
-			op:   op,
-			line: w.line(bin.Pos()),
+			name:   name,
+			op:     op,
+			line:   w.line(bin.Pos()),
+			direct: target.direct,
 		})
 		// A count compared against zero is an emptiness check just as much
 		// as len(x) is. Record the use, so that the value counts as an

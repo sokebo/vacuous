@@ -44,6 +44,12 @@ type goDiscard struct {
 	declPos token.Pos
 	line    int
 	text    string
+	// callee is the name of the function that was called, when the call
+	// named a plain identifier: "x, _ := countRows()".
+	callee string
+	// method is the name of the method that was called, when the call went
+	// through a selector: "x, _ := st.EdgeCount()".
+	method string
 }
 
 // useKindZeroCheck is the kind of use that records a variable compared
@@ -101,6 +107,14 @@ type goEmptiness struct {
 	op string
 	// line is the 1-indexed line of the comparison.
 	line int
+	// direct is true when the value was compared on its own rather than
+	// through len(): "n != 0" is direct, "len(x) != 0" is not.
+	//
+	// It matters because a count and a collection fail differently. A
+	// collection has no sentinel: a failed load leaves it empty, and the
+	// length is zero. A count does have one: "return -1, err" is ordinary
+	// Go, and it leaves a value that is not zero.
+	direct bool
 	// fails is true when the guarded branch fails the test.
 	fails bool
 	// bails is true when the guarded branch stops the code from carrying
@@ -314,11 +328,14 @@ func (w *goWalker) assign(x *ast.AssignStmt, guards []string) {
 			blank, isBlank := x.Lhs[1].(*ast.Ident)
 			if isBlank && blank.Name == "_" {
 				if id, ok := x.Lhs[0].(*ast.Ident); ok && id.Name != "_" {
+					callee, method := calledName(x.Rhs[0])
 					w.scope.discards = append(w.scope.discards, goDiscard{
 						name:    id.Name,
 						declPos: id.Pos(),
 						line:    w.line(id.Pos()),
 						text:    sourceLine(w.lines, w.line(id.Pos())),
+						callee:  callee,
+						method:  method,
 					})
 				}
 			}
@@ -699,6 +716,30 @@ func isCommaOK(e ast.Expr) bool {
 		return true
 	}
 	return false
+}
+
+// calledName returns the name of the function a call expression names.
+//
+// A plain identifier is a function of this package: "countRows()".
+// A selector is a method or a function of another package: "st.EdgeCount()",
+// "store.Count()". Only the method name is kept, because a method of this
+// package can still be looked up by name, while a function of another
+// package cannot be looked up at all.
+//
+// The name is what lets the checker look at the function and see what it
+// leaves behind when it fails.
+func calledName(e ast.Expr) (callee string, method string) {
+	call, ok := e.(*ast.CallExpr)
+	if !ok {
+		return "", ""
+	}
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		return fun.Name, ""
+	case *ast.SelectorExpr:
+		return "", fun.Sel.Name
+	}
+	return "", ""
 }
 
 // isLenCall reports whether a call is the builtin len.

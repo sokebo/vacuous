@@ -42,6 +42,20 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 		repoRoot = root
 	}
 
+	// The scope says which files this analysis may read. It is the list
+	// the conclusion is supposed to be built from: the files the
+	// repository contains. Reading past it would let a file the repository
+	// does not contain decide what the report says.
+	readScope := core.FileScopeOf(files)
+	if opts.Scope != nil {
+		readScope = *opts.Scope
+	}
+
+	// The package index is built once per directory, and only when there
+	// is a discard to look at. Building it for every file would parse a
+	// package's files again and again.
+	indices := map[string]*funcIndex{}
+
 	var out []core.Finding
 	for _, rel := range files {
 		if !strings.HasSuffix(rel, ".go") {
@@ -77,7 +91,7 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 				if !assertionUse(scope, d.name) {
 					continue
 				}
-				shape, known := wantsEmpty(scope, d.name)
+				verdict, known := wantsEmpty(scope, d.name)
 				if !known {
 					// The value behind the discarded error is used in a way
 					// that says nothing about emptiness: passing it around,
@@ -86,7 +100,22 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 					continue
 				}
 
-				switch shape {
+				// The finding says the value is empty when the call fails.
+				// That is an assumption about the function behind the call,
+				// and this repository may show it to be false: a function
+				// that returns a sentinel with its error leaves a count
+				// that is not zero, the branch runs, and the code does what
+				// it was written to do. There is nothing to report then.
+				//
+				// A function this repository does not contain leaves the
+				// question open, and an open question keeps the finding.
+				if idx := packageIndexFor(indices, repoRoot, rel, readScope); idx != nil {
+					if errorPathLeavesNonEmpty(idx, d.callee, d.method, verdict) {
+						continue
+					}
+				}
+
+				switch verdict.shape {
 				case emptinessVacuous:
 					out = append(out, finding(core.KindDiscardsError, core.SevHigh,
 						rel, d.line,
@@ -120,4 +149,22 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 		}
 	}
 	return out, nil
+}
+
+// packageIndexFor returns the index of the package a file belongs to.
+//
+// The index is built once per directory: parsing every file of a package
+// again for each of its files would be quadratic, and the check mode has
+// to stay quick.
+//
+// The index only ever holds files the scope allows, so the conclusion stays
+// inside the list it is supposed to be built from.
+func packageIndexFor(cache map[string]*funcIndex, root, rel string, scope core.FileScope) *funcIndex {
+	dir := filepath.ToSlash(filepath.Dir(rel))
+	if idx, ok := cache[dir]; ok {
+		return idx
+	}
+	idx := packageFuncIndex(root, rel, scope)
+	cache[dir] = idx
+	return idx
 }
