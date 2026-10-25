@@ -51,8 +51,18 @@ const maxScriptChain = 4
 // the harness list and the scripts table come from the same package.json.
 type ciContext struct {
 	root string
-	// scripts is the package.json scripts section.
-	scripts map[string]string
+	// scriptsByDir is every package's scripts section, keyed by the
+	// directory that holds the package.json.
+	//
+	// A repository can hold more than one package.json - a monorepo has
+	// one per package - and the script a command runs belongs to the
+	// package of the directory the command runs in. Resolving every
+	// command against the root is how a CI that runs a nested package's
+	// check gets reported as a CI that runs no checks at all.
+	scriptsByDir map[string]map[string]string
+	// packageDirs is every directory in the scope that holds a
+	// package.json, whether or not that package declares any scripts.
+	packageDirs map[string]bool
 	// harness is the repository's own check commands, as HarnessCommands
 	// found them.
 	harness []HarnessCommand
@@ -84,13 +94,24 @@ type ciContext struct {
 // The scripts table stays the root's. "npm run X" at the root of a
 // repository means the root package.json's script, and resolving it against
 // a nested package would be a guess.
+//
+// ★ That guess is the right one only when the command really runs at the
+// root. The other packages' scripts are kept too - in scriptsByDir - and a
+// command is resolved against the package its own directory points at.
 func newCIContext(repoRoot string, testCommands []string, scope core.FileScope) *ciContext {
 	c := &ciContext{
 		root:         repoRoot,
-		scripts:      packageScripts(repoRoot, scope),
 		targets:      map[string]HarnessCommand{},
 		testCommands: testCommands,
 		scope:        scope,
+		scriptsByDir: map[string]map[string]string{},
+		packageDirs:  map[string]bool{},
+	}
+	for _, ps := range packageScriptSets(repoRoot, scope) {
+		c.scriptsByDir[ps.dir] = ps.scripts
+	}
+	for _, d := range packageDirs(repoRoot, scope) {
+		c.packageDirs[d] = true
 	}
 	c.harness = HarnessCommands(repoRoot, scope)
 	for _, h := range c.harness {
@@ -99,6 +120,25 @@ func newCIContext(repoRoot string, testCommands []string, scope core.FileScope) 
 		}
 	}
 	return c
+}
+
+// packageDirFor returns the package whose scripts apply to a command that
+// runs in the given repository directory.
+//
+// It is npm's own rule: npm looks for package.json in the current
+// directory and walks up until it finds one. A repository can hold
+// several, and the one that governs a command is the nearest one above it
+// - not always the root.
+func (c *ciContext) packageDirFor(dir string) string {
+	for {
+		if c.packageDirs[dir] {
+			return dir
+		}
+		if dir == "" {
+			return ""
+		}
+		dir = parentDir(dir)
+	}
 }
 
 // runsTestCommand reports whether the given workflow text reaches a test
@@ -117,9 +157,27 @@ func (c *ciContext) runsTestCommand(text string) bool {
 			return true
 		}
 	}
+	// The whole text, resolved against the root: a workflow that names a
+	// script outside a run key still names it.
 	for _, name := range runScriptNamesInText(text) {
-		if c.reachesTestCommand(name, maxScriptChain) {
+		if c.reachesTestCommand("", name, maxScriptChain) {
 			return true
+		}
+	}
+	// The commands, each resolved against the package its own directory
+	// points at. A CI that runs "npm run test" inside packages/core runs
+	// THAT package's test script, and the root's answer would be about a
+	// different script entirely.
+	checkout := checkoutPath(text)
+	for _, cmd := range ciCommands(text) {
+		repoDir, ok := repoDirFor(cmd.dir, checkout)
+		if !ok {
+			continue
+		}
+		for _, call := range scriptCalls(cmd.text, repoDir) {
+			if c.reachesTestCommand(c.packageDirFor(call.dir), call.name, maxScriptChain) {
+				return true
+			}
 		}
 	}
 	return false
@@ -127,11 +185,13 @@ func (c *ciContext) runsTestCommand(text string) bool {
 
 // reachesTestCommand reports whether running the given package.json script
 // ends up running a test suite.
-func (c *ciContext) reachesTestCommand(name string, depth int) bool {
+//
+// The directory says which package the script belongs to.
+func (c *ciContext) reachesTestCommand(dir, name string, depth int) bool {
 	if depth <= 0 {
 		return false
 	}
-	cmd, ok := c.scripts[name]
+	cmd, ok := c.scriptsByDir[dir][name]
 	if !ok {
 		return false
 	}
@@ -139,7 +199,7 @@ func (c *ciContext) reachesTestCommand(name string, depth int) bool {
 		return true
 	}
 	for _, sub := range runScriptNames(cmd) {
-		if c.reachesTestCommand(sub, depth-1) {
+		if c.reachesTestCommand(dir, sub, depth-1) {
 			return true
 		}
 	}
@@ -223,21 +283,35 @@ func (c *ciContext) harnessRunsIn(text string) []ciHarnessRun {
 	//
 	//	- run: node scripts/smoke-test-css.mjs
 	//
-	// The lookup is per line on purpose. A path that belongs to a
+	// The lookup is per command on purpose. A path that belongs to a
 	// sibling checkout ("../other/scripts/check.mjs") is that
 	// repository's script, not this one's, and harnessLocalFiles is
 	// what draws that line.
-	for _, line := range strings.Split(text, "\n") {
-		for _, f := range harnessLocalFiles(c.root, line, "", c.scope) {
+	//
+	// ★ The directory matters here too. "node scripts/verify.mjs" under
+	// a step that runs in packages/core means
+	// packages/core/scripts/verify.mjs, and crediting the CI with the
+	// root's script of the same name is a claim about a check it never
+	// ran.
+	checkout := checkoutPath(text)
+	for _, cmd := range ciCommands(text) {
+		repoDir, ok := repoDirFor(cmd.dir, checkout)
+		if !ok {
+			// The command runs outside the repository. It cannot be
+			// running the repository's checks.
+			continue
+		}
+		for _, f := range harnessLocalFiles(c.root, cmd.text, repoDir, c.scope) {
 			if h, ok := c.targets[f]; ok {
 				add(h, nil)
 			}
 		}
-	}
-	// Or reach it through the package.json script chain.
-	for _, name := range runScriptNamesInText(text) {
-		for _, chain := range c.reach(name, maxScriptChain) {
-			add(chain.h, chain.names[:len(chain.names)-1])
+		// Or reach it through the package.json script chain.
+		for _, call := range scriptCalls(cmd.text, repoDir) {
+			pkg := c.packageDirFor(call.dir)
+			for _, chain := range c.reach(pkg, call.name, maxScriptChain) {
+				add(chain.h, chain.names[:len(chain.names)-1])
+			}
 		}
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].Script < runs[j].Script })
@@ -260,17 +334,21 @@ type harnessChain struct {
 // The chain carries the harness it lands on, not just its name: two
 // packages may declare a script with the same name, and the chain has to
 // say which one it reached.
-func (c *ciContext) reach(name string, depth int) []harnessChain {
+//
+// The directory says which package the script belongs to - the one in the
+// directory the command runs in, and the chain stays inside it, because
+// "npm run X" inside a package means that package's X.
+func (c *ciContext) reach(dir, name string, depth int) []harnessChain {
 	if depth <= 0 {
 		return nil
 	}
-	cmd, ok := c.scripts[name]
+	cmd, ok := c.scriptsByDir[dir][name]
 	if !ok {
 		return nil
 	}
 	var out []harnessChain
 	// The command may name the check script directly.
-	for _, f := range harnessLocalFiles(c.root, cmd, "", c.scope) {
+	for _, f := range harnessLocalFiles(c.root, cmd, dir, c.scope) {
 		h, ok := c.targets[f]
 		if !ok {
 			continue
@@ -283,7 +361,7 @@ func (c *ciContext) reach(name string, depth int) []harnessChain {
 	}
 	// Or it may call another script that names it.
 	for _, sub := range runScriptNames(cmd) {
-		for _, p := range c.reach(sub, depth-1) {
+		for _, p := range c.reach(dir, sub, depth-1) {
 			names := append([]string{name}, p.names...)
 			out = append(out, harnessChain{names: names, h: p.h})
 		}
@@ -312,57 +390,107 @@ func runScriptNamesInText(text string) []string {
 // CI does.
 func runScriptNames(cmd string) []string {
 	var out []string
-	tokens := strings.Fields(cmd)
-	for i := 0; i < len(tokens); i++ {
-		if !packageManagers[tokens[i]] {
-			continue
-		}
-		if i+1 >= len(tokens) {
-			break
-		}
-		switch next := tokens[i+1]; next {
-		case "run", "run-script":
-			// "npm run build" - flags may sit between "run" and the name.
-			j := i + 2
-			for j < len(tokens) && strings.HasPrefix(tokens[j], "-") {
-				j++
+	for _, call := range scriptCalls(cmd, "") {
+		out = append(out, call.name)
+	}
+	return out
+}
+
+// scriptCall is a package.json script a command runs.
+type scriptCall struct {
+	// dir is the directory the script runs in.
+	dir string
+	// name is the script name.
+	name string
+}
+
+// scriptCalls returns the package.json scripts a command line runs.
+//
+// The directory travels with the name: "npm run verify" runs the verify
+// script of the package in the directory the command runs in, and in a
+// repository with several packages that is not always the root.
+//
+// A command may change that directory itself ("cd packages/core && npm run
+// verify"), and npm may be told which directory to use ("npm --prefix
+// packages/core run verify"). Both are the same thing to npm, and both are
+// the same thing here.
+func scriptCalls(cmd, dir string) []scriptCall {
+	var out []scriptCall
+	for _, line := range strings.Split(cmd, "\n") {
+		for _, segment := range splitCommandSegments(line) {
+			tokens := strings.Fields(segment)
+			for i := 0; i < len(tokens); i++ {
+				if !packageManagers[tokens[i]] {
+					continue
+				}
+				// Flags may sit between the manager and the command.
+				callDir := dir
+				j := i + 1
+				for j < len(tokens) && strings.HasPrefix(tokens[j], "-") {
+					if tokens[j] == "--prefix" && j+1 < len(tokens) {
+						callDir = joinRepoPath(dir, tokens[j+1])
+						j += 2
+						continue
+					}
+					j++
+				}
+				if j >= len(tokens) {
+					break
+				}
+				switch next := tokens[j]; next {
+				case "run", "run-script":
+					// "npm run build" - flags may sit between "run" and
+					// the name.
+					k := j + 1
+					for k < len(tokens) && strings.HasPrefix(tokens[k], "-") {
+						k++
+					}
+					if k < len(tokens) {
+						out = append(out, scriptCall{dir: callDir, name: tokens[k]})
+						i = k
+					}
+				default:
+					// "yarn build" - the script name follows the manager
+					// directly.
+					out = append(out, scriptCall{dir: callDir, name: next})
+					i = j
+				}
 			}
-			if j < len(tokens) {
-				out = append(out, tokens[j])
-				i = j
-			}
-		default:
-			// "yarn build" - the script name follows the manager directly.
-			out = append(out, next)
-			i++
 		}
 	}
 	return out
 }
 
-// packageScripts reads the scripts section of a repository's package.json.
+// splitCommandSegments splits a command line into the commands it runs in
+// sequence.
 //
-// The package.json has to be inside the scope. It is the file that says
-// what this repository runs, and a package.json the repository does not
-// contain says nothing about it.
-func packageScripts(root string, scope core.FileScope) map[string]string {
-	if root == "" {
-		return nil
+// The separators are the shell's: "&&", "||" and ";". A lone "&" or "|" is
+// left alone - inside a path it means nothing, and cutting a path in half
+// would make the tool miss it.
+func splitCommandSegments(line string) []string {
+	var parts []string
+	var cur strings.Builder
+	for i := 0; i < len(line); i++ {
+		switch {
+		case strings.HasPrefix(line[i:], "&&"), strings.HasPrefix(line[i:], "||"):
+			parts = append(parts, cur.String())
+			cur.Reset()
+			i++
+		case line[i] == ';':
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(line[i])
+		}
 	}
-	if !scope.Allows("package.json") {
-		return nil
+	parts = append(parts, cur.String())
+	out := parts[:0]
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			out = append(out, p)
+		}
 	}
-	b, err := os.ReadFile(filepath.Join(root, "package.json"))
-	if err != nil {
-		return nil
-	}
-	var pkg struct {
-		Scripts map[string]string `json:"scripts"`
-	}
-	if err := json.Unmarshal(b, &pkg); err != nil {
-		return nil
-	}
-	return pkg.Scripts
+	return out
 }
 
 // packageScriptSet is one package.json's scripts section, together with the
@@ -401,6 +529,23 @@ func packageScriptSets(root string, scope core.FileScope) []packageScriptSet {
 			dir = d
 		}
 		out = append(out, packageScriptSet{dir: dir, scripts: scripts})
+	}
+	return out
+}
+
+// packageDirs lists the directories that hold a package.json in the scope.
+//
+// A package.json that declares no scripts still counts: npm uses it as the
+// package of its directory all the same, and a command run there runs THAT
+// package's scripts - which are none.
+func packageDirs(root string, scope core.FileScope) []string {
+	var out []string
+	for _, rel := range packageJSONPaths(root, scope) {
+		dir := ""
+		if d := path.Dir(filepath.ToSlash(rel)); d != "." && d != "/" {
+			dir = d
+		}
+		out = append(out, dir)
 	}
 	return out
 }

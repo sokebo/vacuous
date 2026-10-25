@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sokebo/vacuous/internal/adapters"
 	"github.com/sokebo/vacuous/internal/core"
 )
 
@@ -68,6 +69,71 @@ var harnessScriptExts = map[string]bool{
 // separately. Counting it as a harness here would produce two findings for
 // the same suite.
 var supportedRunners = []string{"jest", "vitest"}
+
+// DeclaresTestCommand reports whether the repository declares a command
+// that runs a test suite.
+//
+// It looks at every package.json in the scope, not only the root one: a
+// monorepo's runner often lives in one of its packages, and the
+// repository's answer to "can you run tests here?" is then that package's
+// script - not the root's silence.
+//
+// A Makefile target counts too, for the same reason: "make test" runs tests
+// whether or not anything in package.json says so.
+//
+// The report uses this to decide whether it may say "there is no command
+// that can run tests". That sentence is a claim about the repository, and
+// it has to be true of the repository - not merely of the part of it the
+// tool happens to look at.
+func DeclaresTestCommand(root string, files []string, scope core.FileScope) bool {
+	for _, ps := range packageScriptSets(root, scope) {
+		for name, cmd := range ps.scripts {
+			if scriptRunsTests(name, cmd) {
+				return true
+			}
+		}
+	}
+	for _, rel := range files {
+		base := strings.ToLower(filepath.Base(rel))
+		if base != "makefile" && base != "justfile" {
+			continue
+		}
+		if makefileRunsTests(root, rel) {
+			return true
+		}
+	}
+	return false
+}
+
+// scriptRunsTests reports whether a package.json script runs a test suite.
+//
+// There are two ways for a repository to say yes, and both are its own
+// statement:
+//
+//   - the script is named like a test command ("test", "test:unit") - the
+//     same names the adapters use to decide that a project has a runner.
+//
+//   - the command runs one of the runners the tool can drive. The runner's
+//     name in the command line is the repository saying what it runs.
+func scriptRunsTests(name, cmd string) bool {
+	if testCommandNames[harnessBaseName(name)] {
+		return true
+	}
+	lower := strings.ToLower(cmd)
+	for _, r := range adapters.SupportedRunners {
+		if strings.Contains(lower, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// testCommandNames are the package.json script names that mean "this runs
+// the tests".
+var testCommandNames = map[string]bool{
+	"test":  true,
+	"tests": true,
+}
 
 // HarnessCommand is a repository's own command for running its checks.
 type HarnessCommand struct {

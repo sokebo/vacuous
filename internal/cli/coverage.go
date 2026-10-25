@@ -128,7 +128,13 @@ func noRunnerFinding(root string, files []string, scope core.FileScope) core.Fin
 
 	switch {
 	case src > 0 && tests == 0 && len(harness) == 0:
-		return noTestForFixFinding(src, true)
+		// "There is no command that can run tests" is a claim about the
+		// repository, so it is checked against the repository: a runner
+		// that lives in one of its packages counts, even though the tool
+		// could not drive it from the root. Saying "there is no command"
+		// about a repository that has one sends the reader to write a
+		// runner they already have.
+		return noTestForFixFinding(src, !detect.DeclaresTestCommand(root, files, scope))
 
 	case len(harness) > 0:
 		return harnessFinding(harness, src, tests)
