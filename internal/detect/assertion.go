@@ -72,12 +72,15 @@ type emptinessVerdict struct {
 	direct bool
 	// op is the comparison operator: "!=" or ">".
 	op string
-	// limit is the number the value was compared against.
+	// limit is the value the value was compared against, and with it the
+	// kind of emptiness the comparison is about.
 	//
 	// It belongs to the comparison: "n > 0" and "n > 5" are different
 	// questions, and a value that answers one of them does not answer
-	// the other.
-	limit int64
+	// the other. The kind matters for the same reason: a count, a string
+	// and a pointer go empty in three different ways, and the error path
+	// has to be read against the right one.
+	limit emptinessLimit
 }
 
 // wantsEmpty reports what happens to the code when the value behind a
