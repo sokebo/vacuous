@@ -676,6 +676,43 @@ func revertedFile(broken []string, changed []string) string {
 	return ""
 }
 
+// revertedNonTestFile reports which of the commit's own changed files the
+// build broke in, and whether a test file was among the broken ones.
+//
+// The two answers tell two different stories:
+//
+//   - a test file is broken: the test depends on the fix (coupled);
+//   - a file this commit changed is broken: the fix is what made it build.
+//
+// They are decided in one place, because a rule that is decided in two
+// places eventually decides them differently.
+func revertedNonTestFile(buildErrors []string, changed []string, isTest func(string) bool) (file string, testBroken bool) {
+	if isTest == nil {
+		return "", false
+	}
+	broken := buildErrorFiles(buildErrors)
+	for _, f := range broken {
+		if isTest(f) {
+			return "", true
+		}
+	}
+	return revertedFile(broken, changed), false
+}
+
+// probeCompiles asks the adapter whether the package that owns rel compiles
+// in the given tree.
+//
+// An adapter that cannot answer says so, and the engine keeps the wording it
+// had. That direction is the safe one: the probe can only make the report
+// MORE precise, never less.
+func (a *Auditor) probeCompiles(ctx context.Context, tree, rel string) core.CompileVerdict {
+	checker, ok := a.adapter.(core.CompileChecker)
+	if !ok {
+		return core.CompileUnknown
+	}
+	return checker.Compiles(ctx, tree, rel)
+}
+
 // changedPaths lists the repo-relative paths of the files a commit touched.
 func changedPaths(files []core.FileChange) []string {
 	out := make([]string, 0, len(files))
@@ -858,6 +895,19 @@ type runOutcome struct {
 	// this commit changed. That is not an environment problem: the tree
 	// broke because the thing under examination was removed from it.
 	revertedFile string
+	// revertedFileCompiles says what the compile probe found about the
+	// package the reverted file lives in.
+	//
+	// The distinction matters because `go test` does more than compile: it
+	// runs a set of vet analyzers first. A file that compiles perfectly
+	// well can still be rejected by one of them, and then the report's
+	// "the code does not compile" is a story about the audited code that
+	// is not true.
+	//
+	// The probe asks the toolchain, so the answer is a fact rather than a
+	// guess: `go build` succeeds -> the code compiles, and whatever
+	// stopped the run was one of the extra steps the test runner takes.
+	revertedFileCompiles core.CompileVerdict
 	// deduplicated says the commit removed code that still exists
 	// elsewhere in the tree.
 	//
@@ -993,6 +1043,22 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 		script:      plan.Script,
 		result:      result,
 		failureTail: tailOf(result, 40),
+	}
+
+	// The build may have failed for a reason that has nothing to do with
+	// whether the code compiles, and the report has to tell the two apart.
+	//
+	// `go test` runs a set of vet analyzers before it builds the test
+	// binary. A file that compiles perfectly well can be rejected by one
+	// of them, and then "the code does not compile" is a false story about
+	// the audited code - the reader goes looking for type errors that are
+	// not there.
+	//
+	// The probe is asked here, while the tree is still on disk: the
+	// worktree is removed when this function returns.
+	if file, testBroken := revertedNonTestFile(result.BuildErrors, changedPaths(res.Changed), a.isTest); file != "" && !testBroken {
+		out.revertedFile = file
+		out.revertedFileCompiles = a.probeCompiles(ctx, wt.Path(), file)
 	}
 
 	// A red counterfactual only means "something is red without the fix".
@@ -1223,24 +1289,19 @@ func verdictFrom(run *runOutcome, isTest func(string) bool, changed []string) Ve
 		if isTest == nil {
 			return VerdictCoupled
 		}
-		broken := buildErrorFiles(r.BuildErrors)
-		for _, file := range broken {
-			if isTest(file) {
-				return VerdictCoupled
-			}
+		// A build error in a test file means the test depends on the fix.
+		// A build error in a file this commit changed means the fix is
+		// what made it build. Both are decided in one place.
+		//
+		// The second one is not an environment problem: the very same tree
+		// built fine with the fix in place, and the file that broke is the
+		// file the commit repaired. Calling it an environment problem
+		// sends the reader after a build input that is not missing.
+		file, testBroken := revertedNonTestFile(r.BuildErrors, changed, isTest)
+		if testBroken {
+			return VerdictCoupled
 		}
-		// The build broke in a file THIS COMMIT CHANGED.
-		//
-		// The counterfactual tree is the parent commit plus the test
-		// patch, so that file sits at its pre-fix state - and it does not
-		// build. The fix is what made it build. The suite cannot run
-		// without the fix, which is exactly what "coupled" means.
-		//
-		// Calling this an environment problem sends the reader after a
-		// build input that is not missing: the very same tree built fine
-		// with the fix in place, and the file that broke is the file the
-		// commit repaired.
-		if file := revertedFile(broken, changed); file != "" {
+		if file != "" {
 			run.revertedFile = file
 			return VerdictCoupled
 		}
@@ -1604,17 +1665,61 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 				res.Commit.Short)
 		}
 		if run != nil && run.revertedFile != "" {
-			detail = fmt.Sprintf(
-				"提交 %s 的测试补丁能打上，但撤掉修复之后代码本身编译不过 —— "+
-					"坏掉的那个文件（%s）正是这次修复改过的文件。\n"+
-					"也就是说，这个修复就是让代码重新编译得过去的那个修复；"+
-					"没有它，套件一次都跑不起来。\n"+
-					"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
-				res.Commit.Short, run.revertedFile)
-			summary = "无法判定：撤掉修复之后代码就编译不过了"
-			hint = "这不是错误：这个提交让代码重新编译得过，这件事本身有价值。\n" +
-				"只是「撤掉修复，测试会不会红」在这里没有答案 —— " +
-				"要回答它，需要一个不依赖这次编译修复的测试。"
+			// The wording depends on WHAT stopped the build, and the two
+			// stories send the reader to different places.
+			//
+			// "The code does not compile" points at type errors. "The code
+			// compiles, but the linter the test runner runs rejects it"
+			// points at a lint rule. Telling a reader to go and look for
+			// type errors in a file that compiles perfectly well is a
+			// story about the audited code that is not true - and the
+			// reader has no way to tell that the tool made it up.
+			//
+			// The probe answers the question with the toolchain, so the
+			// sentence can only say what was measured. When the probe
+			// could not answer, the old wording stands: an unknown is
+			// neither a yes nor a no.
+			switch run.revertedFileCompiles {
+			case core.CompileRejectedByLint:
+				detail = fmt.Sprintf(
+					"提交 %s 的测试补丁能打上，但撤掉修复之后这个包没通过 go test 的构建 —— "+
+						"坏掉的那个文件（%s）正是这次修复改过的文件。\n"+
+						"★ 代码本身**编译得过去**：挡住它的不是编译器，"+
+						"而是 go test 在编译之外多跑的那一步 —— 它默认会跑的一组 vet 检查。\n"+
+						"也就是说，这个修复修的就是那条检查；"+
+						"没有它，这个包一次测试都跑不起来。\n"+
+						"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
+					res.Commit.Short, run.revertedFile)
+				summary = "无法判定：撤掉修复之后这个包没通过 go test 的构建"
+				hint = "这不是错误：这个提交让 go test 过得去，这件事本身有价值。\n" +
+					"只是「撤掉修复，测试会不会红」在这里没有答案 —— " +
+					"要回答它，需要一个不依赖这次修复的测试。"
+			case core.CompileFine:
+				detail = fmt.Sprintf(
+					"提交 %s 的测试补丁能打上，但撤掉修复之后这个包没通过 go test 的构建 —— "+
+						"坏掉的那个文件（%s）正是这次修复改过的文件。\n"+
+						"★ 代码本身**编译得过去**：挡住它的不是编译器，"+
+						"但也不是 go test 的 vet 检查 —— 具体是什么，这套工具没能查出来。\n"+
+						"没有它，这个包一次测试都跑不起来。\n"+
+						"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
+					res.Commit.Short, run.revertedFile)
+				summary = "无法判定：撤掉修复之后这个包没通过 go test 的构建"
+				hint = "这不是错误：这个提交让 go test 过得去，这件事本身有价值。\n" +
+					"只是「撤掉修复，测试会不会红」在这里没有答案 —— " +
+					"要回答它，需要一个不依赖这次修复的测试。"
+			default:
+				detail = fmt.Sprintf(
+					"提交 %s 的测试补丁能打上，但撤掉修复之后代码本身编译不过 —— "+
+						"坏掉的那个文件（%s）正是这次修复改过的文件。\n"+
+						"也就是说，这个修复就是让代码重新编译得过去的那个修复；"+
+						"没有它，这个包一次测试都跑不起来。\n"+
+						"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
+					res.Commit.Short, run.revertedFile)
+				summary = "无法判定：撤掉修复之后代码就编译不过了"
+				hint = "这不是错误：这个提交让代码重新编译得过，这件事本身有价值。\n" +
+					"只是「撤掉修复，测试会不会红」在这里没有答案 —— " +
+					"要回答它，需要一个不依赖这次编译修复的测试。"
+			}
 		}
 		out = append(out, core.Finding{
 			Kind:     core.KindCoupled,

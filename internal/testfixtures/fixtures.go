@@ -576,6 +576,52 @@ func Greet(name string) string {
 	return m
 }
 
+// VetRejectedFixture builds the case the report used to get wrong.
+//
+// The first commit carries a file that COMPILES PERFECTLY WELL and is
+// rejected anyway: `go test` runs a set of vet analyzers before it builds
+// the test binary, and a fmt.Println with a redundant newline is one of
+// the things they turn away.
+//
+// The second commit fixes it - one character.
+//
+// The counterfactual for that second commit is the first commit's tree: the
+// package does not build, the broken file is the file the commit changed,
+// and the tool has to decide what to tell the reader. The old wording said
+// "the code does not compile", which is false: `go build` succeeds on this
+// tree. The reader was sent after type errors that are not there.
+//
+// The shape is taken from a real commit (alpha e2d22b7, "fix(bench): 修 vet
+// 报错（冗余换行）").
+func VetRejectedFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/vet")
+
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Write(t, "cmd/bench/main.go", `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("bench\n")
+}
+`)
+	m.Init(t)
+
+	// The fix: drop the redundant newline the analyzer complained about.
+	m.Write(t, "cmd/bench/main.go", `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("bench")
+}
+`)
+	m.Commit(t, "fix(bench): 修 vet 报错（冗余换行）")
+	return m
+}
+
 // CosmeticWithTestChangeFixture builds the case the cosmetic rule used to
 // miss.
 //
