@@ -108,6 +108,61 @@ func TestNoRunnerFindingDoesNotCallACheckedRepoUnprotected(t *testing.T) {
 	}
 }
 
+// TestNoRunnerFindingDoesNotCallAMonorepoUnprotected is the same case one
+// level down.
+//
+// A monorepo holds one package.json per package, and each of them declares
+// the checks that package runs. Reading only the root one leaves the
+// nested package's checks invisible, and the report then says the
+// repository has no checks at all - a HIGH that fails the run and tells
+// the reader to write tests that already exist.
+func TestNoRunnerFindingDoesNotCallAMonorepoUnprotected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package.json", `{
+  "name": "monorepo-root",
+  "scripts": {
+    "build": "npm run build --workspaces"
+  }
+}
+`)
+	writeFile(t, dir, "packages/core/package.json", `{
+  "name": "@x/core",
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  }
+}
+`)
+	writeFile(t, dir, "packages/core/scripts/verify.mjs", "process.exit(0)\n")
+	writeFile(t, dir, "packages/core/src/index.js", "export const x = 1\n")
+
+	files := []string{
+		"package.json",
+		"packages/core/package.json",
+		"packages/core/scripts/verify.mjs",
+		"packages/core/src/index.js",
+	}
+	f := noRunnerFinding(dir, files, diskScope(t, dir))
+
+	if f.Kind == core.KindNoTestForFix {
+		t.Fatalf("the repository runs its own checks; it must not be reported as untested: %+v", f)
+	}
+	if f.Severity >= core.SevHigh {
+		t.Errorf("severity = %v, want below high: a blind spot in the report is not a defect in the repository", f.Severity)
+	}
+	if f.Kind != core.KindUnsupportedTests {
+		t.Errorf("kind = %q, want %q: the report must say what it did not cover", f.Kind, core.KindUnsupportedTests)
+	}
+	// The report has to say WHICH package declares the command: the
+	// command line is written relative to that package, and "npm run
+	// verify" alone does not say where to look.
+	if !strings.Contains(f.Detail, "npm run verify (packages/core)") {
+		t.Errorf("the finding must name the package that declares the command, got:\n%s", f.Detail)
+	}
+	if !strings.Contains(f.Evidence, "packages/core/scripts/verify.mjs") {
+		t.Errorf("the evidence must give the path relative to the repository root, got:\n%s", f.Evidence)
+	}
+}
+
 // TestNoRunnerFindingStillReportsARepositoryWithNoChecks is the control.
 //
 // This is the finding the tool exists to make. A repository with code and

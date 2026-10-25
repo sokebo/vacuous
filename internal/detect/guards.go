@@ -534,8 +534,14 @@ func ciRunsOwnChecksFinding(workflows []workflow, localWorkflows []string, local
 			for _, s := range r.Chain {
 				parts = append(parts, "npm run "+s)
 			}
-			parts = append(parts, "npm run "+r.Script, r.Command)
+			parts = append(parts, r.Label(), r.Command)
 			lines = append(lines, "  "+strings.Join(parts, " → "))
+		} else if r.Dir != "" {
+			// A package deeper in the tree: its command is written
+			// relative to that package, so the bare command line does not
+			// say where it runs from. The label says which package
+			// declares it.
+			lines = append(lines, "  "+r.Label()+" → "+r.Command)
 		} else {
 			lines = append(lines, "  "+r.Command)
 		}

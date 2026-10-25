@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // The rule these tests protect: a repository that runs its own checks has
@@ -265,6 +267,168 @@ func TestHarnessCommandsNamesTheCommandItFound(t *testing.T) {
 	}
 	if !strings.Contains(got[0].Command, "run-all.mjs") {
 		t.Errorf("command = %q, want the command line", got[0].Command)
+	}
+}
+
+// TestHarnessCommandsFindsANestedPackagesHarness is the positive case for a
+// repository that holds more than one package.json.
+//
+// A monorepo has one package.json per package, and each of them declares
+// the checks that package runs. Reading only the root one leaves every
+// nested package's checks invisible - and the tool then reports a
+// repository that runs its own checks as one that has none at all. That
+// report is a HIGH, it fails the run, and it tells the reader to write
+// tests that already exist.
+func TestHarnessCommandsFindsANestedPackagesHarness(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "package.json", `{
+  "name": "monorepo-root",
+  "scripts": {
+    "build": "npm run build --workspaces"
+  }
+}
+`)
+	write(t, dir, "packages/core/package.json", `{
+  "name": "@x/core",
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  }
+}
+`)
+	write(t, dir, "packages/core/scripts/verify.mjs", "process.exit(0)\n")
+
+	got := HarnessCommands(dir, diskScope(t, dir))
+	if len(got) != 1 {
+		t.Fatalf("HarnessCommands() = %+v, want exactly one harness", got)
+	}
+	if got[0].Script != "verify" {
+		t.Errorf("script = %q, want %q", got[0].Script, "verify")
+	}
+	// The command's path is written relative to the package that declares
+	// it, so the file has to be reported relative to the repository root.
+	if len(got[0].Files) != 1 || got[0].Files[0] != "packages/core/scripts/verify.mjs" {
+		t.Errorf("files = %v, want the script the command runs, relative to the repository root", got[0].Files)
+	}
+	if got[0].Dir != "packages/core" {
+		t.Errorf("dir = %q, want %q: the report has to say which package declares it", got[0].Dir, "packages/core")
+	}
+}
+
+// TestHarnessCommandsIgnoresANestedBuildScript is the control.
+//
+// "build" is not a check, wherever it is declared. A repository whose only
+// nested script builds something still has no checks, and saying otherwise
+// is a false negative that hides a real gap.
+func TestHarnessCommandsIgnoresANestedBuildScript(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "package.json", `{"name": "monorepo-root"}`)
+	write(t, dir, "packages/core/package.json", `{
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  }
+}
+`)
+	write(t, dir, "packages/core/scripts/build.mjs", "process.exit(0)\n")
+
+	if got := HarnessCommands(dir, diskScope(t, dir)); len(got) != 0 {
+		t.Fatalf("HarnessCommands() = %+v, want none", got)
+	}
+}
+
+// TestHarnessCommandsIgnoresANestedScriptOutsideTheRepository is the
+// boundary.
+//
+// A nested package may point at a sibling checkout. That script belongs to
+// the sibling, and this repository says nothing about it.
+func TestHarnessCommandsIgnoresANestedScriptOutsideTheRepository(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "package.json", `{"name": "monorepo-root"}`)
+	write(t, dir, "packages/core/package.json", `{
+  "scripts": {
+    "verify": "node ../../sibling/scripts/verify.mjs"
+  }
+}
+`)
+	// The file really exists - two directories up and over. It is still not
+	// this repository's file.
+	write(t, dir, "../sibling/scripts/verify.mjs", "process.exit(0)\n")
+
+	if got := HarnessCommands(dir, diskScope(t, dir)); len(got) != 0 {
+		t.Fatalf("HarnessCommands() = %+v, want none", got)
+	}
+}
+
+// TestHarnessCommandsIgnoresANestedPackageJSONOutsideTheScope keeps the
+// file scope honest.
+//
+// A package.json the repository does not contain says nothing about what
+// the repository runs. Reading it anyway would make the conclusion depend
+// on a file the gate cannot see.
+func TestHarnessCommandsIgnoresANestedPackageJSONOutsideTheScope(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "package.json", `{"name": "monorepo-root"}`)
+	write(t, dir, "packages/core/package.json", `{
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  }
+}
+`)
+	write(t, dir, "packages/core/scripts/verify.mjs", "process.exit(0)\n")
+
+	// The scope holds the package.json but not the script it names.
+	scope := core.FileScopeOf([]string{"package.json", "packages/core/package.json"})
+
+	if got := HarnessCommands(dir, scope); len(got) != 0 {
+		t.Fatalf("HarnessCommands() = %+v, want none", got)
+	}
+}
+
+// TestHarnessCommandsKeepsTwoPackagesWithTheSameScriptName is the
+// collision.
+//
+// A monorepo with a "verify" in every package is ordinary. One of them
+// must not hide the other.
+func TestHarnessCommandsKeepsTwoPackagesWithTheSameScriptName(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "package.json", `{
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  }
+}
+`)
+	write(t, dir, "scripts/verify.mjs", "process.exit(0)\n")
+	write(t, dir, "packages/core/package.json", `{
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  }
+}
+`)
+	write(t, dir, "packages/core/scripts/verify.mjs", "process.exit(0)\n")
+
+	got := HarnessCommands(dir, diskScope(t, dir))
+	if len(got) != 2 {
+		t.Fatalf("HarnessCommands() = %+v, want both packages' harnesses", got)
+	}
+	dirs := map[string]bool{}
+	files := map[string]string{}
+	for _, h := range got {
+		dirs[h.Dir] = true
+		if len(h.Files) != 1 {
+			t.Fatalf("files = %v, want one file", h.Files)
+		}
+		files[h.Dir] = h.Files[0]
+	}
+	if !dirs[""] || !dirs["packages/core"] {
+		t.Errorf("dirs = %v, want the root package and packages/core", dirs)
+	}
+	// Each package's command is written relative to that package, so the
+	// two of them point at two different files. Resolving both against the
+	// repository root would make the nested one name the root's file.
+	if files[""] != "scripts/verify.mjs" {
+		t.Errorf("root files = %q, want %q", files[""], "scripts/verify.mjs")
+	}
+	if files["packages/core"] != "packages/core/scripts/verify.mjs" {
+		t.Errorf("nested files = %q, want %q", files["packages/core"], "packages/core/scripts/verify.mjs")
 	}
 }
 
