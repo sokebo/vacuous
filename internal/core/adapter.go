@@ -163,3 +163,52 @@ type WorktreePreparer interface {
 	// engine reports that as an environment problem, which is honest.
 	PrepareWorktree(ctx context.Context, repoRoot, worktreePath string) error
 }
+
+// CompileVerdict is what an adapter found when it asked whether a package
+// compiles.
+type CompileVerdict int
+
+const (
+	// CompileUnknown means the adapter could not answer.
+	CompileUnknown CompileVerdict = iota
+	// CompileBroken means the code does not compile.
+	CompileBroken
+	// CompileFine means the code compiles, but the test runner rejected
+	// it for a reason the adapter could not pin down.
+	CompileFine
+	// CompileRejectedByLint means the code compiles, and the runner's own
+	// lint step is what rejected it.
+	//
+	// `go test` runs a set of vet analyzers before it builds the test
+	// binary, so a file that compiles perfectly well can still be turned
+	// away there.
+	CompileRejectedByLint
+)
+
+// CompileChecker is an optional capability an adapter may implement.
+//
+// Some runners do more than compile the code before they run it. `go test`
+// runs a set of vet analyzers first, and a file that compiles perfectly
+// well can still be rejected by one of them:
+//
+//	cmd/bench/main.go:94:2: fmt.Println arg list ends with redundant newline
+//
+// The engine has to tell that apart from a real compile error, because the
+// report says different things about them. "The code does not compile" sends
+// the reader looking for type errors; "the code compiles, but the linter the
+// test runner runs rejects it" sends them to a lint rule.
+//
+// An adapter that knows the difference answers here. One that does not
+// implement this keeps the engine's older wording, which is the safe
+// direction: an answer nobody can give is not an answer.
+type CompileChecker interface {
+	// Compiles reports what stopped the test runner from running the
+	// package that owns rel.
+	//
+	// rel is a repository-relative path to a file inside the package.
+	//
+	// CompileUnknown means the question could not be answered, and the
+	// engine keeps the wording it had: an unknown is neither a yes nor a
+	// no.
+	Compiles(ctx context.Context, root, rel string) CompileVerdict
+}

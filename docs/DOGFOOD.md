@@ -6599,3 +6599,154 @@ if len(edges) != 0 {
   `isAssertionCall` 那份名单和 `branchFailsTest` 那份，
   一份认识断言库一份不认识 —— 两份实现同一个问题，迟早分家。
   ★ **一道题，一个地方答。**
+
+### 3.81 报告说「代码编译不过」—— 而那段代码编译得过去
+
+**这一轮闸门没有全过。** `check` 报 NO CHANGE、工作树干净、CI 绿、
+六个被审仓 HEAD 不动、gofmt 空、`go test ./...` 全绿 —— 五项里过了四项。
+
+**第五项没过：远端那只眼睛报 epsilon 往前走了。**
+
+```
+CHANGED:
+  - [remote] epsilon: 远端 main 的尖端 63fe5d7 本地没有 —— 本地落后了
+```
+
+`63fe5d7 第 33 刀 · 撤掉设计原则卡的假抬起`（一个 CSS 改动，没碰测试）。
+本地克隆停在 `8726b44`，`check` 那只眼睛量的是**本地**，看不见这一步 ——
+这正是 3.71 写下 `remote` 那只眼睛的原因，这一轮它派上用场了。
+
+拉下来 ff 之后，六仓重跑，**条数与上一轮基线一致**
+（alpha 4 / beta 1 / gamma 7 / delta 1 / epsilon 2 / zeta 1）。
+
+**这一轮的高危发现，逐条人工核实，五条全是真阳性。**
+
+| 发现 | 核实方式 | 结论 |
+|---|---|---|
+| alpha `discards-error` ×3（`app_test.go:115`/`130`、`cmd/alpha-seed/main.go:91`） | 读 `internal/storage/store.go` 的实现 | **真**：`EdgesFor`/`List` 的每条错误路径都返回 `nil`，`EdgeCount` 的 `var n int` 保持 0 |
+| alpha `no-test-for-fix` ×2（`internal/link/engine.go`、`cmd/alpha-bench/main.go`） | `git archive <sha>^` + 摆进未入库构建产物 + 独立跑 `go test -json` | **真**：撤掉修复后 **47 通过 / 0 失败** 与 **68 通过 / 0 失败**，与工具报的条数**逐个吻合** |
+| beta `guard-not-installed`（CRITICAL） | 看 `.githooks/pre-push`、`git config --get core.hooksPath`、`.git/hooks/pre-push` | **真**：守卫在 `core.hooksPath` 里，`core.hooksPath` 未设，默认 hooks 目录里也没有 |
+
+★ 三条 `discards-error` 里还有一层：工具**读**被调用方的实现来决定措辞
+（`errorPathValue` / `errorPathLeavesNonEmpty`），而这三条落在**另一个包**
+（`st.EdgesFor` 在 `internal/storage`，调用点在根包），所以工具读不到，
+措辞退成假设句（「**会**是空的」）。发现照旧（看不见 ≠ 反对），措辞诚实。
+
+**然后，在 coupled 那一类里，工具说了本轮最贵的一句假话。**
+
+alpha 的 `e2d22b7 fix(bench): 修 vet 报错（冗余换行）` 被报成：
+
+```
+[WARN] coupled  (仓库根)
+  无法判定：撤掉修复之后代码就编译不过了
+  说明: 提交 e2d22b7 的测试补丁能打上，但撤掉修复之后代码本身编译不过 ——
+        坏掉的那个文件（cmd/alpha-bench/main.go）正是这次修复改过的文件。
+        也就是说，这个修复就是让代码重新编译得过去的那个修复；
+        没有它，套件一次都跑不起来。
+  证据: cmd/alpha-bench/main.go:94:2: fmt.Println arg list ends with redundant newline
+```
+
+**三句话，三句都假。** 实测（`git archive e2d22b7^` + 摆进 `frontend/dist`）：
+
+| 命令 | 结果 |
+|---|---|
+| `go build ./cmd/alpha-bench/` | **退出码 0 —— 代码编译得过去** |
+| `go vet ./cmd/alpha-bench/` | 退出码 1：`fmt.Println arg list ends with redundant newline` |
+| `go test -vet=off ./cmd/alpha-bench/` | 退出码 0 |
+| `go test -json -count=1 ./...` | **68 通过 · 0 失败 · 0 跳过**，只有 `cmd/alpha-bench`（一个**没有测试文件**的包）被拒 |
+
+- ★ **「代码本身编译不过」是假的** —— 编译器根本没说话，是 `go test`
+  默认会先跑的 **vet 检查**把它挡下的。
+- ★ **「这个修复就是让代码重新编译得过去的那个修复」是假的** —— 它修的是
+  那条 vet 报错，不是编译错误。
+- ★ **「没有它，套件一次都跑不起来」也是假的** —— 68 个测试照跑照过，
+  被挡在门外的只有那一个包（它压根没有测试文件）。
+
+★ **读的人被送去查类型错误**，而那儿没有类型错误。报告自己的证据行
+（那条 vet 诊断）是唯一跟正文矛盾的东西。
+
+**根因：工具只有一道题（「构建失败了吗」），只有一个答案（「编译不过」）。**
+
+`go test` 做的**不止编译**：它先跑一组 vet 分析器，再去构建测试二进制。
+而**事件流里分不出这两者** —— 实测两者的 `-json` 形状完全一样：
+
+```
+编译错误： {"ImportPath":"...","Action":"build-output","Output":"# pkg\npkg/broken.go:4:9: cannot use ..."}
+vet 诊断： {"ImportPath":"...","Action":"build-output","Output":"# pkg\npkg/main.go:94:2: fmt.Println arg list ends with redundant newline"}
+```
+
+同一个 `build-fail` 事件、同一个包头、同一种 `file:line:col: message` 形状 ——
+**唯一的差别是消息的措辞**。而按措辞判就等于把「原理」写成「例子清单」：
+消息措辞是外部实现，不是判据。
+
+**修复：让工具链自己回答，答案靠对照得到。**
+
+新增 `core.CompileChecker`（可选能力，只有语言适配器知道），Go 适配器
+（`internal/adapters/go_compile.go`）问三次，比对三次：
+
+| 问什么 | 结果 | 读出来的意思 |
+|---|---|---|
+| `go build -o /dev/null <pkg>` | 失败 | **代码真的编译不过** |
+| `go test -c -o /dev/null -vet=off <pkg>` | 失败 | 代码编译得过去，**测试二进制**坏了 |
+| `go test -c -o /dev/null <pkg>` | 失败（而上面那次成功） | 两次唯一的差别就是 vet → **是 vet 挡下的** |
+
+★ 用 `go test -c`（只编译不执行）而不是 `go vet`：vet 跑的分析器**比
+`go test` 用的那一组多**，所以 `go vet` 红了不能证明 `go test` 会红 ——
+**两次跑的是同一条命令，只差一个开关**，这才是对照。
+★ `-o /dev/null` 是为了不留产物（那可能是个 main 包），`go test -c` 是
+为了不执行任何东西（不跑 TestMain，没有副作用）。
+★ **答不准就不改口径**：探针跑不起来 → 报告保留原来的措辞。探针只准让
+报告**更准**，不准让它更不准。
+
+**报告措辞跟着测量走**（`internal/counterfactual/audit.go`）：
+
+- 探针说「是 vet 挡下的」→
+  「★ 代码本身**编译得过去**：挡住它的不是编译器，而是 go test 在编译之外
+  多跑的那一步 —— 它默认会跑的一组 vet 检查。」
+- 探针说「编译不过」→ 保留原措辞。
+- 探针答不出来 → **保留原措辞**（未知既不是是也不是不是）。
+
+★ **判决仍然是 `coupled`（无法判定），这是故意的。**
+被审的那个包一次测试都跑不起来，它**没有目击任何东西**，
+所以「撤掉修复，测试会不会红」在这里没有答案 ——
+判据跟 3.60 写下的一致（「一个没跑起来的套件不能作证」），
+**没有为了好看而改判**。这一轮改的是**报告说了什么**，不是**报告判了什么**。
+
+★ 顺带修掉一句顺手写大的话：「没有它，套件一次都跑不起来」→
+「没有它，**这个包**一次测试都跑不起来」—— 别的包照跑照过。
+
+**负对照（三条变异，逐条实测，每条只咬住自己那一条）**
+
+| 拆掉的修复 | 变红的用例 |
+|---|---|
+| 探针永远不回答（`probeCompiles` 直接返回 unknown） | `TestAuditReportsAVetRejectionAsAVetRejection`（**恰好一条**）—— 报告退回「代码本身编译不过」 |
+| 措辞不认探针的答案（`CompileRejectedByLint` 分支不可达） | `TestCoupledReportDoesNotClaimCompilationItDoesNotHave` + `TestAuditReportsAVetRejectionAsAVetRejection`（**恰好两条**） |
+| 适配器的探针永远说「编译不过」 | `TestCompilesTellsALintRejectionFromACompileError` 的**三个子用例**（lint / 干净包 / 坏测试文件），加上端到端那条 |
+
+★ 端到端那条（`TestAuditReportsAVetRejectionAsAVetRejection`）用的是**真仓库、
+真 worktree、真 `go test`**，fixture 的形状照着 alpha `e2d22b7` 抄的。
+★ 它同时守住**接线**：探针要是根本没被调用，它也会红 ——
+这正是「接上了但没人叫它」那种洞的照妖镜。
+
+**六仓重跑：零漂移。**
+
+用 HEAD 编译的旧二进制和改后的新二进制，同跑六个仓的 `--mode check`：
+**六个仓的输出逐字一致**（条数、严重级别、位置、文案，一个字节都没变）。
+
+★ 零漂移说明**这一轮修的洞不在六个仓身上** —— 它们身上没有 vet 挡路的那
+种提交；洞在这套工具**要能用到的下一批仓**身上，差分现场得另外造
+（所以才有那个 fixture）。
+
+**教训**
+
+- **「构建失败」不是一道题，是一个入口。**
+  编译失败、lint 拒绝、缺构建产物 —— 三件事，同一个入口。
+  ★ 工具只问「失败了吗」，就必然把三件事讲成一件。
+- **答案要靠对照，不能靠读措辞。**
+  消息文本是外部实现。判据看的是**两次跑的差别**，不是**消息长什么样**。
+- **「跑不起来」和「没跑起来」要分开说。**
+  68 个测试照跑照过，被挡的只有 1 个包 —— 说成「套件一次都跑不起来」
+  会让人以为整个仓都没在跑。
+- **改口径 ≠ 改判决。**
+  这一轮判决仍然是「无法判定」，改的只是报告**说了什么**。
+  ★ 改判决会让工具多出指控；改口径只让它少说假话 —— 后者才是这一轮要的。
