@@ -40,7 +40,7 @@ func findingText(findings []core.Finding, line int) string {
 // The function behind the discarded error is in this repository, and it
 // leaves -1 with its error. The report may not call that value empty.
 //
-// Negative control: make errorPathValue answer "not known" and this test
+// Negative control: make errorPathLeavesValue answer "not known" and this test
 // fails.
 func TestTheReportDoesNotCallANonZeroErrorPathEmpty(t *testing.T) {
 	dir := newRepo(t)

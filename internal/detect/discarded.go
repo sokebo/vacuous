@@ -124,8 +124,7 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 				// non-zero value must not be called empty, and an unknown
 				// value has to be marked as an assumption rather than
 				// dressed up as a fact.
-				var errValue int64
-				var errValueKnown bool
+				var errLeaves errorPathLeaves
 				if idx := packageIndexFor(indices, repoRoot, rel, readScope); idx != nil {
 					// The signature may say there was no error to discard
 					// in the first place: "x, _ := lookup(k)" where lookup
@@ -138,7 +137,7 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 					if errorPathLeavesNonEmpty(idx, d.callee, d.method, verdict) {
 						continue
 					}
-					errValue, errValueKnown = errorPathValue(idx, d.callee, d.method)
+					errLeaves = errorPathLeavesValue(idx, d.callee, d.method, verdict)
 				}
 
 				// How the report describes what the error path leaves
@@ -159,14 +158,7 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 				// finding stands either way. It is the SENTENCE that has
 				// to match what the tool knows.
 				emptyOnFailure := func(name string) string {
-					switch {
-					case errValueKnown && errValue == 0:
-						return fmt.Sprintf("加载失败时 %s 是空的（零值）", name)
-					case errValueKnown:
-						return fmt.Sprintf("加载失败时 %s 是 %d", name, errValue)
-					default:
-						return fmt.Sprintf("加载失败时 %s 会是空的（零值）", name)
-					}
+					return failureSentence(name, verdict, errLeaves)
 				}
 
 				switch verdict.shape {
@@ -202,10 +194,7 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 					// value that is not zero, "一个空的结果" is a false
 					// sentence about the audited code - the same mistake as
 					// calling the value empty above.
-					carried := "一个空的结果"
-					if errValueKnown && errValue != 0 {
-						carried = fmt.Sprintf("一个 %d 的结果", errValue)
-					}
+					carried := carriedValue(verdict, errLeaves)
 					out = append(out, finding(core.KindDiscardsError, core.SevHigh,
 						rel, d.line,
 						"错误被丢掉，一个本该拦住你的检查被跳过了",
@@ -224,6 +213,93 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 		}
 	}
 	return out, nil
+}
+
+// failureSentence says what the error path leaves behind.
+//
+// It has to match what the tool knows:
+//
+//   - a known empty value may be stated as a fact;
+//   - a known non-empty value must not be called empty — that would be a
+//     false sentence about the code being audited;
+//   - an unknown value has to be marked as an assumption ("会是"), not
+//     dressed up as a fact ("是").
+//
+// The wording follows the type, because the types go empty in different
+// ways: a count is zero, a string is empty, a pointer is nil, and a
+// collection has no elements.
+func failureSentence(name string, verdict emptinessVerdict, leaves errorPathLeaves) string {
+	switch verdict.limit.kind {
+	case limitString:
+		switch {
+		case leaves.known && leaves.empty:
+			return fmt.Sprintf("加载失败时 %s 是空字符串", name)
+		case leaves.known:
+			return fmt.Sprintf("加载失败时 %s 是 %s", name, leaves.text)
+		default:
+			return fmt.Sprintf("加载失败时 %s 会是空字符串", name)
+		}
+	case limitNilable:
+		switch {
+		case leaves.known && leaves.empty:
+			return fmt.Sprintf("加载失败时 %s 是 nil", name)
+		case leaves.known:
+			return fmt.Sprintf("加载失败时 %s %s", name, leaves.text)
+		default:
+			return fmt.Sprintf("加载失败时 %s 会是 nil", name)
+		}
+	}
+	if !verdict.direct {
+		// A collection: the length is what the comparison looked at, and
+		// an empty collection is one with no elements.
+		switch {
+		case leaves.known && leaves.empty:
+			return fmt.Sprintf("加载失败时 %s 是空的（零值）", name)
+		case leaves.known:
+			return fmt.Sprintf("加载失败时 %s 有 %s", name, leaves.text)
+		default:
+			return fmt.Sprintf("加载失败时 %s 会是空的（零值）", name)
+		}
+	}
+	switch {
+	case leaves.known && leaves.empty:
+		return fmt.Sprintf("加载失败时 %s 是空的（零值）", name)
+	case leaves.known:
+		return fmt.Sprintf("加载失败时 %s 是 %s", name, leaves.text)
+	default:
+		return fmt.Sprintf("加载失败时 %s 会是空的（零值）", name)
+	}
+}
+
+// carriedValue says what the program carries on with after the error was
+// thrown away.
+//
+// It answers the same question as failureSentence and has to answer it the
+// same way: a report that describes a right finding in the wrong words is
+// still a wrong report.
+func carriedValue(verdict emptinessVerdict, leaves errorPathLeaves) string {
+	switch verdict.limit.kind {
+	case limitString:
+		if leaves.known && !leaves.empty {
+			return fmt.Sprintf("一个 %s 的结果", leaves.text)
+		}
+		return "一个空字符串的结果"
+	case limitNilable:
+		if leaves.known && !leaves.empty {
+			return fmt.Sprintf("一个%s的结果", leaves.text)
+		}
+		return "一个 nil 的结果"
+	}
+	if !verdict.direct {
+		if leaves.known && !leaves.empty {
+			return fmt.Sprintf("一个装着 %s 的结果", leaves.text)
+		}
+		return "一个空的结果"
+	}
+	if leaves.known && !leaves.empty {
+		return fmt.Sprintf("一个 %s 的结果", leaves.text)
+	}
+	return "一个空的结果"
 }
 
 // packageIndexFor returns the index of the package a file belongs to.

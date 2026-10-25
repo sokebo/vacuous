@@ -3,6 +3,8 @@ package detect
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
+	"strconv"
 )
 
 // This file answers one question: when a function throws an error away, what
@@ -22,19 +24,122 @@ import (
 // Both are worth reporting, but they are not the same finding, and a report
 // that describes the second one as "the assertion passes" is simply wrong.
 
+// limitKind says what kind of value a comparison is against, and with it what
+// "empty" means for that comparison.
+//
+// The empty value of a value is the zero value of its type: 0 for a number,
+// "" for a string, nil for a pointer, a map, a slice, a channel or an
+// interface. A comparison says which of those it is talking about, and this
+// is where that is recorded.
+//
+// ★ It is here because the rule is about the zero value of a TYPE, not about
+// integers. "n != 0", "s != \"\"" and "p != nil" are the same question asked
+// of three types, and a rule that only knows about integers answers one of
+// the three and stays silent about the other two — which is a hollow test
+// that stays hollow.
+type limitKind int
+
+const (
+	// limitNumeric is a number: 0, 5, 1.5. Empty is zero.
+	limitNumeric limitKind = iota
+	// limitString is a string. Empty is the empty string.
+	limitString
+	// limitNilable is nil. Empty is nil.
+	limitNilable
+)
+
+// emptinessLimit is the value a comparison is against.
+//
+// The kind decides two things the number alone cannot: what the error path
+// has to leave behind for the finding to stand (0 for a number, "" for a
+// string, nil for a pointer), and how the report spells what the assertion
+// demands.
+type emptinessLimit struct {
+	kind limitKind
+	// num is the numeric limit. It is the number for a numeric comparison
+	// and zero for the other two kinds — which is exactly right: the empty
+	// value of a string is "" and of a pointer is nil, and both of them
+	// answer "is this value the same as the limit?" the way zero does.
+	num float64
+	// str is the string limit, for a string comparison.
+	str string
+	// text is how the report spells the limit: "5", "1.5", "nil".
+	text string
+}
+
+// comparisonLimit reads the value a comparison is against, and the kind of
+// emptiness the comparison is about.
+//
+// The comparison has to be against something the emptiness of a value can be
+// compared with: the zero value of its type, or a number.
+//
+//	0        a number: empty is zero
+//	1.5      a number: empty is zero
+//	""       a string: empty is the empty string
+//	"abc"    a string: empty is the empty string, the limit is not
+//	nil      a pointer, a map, a slice, a channel, an interface: empty is nil
+//
+// Anything else — a variable, a call, a constant — does not say what "empty"
+// means for the comparison, so it is not a question this rule can ask.
+func comparisonLimit(e ast.Expr) (emptinessLimit, bool) {
+	switch x := e.(type) {
+	case *ast.BasicLit:
+		switch x.Kind {
+		case token.INT:
+			v, err := strconv.ParseInt(x.Value, 10, 64)
+			if err != nil {
+				return emptinessLimit{}, false
+			}
+			return emptinessLimit{kind: limitNumeric, num: float64(v), text: x.Value}, true
+		case token.FLOAT:
+			v, err := strconv.ParseFloat(x.Value, 64)
+			if err != nil {
+				return emptinessLimit{}, false
+			}
+			return emptinessLimit{kind: limitNumeric, num: v, text: x.Value}, true
+		case token.STRING:
+			s, err := strconv.Unquote(x.Value)
+			if err != nil {
+				return emptinessLimit{}, false
+			}
+			return emptinessLimit{kind: limitString, str: s, text: x.Value}, true
+		}
+		return emptinessLimit{}, false
+	case *ast.UnaryExpr:
+		// A negated literal: "-1" is a unary expression, not a literal.
+		if x.Op != token.SUB {
+			return emptinessLimit{}, false
+		}
+		inner, ok := comparisonLimit(x.X)
+		if !ok || inner.kind != limitNumeric {
+			return emptinessLimit{}, false
+		}
+		return emptinessLimit{kind: limitNumeric, num: -inner.num, text: "-" + inner.text}, true
+	case *ast.Ident:
+		if x.Name == "nil" {
+			return emptinessLimit{kind: limitNilable, text: "nil"}, true
+		}
+	}
+	return emptinessLimit{}, false
+}
+
 // emptinessChecks finds the comparisons in a condition whose meaning depends
 // on what an EMPTY value would do to the branch they guard.
 //
-// Two spellings of the same question:
+// The empty value is the zero value of the value's type, so the same
+// question comes in three spellings:
 //
 //	if len(x) != 0   the length of a collection
 //	if n != 0        a count the call returned
+//	if s != ""       a string the call returned
+//	if p != nil      a pointer the call returned
 //
-// The second is the same shape as the first. When the call failed it left the
-// zero value behind, and an assertion that says "this must be zero" is
-// satisfied by exactly the failure it was supposed to catch. Leaving it out
-// means the tool finds the slice shape and misses the count shape, which is
-// the shape most counters actually take:
+// Each of the last three is the same shape as the first. When the call failed
+// it left the zero value behind, and an assertion that says "this must be
+// empty" is satisfied by exactly the failure it was supposed to catch.
+// Leaving one of them out means the tool finds the shape it knows and misses
+// the others — and a hollow test that stays hollow is the one thing this tool
+// exists to find:
 //
 //	n, _ := st.EdgeCount()
 //	if n != 0 {
@@ -63,6 +168,11 @@ import (
 // the operators instead of asking the question is how "n >= 5" ends up
 // invisible: a list that holds {"!=", ">"} answers a different question than
 // the one the code was written to ask.
+//
+// ★ The same goes for the types: the operators are asked of all of them, and
+// so are the types. A rule that reads the empty value as "the number zero"
+// answers the count and stays silent about the string and the pointer — and
+// the silence looks exactly like "there is nothing here".
 func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 	var out []goEmptiness
 
@@ -98,14 +208,20 @@ func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 			}
 		}
 
-		// The comparison has to be against a number for "empty" to have a
-		// meaning.
+		// The comparison has to be against something the emptiness of a
+		// value can be compared with: the zero value of its type, or a
+		// number.
 		//
-		// intLiteralValue reads a negated literal too ("-1" is a unary
+		// "n != 0", "s != \"\"" and "p != nil" are one question asked of
+		// three types. A rule that only reads integers answers the first
+		// one and stays silent about the other two — and the test it fails
+		// to see is a test that passes without having checked anything.
+		//
+		// comparisonLimit reads a negated literal too ("-1" is a unary
 		// expression, not a literal), so a comparison against a negative
 		// number is asked the same question as any other.
-		limit, isNum := intLiteralValue(other)
-		if !isNum {
+		limit, ok := comparisonLimit(other)
+		if !ok {
 			return true
 		}
 
@@ -139,7 +255,8 @@ func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 // branchRunsWhenEmpty reports whether the guarded branch still runs when the
 // value behind it is empty.
 //
-// This is the whole rule, and it is one question asked of every operator.
+// This is the whole rule, and it is one question asked of every operator and
+// every type.
 //
 // The branch that fails the test (or that stops the code) is the interesting
 // one. If the empty value leaves that branch untaken, the code carries on
@@ -152,31 +269,59 @@ func emptinessChecks(cond ast.Expr, w *goWalker) []goEmptiness {
 //	if n == 5       { t.Fatal(...) }   empty → 0 == 5 is false → untaken
 //	if n < 0        { t.Fatal(...) }   empty → 0 < 0 is false → untaken
 //	if n <= -1      { t.Fatal(...) }   empty → 0 <= -1 is false → untaken
+//	if s != ""      { t.Fatal(...) }   empty → "" != "" is false → untaken
+//	if p != nil     { t.Fatal(...) }   empty → nil != nil is false → untaken
 //
 // The other side of the same question is harmless: the branch runs, the
 // failure is loud, and the test does the job it was written to do.
 //
 //	if n == 0       { t.Fatal(...) }   empty → 0 == 0 is true → taken
 //	if n < 1        { t.Fatal(...) }   empty → 0 < 1 is true → taken
+//	if s == ""      { t.Fatal(...) }   empty → "" == "" is true → taken
+//	if p == nil     { t.Fatal(...) }   empty → nil == nil is true → taken
 //
 // Asking the question of each operator in turn is what keeps "n >= 5" from
 // being invisible. A checker that holds a list of two operators answers a
 // different question than the one the code was written to ask, and the
 // hollow test it misses is a hollow test that stays hollow.
-func branchRunsWhenEmpty(op string, limit int64) bool {
+//
+// ★ The same goes for the types: the empty value is the zero value of the
+// type, and a string, a pointer and a count are three spellings of one
+// question. Answering it for the count alone leaves the other two hollow
+// tests hollow.
+func branchRunsWhenEmpty(op string, limit emptinessLimit) bool {
+	switch limit.kind {
+	case limitString:
+		switch op {
+		case "!=":
+			return "" != limit.str
+		case "==":
+			return "" == limit.str
+		}
+		// Go does not order strings, so no other operator can be here.
+		return true
+	case limitNilable:
+		switch op {
+		case "!=":
+			return false
+		case "==":
+			return true
+		}
+		return true
+	}
 	switch op {
 	case "!=":
-		return 0 != limit
+		return 0 != limit.num
 	case "==":
-		return 0 == limit
+		return 0 == limit.num
 	case ">":
-		return 0 > limit
+		return 0 > limit.num
 	case ">=":
-		return 0 >= limit
+		return 0 >= limit.num
 	case "<":
-		return 0 < limit
+		return 0 < limit.num
 	case "<=":
-		return 0 <= limit
+		return 0 <= limit.num
 	}
 	// An operator this code does not know about: assume the branch runs.
 	// Reporting on a guess is how a checker cries wolf.
@@ -194,12 +339,27 @@ func branchRunsWhenEmpty(op string, limit int64) bool {
 // The first return value is the form that reads inside a sentence
 // ("断言却要求它是空的"); the second is the form the report quotes
 // ("而这条断言要的正是「空的」").
-func wantsSpelling(op string, limit int64) (inline, quoted string) {
+func wantsSpelling(op string, limit emptinessLimit) (inline, quoted string) {
+	switch limit.kind {
+	case limitString:
+		// The branch fires when the comparison holds, and the branch fails
+		// the test. So "s != \"\"" demands an empty string, and
+		// "s == \"abc\"" demands anything but "abc".
+		if op == "==" {
+			q := fmt.Sprintf("不等于 %q", limit.str)
+			return q, q
+		}
+		return "是空的", "空的"
+	case limitNilable:
+		// The branch fires when the comparison holds: "p != nil" demands
+		// nil, because the test fails when p is not nil.
+		return "是 nil", "nil"
+	}
 	quoted = "空的"
 	switch op {
 	case "!=":
-		if limit != 0 {
-			quoted = fmt.Sprintf("不等于 %d", limit)
+		if limit.num != 0 {
+			quoted = fmt.Sprintf("不等于 %s", limit.text)
 		}
 	case "==":
 		// The branch runs when the comparison HOLDS, and the branch fails
@@ -215,17 +375,17 @@ func wantsSpelling(op string, limit int64) (inline, quoted string) {
 		// value makes that branch run, so the failure is loud). The
 		// shape is kept anyway so that the two spellings of the same
 		// question answer the same way.
-		if limit != 0 {
-			quoted = fmt.Sprintf("不等于 %d", limit)
+		if limit.num != 0 {
+			quoted = fmt.Sprintf("不等于 %s", limit.text)
 		}
 	case ">":
-		quoted = fmt.Sprintf("不超过 %d", limit)
+		quoted = fmt.Sprintf("不超过 %s", limit.text)
 	case ">=":
-		quoted = fmt.Sprintf("少于 %d", limit)
+		quoted = fmt.Sprintf("少于 %s", limit.text)
 	case "<":
-		quoted = fmt.Sprintf("至少是 %d", limit)
+		quoted = fmt.Sprintf("至少是 %s", limit.text)
 	case "<=":
-		quoted = fmt.Sprintf("大于 %d", limit)
+		quoted = fmt.Sprintf("大于 %s", limit.text)
 	}
 	// "是空的" reads as a sentence; "是等于 5" does not.
 	if quoted == "空的" {
@@ -240,7 +400,7 @@ func wantsSpelling(op string, limit int64) (inline, quoted string) {
 // Two spellings of the value are accepted:
 //
 //	len(x)   the length of a collection
-//	x        a count the call returned
+//	x        a value the call returned: a count, a string, a pointer
 //
 // The number can sit on either side; flipped says which way round it was.
 type emptinessTargetInfo struct {

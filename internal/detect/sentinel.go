@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"strconv"
@@ -33,6 +34,29 @@ import (
 // contain: a method on a type from another package, a function in another
 // module. There is no evidence against the finding there, so the finding
 // stands — the tool reports the shape it can see and says how to fix it.
+
+// errorPathLeaves is what the error path of a call leaves behind.
+//
+// The three fields answer three different questions, and the report needs
+// all three of them:
+//
+//	known  does this repository show what the error path leaves at all?
+//	       A function in another package leaves the question open, and an
+//	       open question has to be reported as an assumption.
+//	empty  is the value left behind equal to the zero value of its type?
+//	       That is what the report's sentence about the error path is about.
+//	text   how the report spells the value that is left behind.
+type errorPathLeaves struct {
+	// known says this repository shows what the error path leaves.
+	known bool
+	// empty says the value left behind is the zero value of its type:
+	// 0 for a count, "" for a string, nil for a pointer, no elements for
+	// a collection.
+	empty bool
+	// text is how the report spells the value left behind: "-1",
+	// "\"partial\"", "nil", "3 个元素".
+	text string
+}
 
 // errorPathLeavesNonEmpty reports whether the function behind a discarded
 // error can leave a value behind that the guarded branch would NOT treat as
@@ -71,7 +95,7 @@ func errorPathLeavesNonEmpty(idx *funcIndex, callee, method string, verdict empt
 		if isNilIdent(ret.Results[1]) {
 			return true
 		}
-		if valueMakesBranchRun(ret.Results[0], verdict) {
+		if errorValueMakesBranchRun(ret.Results[0], verdict) {
 			found = true
 			return false
 		}
@@ -80,22 +104,93 @@ func errorPathLeavesNonEmpty(idx *funcIndex, callee, method string, verdict empt
 	return found
 }
 
-// errorPathValue reports what the error path of the called function leaves
-// behind, when this repository shows it.
+// errorValueMakesBranchRun reports whether the value an error path returns
+// makes the guarded branch run.
 //
-// The second result is a non-zero number when the function returns a sentinel
-// with its error ("return -1, errors.New(...)"), and it is "known" when the
-// repository shows a number at all.
+// The question is the same for every type; only the way the value is read
+// changes:
+//
+//	n != 0    a count: any value other than zero runs the branch
+//	s != ""   a string: any value other than the empty string runs it
+//	p != nil  a pointer: any value other than nil runs it
+//
+// And that difference matters. A -1 sentinel silences "n != 0" — the test
+// fails loudly and is not hollow — but it does NOT silence "n > 0": -1 > 0
+// is false, the branch stays untaken, and the guard is still skipped.
+//
+// A value this code cannot read does not answer the question, and "cannot be
+// read" is not "does not run": the finding stands.
+func errorValueMakesBranchRun(e ast.Expr, verdict emptinessVerdict) bool {
+	switch verdict.limit.kind {
+	case limitString:
+		s, ok := stringLiteralValue(e)
+		if !ok {
+			return false
+		}
+		return stringMakesBranchRun(s, verdict)
+	case limitNilable:
+		switch {
+		case isNilIdent(e):
+			return nilMakesBranchRun(true, verdict)
+		case isAddressOf(e):
+			return nilMakesBranchRun(false, verdict)
+		}
+		return false
+	}
+	if verdict.direct {
+		return countMakesBranchRun(e, verdict.op, verdict.limit.num)
+	}
+	return collectionMakesBranchRun(e, verdict.op, verdict.limit.num)
+}
+
+// stringMakesBranchRun reports whether a returned string makes the guarded
+// branch run.
+//
+// Only "==" and "!=" can guard a comparison of strings — Go does not order
+// them — so the question is whether the returned string is the one the
+// comparison names.
+func stringMakesBranchRun(s string, verdict emptinessVerdict) bool {
+	switch verdict.op {
+	case "!=":
+		return s != verdict.limit.str
+	case "==":
+		return s == verdict.limit.str
+	}
+	return false
+}
+
+// nilMakesBranchRun reports whether a returned nil — or a returned value
+// that is not nil — makes the guarded branch run.
+//
+// Only "==" and "!=" can guard a comparison against nil.
+func nilMakesBranchRun(isNil bool, verdict emptinessVerdict) bool {
+	switch verdict.op {
+	case "!=":
+		return !isNil
+	case "==":
+		return isNil
+	}
+	return false
+}
+
+// errorPathLeavesValue reports what the error path of the called function
+// leaves behind, when this repository shows it.
+//
+// The value is described in the terms of the comparison it has to answer:
+// a number for a count, a string for a string comparison, nil for a
+// comparison against nil, and an element count for a collection.
 //
 // Why the report needs this: the sentence "加载失败时 n 是空的（零值）" is a
 // claim about the function behind the call. When the tool has just read that
 // function and seen it leave -1, the sentence is not a cautious assumption -
 // it is a false statement about code in the very repository being audited.
+// The same goes for a collection whose error path leaves three elements, and
+// for a string whose error path leaves a partial one.
 //
 // The two cases are therefore told apart:
 //
-//   - the value is known and it is zero → the sentence is true, say it;
-//   - the value is known and it is NOT zero → the sentence is false, so the
+//   - the value is known and it is empty → the sentence is true, say it;
+//   - the value is known and it is NOT empty → the sentence is false, so the
 //     report must not say it;
 //   - the value is not known (the function is not in this repository, or it
 //     leaves something the tool cannot read) → the sentence is an
@@ -105,21 +200,21 @@ func errorPathLeavesNonEmpty(idx *funcIndex, callee, method string, verdict empt
 // "Known" means known HERE: this package's copy of the function. A function
 // in another module can behave differently, and the tool has no evidence
 // about it either way.
-func errorPathValue(idx *funcIndex, callee, method string) (value int64, known bool) {
+func errorPathLeavesValue(idx *funcIndex, callee, method string, verdict emptinessVerdict) errorPathLeaves {
 	if idx == nil {
-		return 0, false
+		return errorPathLeaves{}
 	}
 	fn := idx.lookupFunc(callee, method)
 	if fn == nil || fn.Body == nil {
-		return 0, false
+		return errorPathLeaves{}
 	}
 	if !secondResultIsError(fn) {
-		return 0, false
+		return errorPathLeaves{}
 	}
 
-	found := false
+	var out errorPathLeaves
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		if found {
+		if out.known {
 			return false
 		}
 		ret, ok := n.(*ast.ReturnStmt)
@@ -132,17 +227,68 @@ func errorPathValue(idx *funcIndex, callee, method string) (value int64, known b
 		if isNilIdent(ret.Results[1]) {
 			return true
 		}
-		// Only a literal answers the question. A value computed by a call
-		// cannot be read here, and "cannot be read" is not "is zero".
-		v, ok := intLiteralValue(ret.Results[0])
-		if !ok {
+		out = readLeftValue(ret.Results[0], verdict)
+		if !out.known {
+			// Keep looking: a later return may leave a value this code
+			// can read.
 			return true
 		}
-		value = v
-		found = true
 		return false
 	})
-	return value, found
+	return out
+}
+
+// readLeftValue reads the value an error path leaves, in the terms of the
+// comparison it has to answer.
+//
+// It reads only what the code shows: a literal, a composite literal, or the
+// nil identifier. A value computed by a call cannot be read here, and
+// "cannot be read" is not "is empty".
+func readLeftValue(e ast.Expr, verdict emptinessVerdict) errorPathLeaves {
+	switch verdict.limit.kind {
+	case limitString:
+		s, ok := stringLiteralValue(e)
+		if !ok {
+			return errorPathLeaves{}
+		}
+		return errorPathLeaves{
+			known: true,
+			empty: s == "",
+			text:  fmt.Sprintf("%q", s),
+		}
+	case limitNilable:
+		switch {
+		case isNilIdent(e):
+			return errorPathLeaves{known: true, empty: true, text: "nil"}
+		case isAddressOf(e):
+			return errorPathLeaves{known: true, empty: false, text: "不是 nil 的值"}
+		}
+		return errorPathLeaves{}
+	}
+	if !verdict.direct {
+		// A collection: what the error path leaves is a value with a
+		// length, and the length is what the comparison looks at.
+		lit, ok := e.(*ast.CompositeLit)
+		if !ok {
+			return errorPathLeaves{}
+		}
+		n := len(lit.Elts)
+		return errorPathLeaves{
+			known: true,
+			empty: n == 0,
+			text:  fmt.Sprintf("%d 个元素", n),
+		}
+	}
+	// A count.
+	v, ok := numberLiteralValue(e)
+	if !ok {
+		return errorPathLeaves{}
+	}
+	return errorPathLeaves{
+		known: true,
+		empty: v == 0,
+		text:  literalText(e),
+	}
 }
 
 // valueMakesBranchRun reports whether the value an error path returns makes
@@ -163,21 +309,8 @@ func errorPathValue(idx *funcIndex, callee, method string) (value int64, known b
 // leaves the second one untaken, so a checker that keeps the operator and
 // drops the limit answers "n > 5" with the answer to "n > 0" — and reports
 // a test that is not hollow as hollow.
-func valueMakesBranchRun(e ast.Expr, verdict emptinessVerdict) bool {
-	if verdict.direct {
-		return countMakesBranchRun(e, verdict.op, verdict.limit)
-	}
-	return collectionMakesBranchRun(e, verdict.op, verdict.limit)
-}
-
-// countMakesBranchRun reports whether a returned count makes the guarded
-// branch run.
-//
-// Only a literal can answer this. A count computed by a call, or read from
-// a variable, cannot be known here, and "cannot be known" means the finding
-// stands.
-func countMakesBranchRun(e ast.Expr, op string, limit int64) bool {
-	v, ok := intLiteralValue(e)
+func countMakesBranchRun(e ast.Expr, op string, limit float64) bool {
+	v, ok := numberLiteralValue(e)
 	if !ok {
 		return false
 	}
@@ -203,12 +336,12 @@ func countMakesBranchRun(e ast.Expr, op string, limit int64) bool {
 //
 // Only a literal with elements answers this. A call cannot: the function
 // that builds the collection may return it empty.
-func collectionMakesBranchRun(e ast.Expr, op string, limit int64) bool {
+func collectionMakesBranchRun(e ast.Expr, op string, limit float64) bool {
 	lit, ok := e.(*ast.CompositeLit)
 	if !ok {
 		return false
 	}
-	n := int64(len(lit.Elts))
+	n := float64(len(lit.Elts))
 	switch op {
 	case "!=":
 		return n != limit
@@ -226,30 +359,76 @@ func collectionMakesBranchRun(e ast.Expr, op string, limit int64) bool {
 	return false
 }
 
-// intLiteralValue returns the value of an integer literal, including a
+// numberLiteralValue returns the value of a numeric literal, including a
 // negated one.
-func intLiteralValue(e ast.Expr) (int64, bool) {
+//
+// A float counts: a count is not the only number a Go program compares, and
+// "f != 0.0" is the same question as "n != 0".
+func numberLiteralValue(e ast.Expr) (float64, bool) {
 	switch x := e.(type) {
 	case *ast.BasicLit:
-		if x.Kind != token.INT {
-			return 0, false
+		switch x.Kind {
+		case token.INT:
+			v, err := strconv.ParseInt(x.Value, 10, 64)
+			if err != nil {
+				return 0, false
+			}
+			return float64(v), true
+		case token.FLOAT:
+			v, err := strconv.ParseFloat(x.Value, 64)
+			if err != nil {
+				return 0, false
+			}
+			return v, true
 		}
-		v, err := strconv.ParseInt(x.Value, 10, 64)
-		if err != nil {
-			return 0, false
-		}
-		return v, true
+		return 0, false
 	case *ast.UnaryExpr:
 		if x.Op != token.SUB {
 			return 0, false
 		}
-		v, ok := intLiteralValue(x.X)
+		v, ok := numberLiteralValue(x.X)
 		if !ok {
 			return 0, false
 		}
 		return -v, true
 	}
 	return 0, false
+}
+
+// literalText spells a numeric literal the way the code wrote it, so that
+// the report quotes the value instead of reformatting it.
+func literalText(e ast.Expr) string {
+	switch x := e.(type) {
+	case *ast.BasicLit:
+		return x.Value
+	case *ast.UnaryExpr:
+		if x.Op == token.SUB {
+			return "-" + literalText(x.X)
+		}
+	}
+	return ""
+}
+
+// stringLiteralValue returns the content of a string literal.
+func stringLiteralValue(e ast.Expr) (string, bool) {
+	lit, ok := e.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	s, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+// isAddressOf reports whether an expression takes the address of something.
+//
+// "&x" is never nil, so an error path that returns one leaves a value that
+// is not nil — and a comparison against nil then runs the branch it guards.
+func isAddressOf(e ast.Expr) bool {
+	u, ok := e.(*ast.UnaryExpr)
+	return ok && u.Op == token.AND
 }
 
 // isNilIdent reports whether an expression is the identifier nil.

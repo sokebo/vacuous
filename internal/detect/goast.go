@@ -130,14 +130,15 @@ type goEmptiness struct {
 	// op is the comparison operator, normalised so that len() is on the
 	// left: "!=" or ">".
 	op string
-	// limit is the number the value is compared against.
+	// limit is the value the comparison is against, and with it the kind of
+	// emptiness the comparison is about.
 	//
 	// It is part of the comparison, and dropping it changes what the
 	// comparison means. "n > 0" and "n > 5" are different questions: a
 	// value of 3 makes the first branch run and leaves the second one
 	// untaken. A checker that keeps the operator and drops the limit
 	// answers both questions with the first one's answer.
-	limit int64
+	limit emptinessLimit
 	// line is the 1-indexed line of the comparison.
 	line int
 	// direct is true when the value was compared on its own rather than
