@@ -178,7 +178,7 @@ func nilMakesBranchRun(isNil bool, verdict emptinessVerdict) bool {
 //
 // The value is described in the terms of the comparison it has to answer:
 // a number for a count, a string for a string comparison, nil for a
-// comparison against nil, and an element count for a collection.
+// comparison against nil, and a length for a collection.
 //
 // Why the report needs this: the sentence "加载失败时 n 是空的（零值）" is a
 // claim about the function behind the call. When the tool has just read that
@@ -241,9 +241,9 @@ func errorPathLeavesValue(idx *funcIndex, callee, method string, verdict emptine
 // readLeftValue reads the value an error path leaves, in the terms of the
 // comparison it has to answer.
 //
-// It reads only what the code shows: a literal, a composite literal, or the
-// nil identifier. A value computed by a call cannot be read here, and
-// "cannot be read" is not "is empty".
+// It reads only what the code shows: a literal, a composite literal, a string
+// literal, or the nil identifier. A value computed by a call cannot be read
+// here, and "cannot be read" is not "is empty".
 func readLeftValue(e ast.Expr, verdict emptinessVerdict) errorPathLeaves {
 	switch verdict.limit.kind {
 	case limitString:
@@ -268,15 +268,18 @@ func readLeftValue(e ast.Expr, verdict emptinessVerdict) errorPathLeaves {
 	if !verdict.direct {
 		// A collection: what the error path leaves is a value with a
 		// length, and the length is what the comparison looks at.
-		lit, ok := e.(*ast.CompositeLit)
+		//
+		// The length is read the same way the branch question is asked —
+		// from whatever the error path leaves, not from one particular
+		// shape of it. A string has a length too.
+		n, text, ok := errorPathLength(e)
 		if !ok {
 			return errorPathLeaves{}
 		}
-		n := len(lit.Elts)
 		return errorPathLeaves{
 			known: true,
 			empty: n == 0,
-			text:  fmt.Sprintf("%d 个元素", n),
+			text:  text,
 		}
 	}
 	// A count.
@@ -334,29 +337,76 @@ func countMakesBranchRun(e ast.Expr, op string, limit float64) bool {
 // collectionMakesBranchRun reports whether a returned collection is long
 // enough to make the guarded branch run.
 //
-// Only a literal with elements answers this. A call cannot: the function
-// that builds the collection may return it empty.
+// Only a value whose length this code can read answers this. A call cannot:
+// the function that builds the collection may return it empty.
 func collectionMakesBranchRun(e ast.Expr, op string, limit float64) bool {
-	lit, ok := e.(*ast.CompositeLit)
+	n, _, ok := errorPathLength(e)
 	if !ok {
 		return false
 	}
-	n := float64(len(lit.Elts))
+	f := float64(n)
 	switch op {
 	case "!=":
-		return n != limit
+		return f != limit
 	case "==":
-		return n == limit
+		return f == limit
 	case ">":
-		return n > limit
+		return f > limit
 	case ">=":
-		return n >= limit
+		return f >= limit
 	case "<":
-		return n < limit
+		return f < limit
 	case "<=":
-		return n <= limit
+		return f <= limit
 	}
 	return false
+}
+
+// errorPathLength reads the length of the value an error path leaves, for the
+// comparisons that ask about a length: "len(x) != 0".
+//
+// The question is "how long is it?", and the answer depends on what the value
+// is:
+//
+//	[]string{"x"}   a collection: one element
+//	"partial"       a string: seven bytes — Go's len counts bytes
+//	nil             a nil slice or map: zero
+//
+// ★ A string is a collection too. "len(s) != 0" and "s != \"\"" are the same
+// question about the same value, asked of the same error path — and a rule that
+// reads only composite literals answers the second one and is silent about the
+// first. The silence is not neutral: the finding stays, and it is reported as
+// a hole when the error path leaves a partial string, so the branch runs, the
+// test fails loudly, and there was never a hole there.
+//
+// That is the false positive that costs the most: a tool that cries wolf gets
+// switched off, and then it protects nothing.
+//
+// A value this code cannot read (a call, a variable) has no length here, and
+// "cannot be read" is not "is empty" — the caller decides what to say about it.
+func errorPathLength(e ast.Expr) (int, string, bool) {
+	switch x := e.(type) {
+	case *ast.CompositeLit:
+		n := len(x.Elts)
+		return n, fmt.Sprintf("%d 个元素", n), true
+	case *ast.BasicLit:
+		if x.Kind != token.STRING {
+			return 0, "", false
+		}
+		s, err := strconv.Unquote(x.Value)
+		if err != nil {
+			return 0, "", false
+		}
+		// Go's len counts bytes, and so does this.
+		n := len(s)
+		return n, fmt.Sprintf("%d 个字节", n), true
+	case *ast.Ident:
+		if x.Name == "nil" {
+			// A nil slice or map has no elements.
+			return 0, "nil", true
+		}
+	}
+	return 0, "", false
 }
 
 // numberLiteralValue returns the value of a numeric literal, including a
