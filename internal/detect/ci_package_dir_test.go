@@ -137,10 +137,11 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	f := findOwnChecks(t, findings)
-	if !strings.Contains(f.Evidence, "\n  packages/core/scripts/verify.mjs") {
+	claimed := evidenceSection(f.Evidence, "CI 跑到的验证脚本文件:")
+	if !containsLine(claimed, "packages/core/scripts/verify.mjs") {
 		t.Errorf("the evidence must name the script the CI runs:\n%s", f.Evidence)
 	}
-	if strings.Contains(f.Evidence, "\n  scripts/verify.mjs") {
+	if containsLine(claimed, "scripts/verify.mjs") {
 		t.Errorf("the CI never ran the root's verify - crediting it with one names a check it never ran:\n%s", f.Evidence)
 	}
 }
@@ -173,10 +174,11 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	f := findOwnChecks(t, findings)
-	if !strings.Contains(f.Evidence, "\n  packages/core/scripts/verify.mjs") {
+	claimed := evidenceSection(f.Evidence, "CI 跑到的验证脚本文件:")
+	if !containsLine(claimed, "packages/core/scripts/verify.mjs") {
 		t.Errorf("the evidence must name the script the CI runs:\n%s", f.Evidence)
 	}
-	if strings.Contains(f.Evidence, "\n  scripts/verify.mjs") {
+	if containsLine(claimed, "scripts/verify.mjs") {
 		t.Errorf("the CI never ran the root's script - crediting it with one names a check it never ran:\n%s", f.Evidence)
 	}
 }
@@ -309,10 +311,11 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	f := findOwnChecks(t, findings)
-	if !strings.Contains(f.Evidence, "\n  scripts/verify.mjs") {
+	claimed := evidenceSection(f.Evidence, "CI 跑到的验证脚本文件:")
+	if !containsLine(claimed, "scripts/verify.mjs") {
 		t.Errorf("the evidence must name the script the CI runs:\n%s", f.Evidence)
 	}
-	if strings.Contains(f.Evidence, "\n  packages/core/scripts/verify.mjs") {
+	if containsLine(claimed, "packages/core/scripts/verify.mjs") {
 		t.Errorf("the CI never ran the nested package's verify:\n%s", f.Evidence)
 	}
 }

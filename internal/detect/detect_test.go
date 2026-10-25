@@ -113,6 +113,48 @@ func trackedScope(t *testing.T, dir string) core.FileScope {
 	return core.FileScopeOf(files)
 }
 
+// evidenceSection returns the lines of an evidence blob that belong to one
+// section - the lines after the section's marker, up to the next marker.
+//
+// The evidence holds several sections, and a path can appear in more than
+// one of them: "CI 跑到的验证脚本文件" and "CI 没跑的验证脚本文件" both
+// list paths, and what they mean is the opposite of each other. An
+// assertion that searches the whole blob cannot tell which one it is
+// reading - and it will read the wrong one as soon as the report grows a
+// second section that names a file.
+func evidenceSection(evidence, marker string) string {
+	var out []string
+	in := false
+	for _, line := range strings.Split(evidence, "\n") {
+		if line == marker {
+			in = true
+			continue
+		}
+		if !in {
+			continue
+		}
+		// A marker is a line that ends in a colon and is not indented.
+		if strings.HasSuffix(line, ":") && !strings.HasPrefix(line, " ") {
+			break
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// containsLine reports whether the text holds the given line.
+//
+// It compares whole lines, so a path is not found inside a longer one:
+// "packages/core/scripts/verify.mjs" does not count as "scripts/verify.mjs".
+func containsLine(text, want string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
 // diskScope returns a scope holding every file under dir.
 //
 // Some detectors are tested outside a git repository, where there is no
