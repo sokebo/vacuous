@@ -237,7 +237,7 @@ func runRecord(repo string, targets stringList, yes bool, force bool) int {
 		fmt.Printf("  commit      %s\n", st.Commit)
 		fmt.Printf("  fingerprint %s\n", st.Fingerprint)
 		for _, t := range st.Targets {
-			fmt.Printf("  target      %s  %s  %s\n", t.Head[:7], t.Path, workingState(t))
+			fmt.Printf("  target      %s  %s  %s  %s\n", t.Head[:7], t.Path, workingState(t), guardState(t))
 		}
 		if old, err := gate.LoadState(dir); err == nil {
 			fmt.Println("相对上次记录的变化：")
@@ -262,7 +262,7 @@ func runRecord(repo string, targets stringList, yes bool, force bool) int {
 	fmt.Printf("  commit      %s\n", st.Commit)
 	fmt.Printf("  fingerprint %s\n", st.Fingerprint)
 	for _, t := range st.Targets {
-		fmt.Printf("  target      %s  %s  %s\n", t.Head[:7], t.Path, workingState(t))
+		fmt.Printf("  target      %s  %s  %s  %s\n", t.Head[:7], t.Path, workingState(t), guardState(t))
 	}
 	return 0
 }
@@ -276,6 +276,18 @@ func workingState(t gate.Target) string {
 		return "工作树=干净"
 	}
 	return fmt.Sprintf("工作树=%s", t.Working[:7])
+}
+
+// guardState 把守卫安装状态写成一行人能看懂的话。
+//
+// 这一样东西不在仓里 —— 它在 git 的配置和 git 真正会看的那个 hooks 目录里。
+// 它变了，结论就可能变（守卫装上了，那条严重发现就消失），
+// 所以它必须被记下来、被盯着。
+func guardState(t gate.Target) string {
+	if t.Guards == "" {
+		return "守卫状态=未记录"
+	}
+	return fmt.Sprintf("守卫状态=%s", t.Guards[:7])
 }
 
 func usage() {

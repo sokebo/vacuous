@@ -1,6 +1,7 @@
 package gate
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -328,6 +329,290 @@ func TestCheckIsQuietWhenTargetWorkingTreeIsUnchanged(t *testing.T) {
 	}
 	if changes := Check(dir, loaded); len(changes) != 0 {
 		t.Errorf("工作树和基线一样不该触发重跑，却报了: %+v", changes)
+	}
+}
+
+// TestCheckReportsTargetGuardInstallChange 守的是被审仓库的第三只眼睛。
+//
+// 闸门以前只盯 HEAD 和工作树。而「守卫装没装」这件事根本不在仓里 ——
+// 它在 git 的配置里，也在 git 真正会去的那个 hooks 目录里。
+//
+// 于是有这样一个洞：报告说「守卫从来没被装上」，主人照着报告把守卫装上
+// （报告里那句修复指引就是 `git config core.hooksPath .githooks`），
+// 结论当场变掉 —— 那条严重发现消失了 —— 而闸门报「没变化」。
+// 「没变化」和「结论变了」同时成立，两边都像样，谁也不说谎。
+//
+// 现场就是事故现场：同一个 HEAD、同样干净的工作树，只差一个配置项。
+// 实测过：改之前闸门报 NO CHANGE、退出码 0，同一个仓的结论却从
+// 「严重」变成一条发现都没有。
+func TestCheckReportsTargetGuardInstallChange(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	// 被审仓里有一个守卫，但它没被装上。
+	writeFile(t, target, ".githooks/pre-push", "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(target, ".githooks", "pre-push"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, target, "加一个守卫")
+
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 照着报告里的指引把守卫装上。HEAD 没动，工作树也没动。
+	runGit(t, target, "config", "core.hooksPath", ".githooks")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	changes := Check(dir, loaded)
+	if len(changes) != 1 {
+		t.Fatalf("守卫装上了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+	}
+	if changes[0].Kind != "target-guards" {
+		t.Errorf("应该是 target-guards，实际是 %q", changes[0].Kind)
+	}
+	if !strings.Contains(changes[0].Detail, target) {
+		t.Errorf("报错里要点名是哪个仓: %q", changes[0].Detail)
+	}
+}
+
+// TestCheckIsQuietWhenTargetGuardStateIsUnchanged 守的是「宁可漏报不可误伤」。
+//
+// 闸门每轮都喊「有变化」，比瞎报还糟：每轮都跑完整的六仓 dogfood、
+// 什么新东西都没有，闸门从此只消耗人、不告诉人任何事（3.18）。
+//
+// 所以新加的这只眼睛必须先证明自己会安静。
+func TestCheckIsQuietWhenTargetGuardStateIsUnchanged(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	writeFile(t, target, ".githooks/pre-push", "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(target, ".githooks", "pre-push"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, target, "加一个守卫")
+
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	if changes := Check(dir, loaded); len(changes) != 0 {
+		t.Errorf("守卫状态和基线一样不该触发重跑，却报了: %+v", changes)
+	}
+}
+
+// TestCheckIsQuietWhenTheHooksDirOnlyHasFilesGitDoesNotRun 守的是「只量结论用到的东西」。
+//
+// git 的 hooks 目录里默认躺着一堆 *.sample 模板 —— 换个 git 版本它们就变。
+// 它们跟结论毫无关系（git 不会跑它们），把它们算进指纹，
+// 闸门就会为一件跟结论无关的事响一次。
+//
+// 同理，一个 git 按名字不认的文件（比如 setup-dev-env.sh）也不是守卫 ——
+// 检查器根本不会去看它，所以它进不了任何结论。
+//
+// ★ 这一条走的是公开接口，没有直接调新加的那个函数：
+// **测试补丁要能在撤掉修复之后编译得过去**，否则反事实实验只会得到
+// 「耦合在一起，拆不开」，而那等于这条测试有没有效，工具自己说不清。
+func TestCheckIsQuietWhenTheHooksDirOnlyHasFilesGitDoesNotRun(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	hooksDir := filepath.Join(target, ".git", "hooks")
+	writeFile(t, hooksDir, "pre-push.sample", "#!/bin/sh\nexit 0\n")
+	writeFile(t, hooksDir, "setup-dev-env.sh", "#!/bin/sh\nexit 0\n")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	if changes := Check(dir, loaded); len(changes) != 0 {
+		t.Errorf("git 不会跑的文件不该触发重跑，却报了: %+v", changes)
+	}
+}
+
+// TestCheckNoticesTheInstalledHookLosingItsExecutableBit 守的是权限位那一半。
+//
+// 检查器判断「装上了」靠两样东西：文件可执行（git 只跑可执行的 hook），
+// 内容对得上（同一份字节、软链接、或者包装脚本）。少看一样，
+// 闸门就少一只眼睛 —— 而少的那只眼睛看不见的，恰恰是「守卫坏掉了」
+// 这种变化。
+//
+// ★ 同样走公开接口，理由见上面那条。
+func TestCheckNoticesTheInstalledHookLosingItsExecutableBit(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	// 仓里有一个守卫，并且被装上了（复制进 .git/hooks/）。
+	writeFile(t, target, ".githooks/pre-push", "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(target, ".githooks", "pre-push"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, target, "加一个守卫")
+	installed := filepath.Join(target, ".git", "hooks", "pre-push")
+	writeFile(t, filepath.Join(target, ".git", "hooks"), "pre-push", "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(installed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 去掉可执行位 —— git 不会跑它了。HEAD 没动，被跟踪的工作树也没动。
+	if err := os.Chmod(installed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	changes := Check(dir, loaded)
+	if len(changes) != 1 {
+		t.Fatalf("装好的守卫不能执行了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+	}
+	if changes[0].Kind != "target-guards" {
+		t.Errorf("应该是 target-guards，实际是 %q", changes[0].Kind)
+	}
+}
+
+// TestCheckNoticesTheInstalledHookContentChanging 守的是内容那一半。
+//
+// 「同一份字节」是检查器认「装上了」的三种装法之一。装好的那份内容变了
+// —— 不再是仓里那个守卫了 —— 结论就可能变，而闸门必须看得见。
+func TestCheckNoticesTheInstalledHookContentChanging(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	writeFile(t, target, ".githooks/pre-push", "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(target, ".githooks", "pre-push"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, target, "加一个守卫")
+	hooksDir := filepath.Join(target, ".git", "hooks")
+	installed := filepath.Join(hooksDir, "pre-push")
+	writeFile(t, hooksDir, "pre-push", "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(installed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 内容换了，可执行位还在。
+	writeFile(t, hooksDir, "pre-push", "#!/bin/sh\nexit 1\n")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	changes := Check(dir, loaded)
+	if len(changes) != 1 {
+		t.Fatalf("装好的守卫内容变了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+	}
+	if changes[0].Kind != "target-guards" {
+		t.Errorf("应该是 target-guards，实际是 %q", changes[0].Kind)
+	}
+}
+
+// TestCheckTreatsAMissingGuardStateAsChanged 守的是 fail closed。
+//
+// 旧版本写出来的状态文件里没有「守卫状态」这一项 —— 那不是「没变」，
+// 是「没记过」。而「没记过」不能当成「没变」：那等于让这只眼睛
+// 静默失明，而症状和「一切正常」完全一样。
+//
+// 旧状态文件在磁盘上真的存在（升级前写下的每一个），所以这一条
+// 不是假想。
+//
+// ★ 它改的是**状态文件本身**（把那一项从 JSON 里拿掉），而不是去碰
+// 新加的那个结构体字段 —— 后者会让测试补丁在撤掉修复之后编译不过，
+// 反事实实验于是只能给出一句「耦合在一起，拆不开」。
+func TestCheckTreatsAMissingGuardStateAsChanged(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("采集状态失败: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("写状态失败: %v", err)
+	}
+
+	// 把状态文件改回旧版本的形状：每个被审仓都没有「守卫状态」这一项。
+	path, err := StateFile(dir)
+	if err != nil {
+		t.Fatalf("定位状态文件失败: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读状态文件失败: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("解析状态文件失败: %v", err)
+	}
+	targets, _ := doc["targets"].([]any)
+	if len(targets) == 0 {
+		t.Fatal("状态文件里没有 targets")
+	}
+	for _, tv := range targets {
+		tm, _ := tv.(map[string]any)
+		delete(tm, "guards")
+	}
+	trimmed, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("序列化状态文件失败: %v", err)
+	}
+	if err := os.WriteFile(path, trimmed, 0o644); err != nil {
+		t.Fatalf("写状态文件失败: %v", err)
+	}
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("读状态失败: %v", err)
+	}
+	changes := Check(dir, loaded)
+	found := false
+	for _, c := range changes {
+		if c.Kind == "target-guards" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("没记过守卫状态不能当成「没变」，却没报变化: %+v", changes)
 	}
 }
 
