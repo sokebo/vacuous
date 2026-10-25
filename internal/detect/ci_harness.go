@@ -318,6 +318,62 @@ func (c *ciContext) harnessRunsIn(text string) []ciHarnessRun {
 	return runs
 }
 
+// harnessNotRunByCI returns the repository's own check commands that the CI
+// does not run.
+//
+// The two sets are identified the same way on both sides: the package that
+// declares the script and the script's name. A monorepo with a "verify" in
+// every package therefore keeps them apart - a CI that ran one of them did
+// not run the others.
+func harnessNotRunByCI(harness []HarnessCommand, ran []ciHarnessRun) []HarnessCommand {
+	seen := make(map[string]bool, len(ran))
+	for _, r := range ran {
+		seen[r.Script+"\x00"+r.Dir] = true
+	}
+	var out []HarnessCommand
+	for _, h := range harness {
+		if seen[h.Script+"\x00"+h.Dir] {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// notRunByCISection renders the check commands the CI does not run.
+//
+// The sentence is about the CI, not about the whole world: a repository's
+// checks may well be run by a deploy script or by hand, and the tool sees
+// neither. What it can see is that the CI does not run them - and a guard
+// the CI does not run is a guard that does not turn the build red.
+//
+// That is the same question the tool already answers for git hooks ("守卫
+// 文件在，但从来没被装上 —— 它一次都没运行过"). A check script nobody runs
+// from CI is the same shape of emptiness, one layer over.
+//
+// It says nothing when the CI runs every check command: there is nothing to
+// report then, and a report that always has something to say is a report
+// nobody reads.
+func notRunByCISection(notRun []HarnessCommand) (detail, evidence string) {
+	if len(notRun) == 0 {
+		return "", ""
+	}
+	lines := make([]string, 0, len(notRun))
+	var files []string
+	for _, h := range notRun {
+		lines = append(lines, "  "+h.Label()+" → "+h.Command)
+		files = append(files, h.Files...)
+	}
+	detail = "仓里还声明了这些验证命令，CI 一个都没跑：\n" + strings.Join(lines, "\n") +
+		"\nCI 不跑它们 —— 它们盯着的东西坏掉时，CI 不会变红。"
+	evidence = "\nCI 没跑的验证命令:\n" + strings.Join(lines, "\n") +
+		"\nCI 没跑的验证脚本文件:"
+	for _, f := range dedupe(files) {
+		evidence += "\n  " + f
+	}
+	return detail, evidence
+}
+
 // harnessChain is a chain of package.json script names that leads to a
 // check script of this repository.
 type harnessChain struct {

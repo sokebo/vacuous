@@ -452,7 +452,8 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 			}
 		}
 		if len(local) > 0 {
-			out = append(out, ciRunsOwnChecksFinding(workflows, localWorkflows, local))
+			out = append(out, ciRunsOwnChecksFinding(workflows, localWorkflows, local,
+				harnessNotRunByCI(ci.harness, local)))
 		} else {
 			detail := fmt.Sprintf(
 				".github/workflows/ 下有 %d 个 workflow，没有一个跑测试。\n"+
@@ -466,11 +467,23 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 					strings.Join(dedupe(checks), ", "))
 				evidence += "\n找到的检查: " + strings.Join(dedupe(checks), ", ")
 			}
+			// The repository may declare check commands of its own that the
+			// CI never reaches. Saying so is the difference between "this
+			// repository has no guards" and "this repository has guards the
+			// CI does not run" - two very different situations that the
+			// reader has to act on differently.
+			notRunDetail, notRunEvidence := notRunByCISection(harnessNotRunByCI(ci.harness, local))
+			detail += notRunDetail
+			evidence += notRunEvidence
+			hint := "加一个跑测试的步骤，并让它失败时阻断合并"
+			if notRunDetail != "" {
+				hint += "。仓里已有的验证命令也可以接进 CI —— 现在 CI 一个都没跑它们"
+			}
 			out = append(out, finding(core.KindGuardNotInstalled, core.SevWarn,
 				".github/workflows", 0,
 				"这个仓库的 CI 不跑任何测试",
 				detail, evidence,
-				"加一个跑测试的步骤，并让它失败时阻断合并"))
+				hint))
 		}
 	} else if len(withTests) == 0 {
 		// Some workflows are opaque: they call a workflow that lives in
@@ -524,7 +537,8 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 // turn the build red when the thing they watch breaks. What is missing is
 // a test suite, and that is still a real gap: a check script can tell you
 // the output is malformed, it cannot tell you the logic is wrong.
-func ciRunsOwnChecksFinding(workflows []workflow, localWorkflows []string, local []ciHarnessRun) core.Finding {
+func ciRunsOwnChecksFinding(workflows []workflow, localWorkflows []string, local []ciHarnessRun,
+	notRun []HarnessCommand) core.Finding {
 	var lines, files []string
 	for _, r := range local {
 		if len(r.Chain) > 0 {
@@ -564,11 +578,27 @@ func ciRunsOwnChecksFinding(workflows []workflow, localWorkflows []string, local
 		evidence += "\n  " + f
 	}
 
+	// The CI may run one of the repository's check scripts and still leave
+	// the others out. "CI 跑的是自己写的验证脚本" reads like "CI runs my
+	// checks" - and for the ones it does not run, that is exactly the
+	// wrong impression. The gap is the tool's own subject: a guard that
+	// exists and never runs.
+	notRunDetail, notRunEvidence := notRunByCISection(notRun)
+	if notRunDetail != "" {
+		detail += "\n\n" + notRunDetail
+	}
+	evidence += notRunEvidence
+
+	hint := "把测试接进 CI：加一个跑测试套件的步骤，并让它失败时阻断合并"
+	if notRunDetail != "" {
+		hint += "。仓里已有的验证命令也可以接进 CI —— 现在 CI 一个都没跑它们"
+	}
+
 	return finding(core.KindGuardNotInstalled, core.SevWarn,
 		".github/workflows", 0,
 		"这个仓库的 CI 不跑测试套件 —— 它跑的是自己写的验证脚本",
 		detail, evidence,
-		"把测试接进 CI：加一个跑测试套件的步骤，并让它失败时阻断合并")
+		hint)
 }
 
 // workflowNames lists the workflow file names.

@@ -199,15 +199,18 @@ jobs:
 			continue
 		}
 		// The root package's "verify" is a different script. The report
-		// must not claim the CI ran it. The evidence lists each file the
-		// CI reached on its own line, so the root's file shows up as
-		// "\n  scripts/verify.mjs" - the nested one as
-		// "\n  packages/core/scripts/verify.mjs", which does not contain
-		// that substring.
-		if strings.Contains(f.Evidence, "\n  scripts/verify.mjs") {
+		// must not claim the CI ran it.
+		//
+		// The evidence lists each file on its own line, so the check has
+		// to look at the right section: "CI 跑到的验证脚本文件" is what
+		// the CI ran, and "CI 没跑的验证脚本文件" is what it did not.
+		// The root's file belongs to the second one - and saying so is
+		// correct, so the assertion has to be about the first.
+		claimed := evidenceSection(f.Evidence, "CI 跑到的验证脚本文件:")
+		if containsLine(claimed, "scripts/verify.mjs") {
 			t.Fatalf("the report claims the CI ran the root package's check script, which it did not: %+v", f)
 		}
-		if !strings.Contains(f.Evidence, "\n  packages/core/scripts/verify.mjs") {
+		if !containsLine(claimed, "packages/core/scripts/verify.mjs") {
 			t.Errorf("the report must name the file whose check script the CI ran: %+v", f)
 		}
 		if !strings.Contains(f.Detail, "npm run verify (packages/core)") {
