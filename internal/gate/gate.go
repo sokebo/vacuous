@@ -21,12 +21,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // State 是「上一次核验时的状态」。
@@ -70,13 +73,23 @@ type Target struct {
 	// 工作树里的文件。同一个 HEAD，干净的时候和改了没提交的时候，跑出来的
 	// 结果是不一样的。
 	Working string `json:"working,omitempty"`
+
+	// Guards 是「守卫到底装没装」的指纹。
+	//
+	// 它单独存在，是因为这件事根本不在仓里：git 读的是自己的配置和
+	// 自己的 hooks 目录，而闸门量的是 HEAD 和工作树 —— 两个都看不见它。
+	//
+	// 于是有一个洞：报告说「守卫从来没被装上」，主人照着报告把 hook 装上，
+	// 结论当场变掉（那条严重发现消失），而闸门报「没变化」——
+	// 「没变化」和「结论变了」同时成立，两边都像样。
+	Guards string `json:"guards,omitempty"`
 }
 
 // Change 是一条「有东西变了」的记录。
 type Change struct {
 	// Kind: code（工具代码变了）/ dirty（工具自己的工作树有未提交的改动）/
 	//       target（被审仓库的 HEAD 变了）/ target-dirty（被审仓库的工作树变了）/
-	//       unknown（判不出来）
+	//       target-guards（被审仓库的守卫安装状态变了）/ unknown（判不出来）
 	Kind   string `json:"kind"`
 	Detail string `json:"detail"`
 }
@@ -292,6 +305,170 @@ func workingContentHash(dir, rel string) string {
 	return fmt.Sprintf("%o:%s", info.Mode().Perm(), hex.EncodeToString(sum[:]))
 }
 
+// GuardState 返回「守卫到底装没装」的指纹。
+//
+// 为什么它必须存在：闸门量的是被审仓的 HEAD 和工作树，而「守卫装没装」
+// 这件事**根本不在仓里**。它由三样东西决定：
+//
+//	① 生效的 core.hooksPath（本地 + 全局 + 系统配置合起来的那份）
+//	② git 真正会去看的那个 hooks 目录
+//	③ 那个目录里 git 认识的那几个 hook 文件（名字 + 权限位 + 内容）
+//
+// 三样都在仓外 —— 于是闸门对它们完全失明。实测出来的形状：同一个 HEAD、
+// 同样干净的工作树，只把 core.hooksPath 设上（那正是工具自己给的修复
+// 指引：`git config core.hooksPath .githooks`），结论从「守卫从来没被
+// 装上」（严重）变成一条发现都没有，而闸门报 NO CHANGE、退出码 0。
+// 「没变化」和「结论变了」同时成立，两边都像样，谁也不说谎。
+//
+// 3.68 那条规矩在这里是反过来的：修的方向不是「让分析少读一点」，
+// 因为这条结论本来就问的是「这台机器上的 git 会不会跑它」——
+// 少读就等于把一条真阳性删掉。而是「让闸门把分析读过的东西也盯上」：
+// **闸门和被审对象要用同一套属性**，差一样，就多一只看不见的眼睛。
+//
+// 它只量这三样，不多不少：
+//   - git 自己的 *.sample 模板不进指纹 —— 换个 git 版本它们就变，
+//     而它们跟结论毫无关系（进指纹就等于让闸门为无关的事响一次）。
+//   - 仓里的守卫文件也不进指纹 —— 那些是被跟踪的文件，闸门已经盯着了
+//     （HEAD 的 ls-tree 和工作树指纹都带着权限位）。
+//   - 权限位和内容都进 —— 检查器判断「装上了」靠的正是这两样：
+//     git 只跑可执行的 hook，而「同一份字节」「软链接」「包装脚本」
+//     三种装法都要读内容。
+func GuardState(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("路径 %s 解析失败: %w", dir, err)
+	}
+	root, err := repoRoot(abs)
+	if err != nil {
+		return "", err
+	}
+
+	configured, isSet, err := gitConfigValue(root, "core.hooksPath")
+	if err != nil {
+		return "", err
+	}
+
+	h := sha256.New()
+	if isSet {
+		h.Write([]byte("hooksPath=" + filepath.Clean(configured)))
+	} else {
+		h.Write([]byte("hooksPath=(unset)"))
+	}
+	h.Write([]byte{0})
+
+	hooksDir, ok := effectiveHooksDir(root, configured, isSet)
+	if !ok {
+		// git 答不出「它在哪找 hook」—— 检查器这时候不下结论
+		// （不知道 ≠ 知道它不跑），所以这里也没有结论会变。
+		h.Write([]byte("hooksDir=(unknown)"))
+		return hex.EncodeToString(h.Sum(nil)), nil
+	}
+	h.Write([]byte("hooksDir="))
+
+	entries, err := os.ReadDir(hooksDir)
+	if err != nil {
+		// 目录不存在 —— git 会静默忽略它。这本身就是结论的一部分
+		// （检查器会报「core.hooksPath 指向的目录不存在」），所以它是
+		// 指纹的一部分，不是「读不出来」。
+		h.Write([]byte("(missing)"))
+		return hex.EncodeToString(h.Sum(nil)), nil
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		// 只看 git 按名字找的那几个 hook —— 名单和检查器用的是同一份
+		// （core.GitHookNames）。别的文件不是守卫，它们跟结论无关。
+		if !core.IsGitHookName(e.Name()) {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		h.Write([]byte(n))
+		h.Write([]byte{0})
+		// 权限位 + 内容：检查器判断「装上了」靠的正是这两样。
+		h.Write([]byte(workingContentHash(hooksDir, n)))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// repoRoot 返回这个目录所属的仓库根。
+//
+// 它跟检查器用的是同一个问法（git rev-parse --show-toplevel）——
+// 问法不一样，两边就会看进不同的目录里去，那又是一只看不见的眼睛。
+// 问不出来时退回目录本身，跟检查器的兜底一致。
+func repoRoot(dir string) (string, error) {
+	out, err := gitOutput(dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return dir, nil
+	}
+	p := strings.TrimSpace(out)
+	if p == "" {
+		return dir, nil
+	}
+	return p, nil
+}
+
+// effectiveHooksDir 返回 git 真正会去找 hook 的那个目录。
+//
+// 规则只有一条，而且必须跟检查器一模一样：设了 core.hooksPath 就用它，
+// 没设就用默认那个 —— 两者取其一，不是都看。
+func effectiveHooksDir(root, configured string, isSet bool) (string, bool) {
+	if isSet {
+		resolved := configured
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(root, resolved)
+		}
+		return resolved, true
+	}
+	out, err := gitOutput(root, "rev-parse", "--git-path", "hooks")
+	if err != nil {
+		return "", false
+	}
+	p := strings.TrimSpace(out)
+	if p == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(root, p)
+	}
+	return p, true
+}
+
+// gitConfigValue 读一个 git 配置项的生效值。
+//
+// 第二个返回值说的是「这个键有没有被设成一个非空的值」。
+//
+// 语义必须跟检查器读同一个键时完全一致（退出码 1 = 没设，空值 = 没设）——
+// 两边读出不一样的值，闸门盯的就是另一个世界。
+func gitConfigValue(dir, key string) (string, bool, error) {
+	cmd := gitCommand(dir, "config", "--get", key)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 {
+			// 这个键压根没设。
+			return "", false, nil
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", false, fmt.Errorf("读 git 配置 %s 失败: %s", key, msg)
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return "", false, nil
+	}
+	return value, true, nil
+}
+
 // LoadState 读出记录的状态。
 //
 // 读不出来就是读不出来 —— 返回错误，不返回一份空状态。
@@ -409,7 +586,11 @@ func CurrentState(repoDir string, targets []string) (State, error) {
 		if err != nil {
 			return State{}, fmt.Errorf("被审仓库 %s 读工作树状态失败: %w", abs, err)
 		}
-		st.Targets = append(st.Targets, Target{Path: abs, Head: head, Working: wf})
+		gs, err := GuardState(abs)
+		if err != nil {
+			return State{}, fmt.Errorf("被审仓库 %s 读守卫安装状态失败: %w", abs, err)
+		}
+		st.Targets = append(st.Targets, Target{Path: abs, Head: head, Working: wf, Guards: gs})
 	}
 	st.CodeOnly = len(st.Targets) == 0
 	return st, nil
@@ -564,6 +745,26 @@ func Check(repoDir string, st State) []Change {
 			changes = append(changes, Change{
 				Kind:   "target-dirty",
 				Detail: fmt.Sprintf("被审仓库 %s 的工作树变了（未提交的内容和上次记录时不一样）", t.Path),
+			})
+		}
+		// 守卫装没装，也得盯着。
+		//
+		// 这件事不在仓里：git 读的是自己的配置和自己的 hooks 目录，
+		// 而 HEAD 和工作树都看不见它们。于是主人照着报告把 hook 装上
+		// （`git config core.hooksPath .githooks` —— 报告里的那句修复
+		// 指引），结论当场变掉，而这里报「没变化」。
+		//
+		// 差一样，就多一只看不见的眼睛 —— 而这只眼睛看不见的那次变化，
+		// 恰恰是有人把报告里的问题**修好了**的那一次。
+		gs, err := GuardState(t.Path)
+		if err != nil {
+			changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("被审仓库 %s 读守卫安装状态失败: %v", t.Path, err)})
+			continue
+		}
+		if gs != t.Guards {
+			changes = append(changes, Change{
+				Kind:   "target-guards",
+				Detail: fmt.Sprintf("被审仓库 %s 的守卫安装状态变了（git 配置或 hooks 目录和上次记录时不一样：%s → %s）", t.Path, short(t.Guards), short(gs)),
 			})
 		}
 	}

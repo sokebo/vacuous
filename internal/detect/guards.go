@@ -50,31 +50,14 @@ func GuardLivenessWithOptions(root string, scope core.FileScope, opts Options) (
 	return out, nil
 }
 
-// gitHookNames are the names git runs as hooks.
+// gitHookNames 住在共享词汇那一层（core.GitHookNames），因为闸门也要用
+// 同一份名单：闸门得盯着「检查器正在看的那批文件」。两份名单一漂，闸门
+// 就盯着一批没人看的文件，于是它报「没变化」而结论已经变了 —— 症状和
+// 「一切正常」一模一样。
 //
-// Git looks a hook up BY NAME. A file called "setup-dev-env.sh" sitting in
-// the hooks directory is never run by git, no matter how executable it is
-// and no matter what it does.
-//
-// Counting it as a guard means reporting "this guard has never run even
-// once" about a file git was never going to run - a CRITICAL accusation
-// about a script that installs a development environment.
-//
-// The list is the one in githooks(5). A hook git does not know about is
-// not a guard.
-var gitHookNames = map[string]bool{
-	"applypatch-msg": true, "pre-applypatch": true, "post-applypatch": true,
-	"pre-commit": true, "pre-merge-commit": true,
-	"prepare-commit-msg": true, "commit-msg": true, "post-commit": true,
-	"pre-rebase": true, "post-checkout": true, "post-merge": true,
-	"pre-push": true, "pre-receive": true, "update": true,
-	"post-receive": true, "post-update": true, "push-to-checkout": true,
-	"pre-auto-gc": true, "post-rewrite": true, "sendemail-validate": true,
-	"fsmonitor-watchman": true, "reference-transaction": true,
-	"post-index-change": true, "proc-receive": true,
-	"p4-changelist": true, "p4-prepare-changelist": true,
-	"p4-post-changelist": true, "p4-pre-submit": true,
-}
+// 名单本身的理由写在 core 那边：git 按名字找 hook，一个 git 不认识的文件
+// 再可执行也不是守卫 —— 拿它当守卫，等于对着一段装开发环境的脚本
+// 报「这个守卫一次都没运行过」。
 
 // hookFindings checks the git hooks of a repository.
 func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Options) []core.Finding {
@@ -95,7 +78,7 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 			}
 			// Git runs a hook by name. A file whose name is not one of
 			// them is not a guard, however executable it is.
-			if !gitHookNames[e.Name()] {
+			if !core.IsGitHookName(e.Name()) {
 				continue
 			}
 			// A hook that is not part of the repository is not this
