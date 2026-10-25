@@ -172,7 +172,7 @@ func harnessFinding(harness []detect.HarnessCommand, src, tests int) core.Findin
 	var lines, evidence []string
 	for _, h := range harness {
 		if h.Script != "" {
-			lines = append(lines, "  npm run "+h.Script+" → "+h.Command)
+			lines = append(lines, "  "+h.Label()+" → "+h.Command)
 		} else {
 			// A script the repository ships but does not register: the
 			// consumer calls it, so there is no "npm run" to quote.

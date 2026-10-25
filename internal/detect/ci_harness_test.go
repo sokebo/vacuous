@@ -3,6 +3,8 @@ package detect
 import (
 	"strings"
 	"testing"
+
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // The rule these tests protect: "这个仓库的 CI 不跑任何测试" must not be
@@ -106,6 +108,110 @@ jobs:
 	for _, f := range findings {
 		if strings.Contains(f.Summary, "CI 不跑任何测试") {
 			t.Fatalf("a CI that runs the repository's own check script must not be reported as unguarded: %+v", f)
+		}
+	}
+}
+
+// TestCIReachesANestedPackagesCheckScript is the monorepo case.
+//
+// The CI names the nested package's check script directly. That script is
+// this repository's file, so the CI runs this repository's check - and the
+// tool must say so instead of reporting a CI that runs nothing.
+func TestCIReachesANestedPackagesCheckScript(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "package.json", `{
+  "name": "monorepo-root",
+  "scripts": {
+    "build": "npm run build --workspaces"
+  }
+}
+`)
+	write(t, dir, "packages/core/package.json", `{
+  "name": "@x/core",
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  }
+}
+`)
+	write(t, dir, "packages/core/scripts/verify.mjs", "process.exit(1)\n")
+	write(t, dir, ".github/workflows/ci.yml", `name: CI
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: node packages/core/scripts/verify.mjs
+`)
+	commit(t, dir)
+
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
+	if err != nil {
+		t.Fatalf("GuardLiveness: %v", err)
+	}
+	for _, f := range findings {
+		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+			t.Fatalf("a CI that runs the repository's own check script must not be reported as unguarded: %+v", f)
+		}
+	}
+}
+
+// TestCIDoesNotClaimTheOtherPackagesCheckScript is the collision.
+//
+// Two packages declaring a script with the same name is ordinary in a
+// monorepo. The CI runs one of them; saying it ran both is a claim the
+// report cannot back.
+func TestCIDoesNotClaimTheOtherPackagesCheckScript(t *testing.T) {
+	dir := newRepo(t)
+	write(t, dir, "package.json", `{
+  "name": "monorepo-root",
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  }
+}
+`)
+	write(t, dir, "scripts/verify.mjs", "process.exit(1)\n")
+	write(t, dir, "packages/core/package.json", `{
+  "name": "@x/core",
+  "scripts": {
+    "verify": "node scripts/verify.mjs"
+  }
+}
+`)
+	write(t, dir, "packages/core/scripts/verify.mjs", "process.exit(1)\n")
+	write(t, dir, ".github/workflows/ci.yml", `name: CI
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: node packages/core/scripts/verify.mjs
+`)
+	commit(t, dir)
+
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
+	if err != nil {
+		t.Fatalf("GuardLiveness: %v", err)
+	}
+	for _, f := range findings {
+		if f.Kind != core.KindGuardNotInstalled || !strings.Contains(f.Summary, "CI 不跑测试套件") {
+			continue
+		}
+		// The root package's "verify" is a different script. The report
+		// must not claim the CI ran it. The evidence lists each file the
+		// CI reached on its own line, so the root's file shows up as
+		// "\n  scripts/verify.mjs" - the nested one as
+		// "\n  packages/core/scripts/verify.mjs", which does not contain
+		// that substring.
+		if strings.Contains(f.Evidence, "\n  scripts/verify.mjs") {
+			t.Fatalf("the report claims the CI ran the root package's check script, which it did not: %+v", f)
+		}
+		if !strings.Contains(f.Evidence, "\n  packages/core/scripts/verify.mjs") {
+			t.Errorf("the report must name the file whose check script the CI ran: %+v", f)
+		}
+		if !strings.Contains(f.Detail, "npm run verify (packages/core)") {
+			t.Errorf("the report must name the package whose check script the CI ran: %+v", f)
 		}
 	}
 }

@@ -2,7 +2,9 @@ package detect
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -54,9 +56,13 @@ type ciContext struct {
 	// harness is the repository's own check commands, as HarnessCommands
 	// found them.
 	harness []HarnessCommand
-	// targets maps a repository-local script file to the name of the
-	// package.json script that runs it.
-	targets map[string]string
+	// targets maps a repository-local script file to the check script that
+	// runs it.
+	//
+	// It maps to the script itself, not to its name: two packages may
+	// declare a script with the same name, and a file belongs to exactly
+	// one of them.
+	targets map[string]HarnessCommand
 	// testCommands are the commands that run a test suite the tool knows
 	// about.
 	testCommands []string
@@ -69,21 +75,27 @@ type ciContext struct {
 // A repository without one - every Go repository, and a Node library that
 // never registered a script - has no harness to look for, and every
 // question asked of it has the answer "nothing to see".
+//
+// The harness list comes from every package.json in the repository, not
+// only from the root one: the CI can reach a nested package's check script
+// just as well as the root's, and a list that only knows the root would
+// report a CI that runs checks as a CI that runs none.
+//
+// The scripts table stays the root's. "npm run X" at the root of a
+// repository means the root package.json's script, and resolving it against
+// a nested package would be a guess.
 func newCIContext(repoRoot string, testCommands []string, scope core.FileScope) *ciContext {
 	c := &ciContext{
 		root:         repoRoot,
 		scripts:      packageScripts(repoRoot, scope),
-		targets:      map[string]string{},
+		targets:      map[string]HarnessCommand{},
 		testCommands: testCommands,
 		scope:        scope,
 	}
-	if len(c.scripts) == 0 {
-		return c
-	}
-	c.harness = harnessFromScripts(repoRoot, c.scripts, scope)
+	c.harness = HarnessCommands(repoRoot, scope)
 	for _, h := range c.harness {
 		for _, f := range h.Files {
-			c.targets[f] = h.Script
+			c.targets[f] = h
 		}
 	}
 	return c
@@ -152,6 +164,22 @@ type ciHarnessRun struct {
 	// down to the script, e.g. ["build"]. It is empty when the workflow
 	// names the script directly.
 	Chain []string
+	// Dir is the directory of the package.json that declares the script,
+	// relative to the repository root. It is empty for the repository's
+	// own package.json.
+	Dir string
+}
+
+// Label spells out how this check script is run.
+//
+// A script declared by a package deeper in the tree needs its directory:
+// "npm run verify" alone does not say which package.json it comes from.
+func (r ciHarnessRun) Label() string {
+	label := "npm run " + r.Script
+	if r.Dir != "" {
+		label += " (" + r.Dir + ")"
+	}
+	return label
 }
 
 // harnessRunsIn returns the repository's own check scripts that the given
@@ -164,27 +192,29 @@ func (c *ciContext) harnessRunsIn(text string) []ciHarnessRun {
 	if c == nil || len(c.harness) == 0 {
 		return nil
 	}
-	byName := make(map[string]HarnessCommand, len(c.harness))
-	for _, h := range c.harness {
-		byName[h.Script] = h
-	}
 
 	var runs []ciHarnessRun
 	seen := map[string]bool{}
-	add := func(script string, chain []string) {
-		if script == "" || seen[script] {
+	// add records one harness, with the chain of script names that leads
+	// to it.
+	//
+	// ★ It takes the harness itself, not the script name: two packages may
+	// declare a script with the same name - a monorepo with a "verify" in
+	// every package is ordinary - and a CI that runs one of them has not
+	// run the other. Naming them apart here is what keeps the report from
+	// claiming the CI ran a check it never ran.
+	add := func(h HarnessCommand, chain []string) {
+		key := h.Script + "\x00" + h.Dir
+		if seen[key] {
 			return
 		}
-		h, ok := byName[script]
-		if !ok {
-			return
-		}
-		seen[script] = true
+		seen[key] = true
 		runs = append(runs, ciHarnessRun{
 			Script:  h.Script,
 			Command: h.Command,
 			Files:   h.Files,
 			Chain:   chain,
+			Dir:     h.Dir,
 		})
 	}
 
@@ -198,25 +228,39 @@ func (c *ciContext) harnessRunsIn(text string) []ciHarnessRun {
 	// repository's script, not this one's, and harnessLocalFiles is
 	// what draws that line.
 	for _, line := range strings.Split(text, "\n") {
-		for _, f := range harnessLocalFiles(c.root, line, c.scope) {
-			if s, ok := c.targets[f]; ok {
-				add(s, nil)
+		for _, f := range harnessLocalFiles(c.root, line, "", c.scope) {
+			if h, ok := c.targets[f]; ok {
+				add(h, nil)
 			}
 		}
 	}
 	// Or reach it through the package.json script chain.
 	for _, name := range runScriptNamesInText(text) {
-		for _, path := range c.reach(name, maxScriptChain) {
-			add(path[len(path)-1], path[:len(path)-1])
+		for _, chain := range c.reach(name, maxScriptChain) {
+			add(chain.h, chain.names[:len(chain.names)-1])
 		}
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].Script < runs[j].Script })
 	return runs
 }
 
+// harnessChain is a chain of package.json script names that leads to a
+// check script of this repository.
+type harnessChain struct {
+	// names are the script names along the chain, the check script's own
+	// name last.
+	names []string
+	// h is the check script the chain lands on.
+	h HarnessCommand
+}
+
 // reach returns the chains of package.json script names that lead from the
 // given script to a check script of this repository.
-func (c *ciContext) reach(name string, depth int) [][]string {
+//
+// The chain carries the harness it lands on, not just its name: two
+// packages may declare a script with the same name, and the chain has to
+// say which one it reached.
+func (c *ciContext) reach(name string, depth int) []harnessChain {
 	if depth <= 0 {
 		return nil
 	}
@@ -224,21 +268,24 @@ func (c *ciContext) reach(name string, depth int) [][]string {
 	if !ok {
 		return nil
 	}
-	var out [][]string
+	var out []harnessChain
 	// The command may name the check script directly.
-	for _, f := range harnessLocalFiles(c.root, cmd, c.scope) {
-		if s, ok := c.targets[f]; ok {
-			if s == name {
-				out = append(out, []string{name})
-			} else {
-				out = append(out, []string{name, s})
-			}
+	for _, f := range harnessLocalFiles(c.root, cmd, "", c.scope) {
+		h, ok := c.targets[f]
+		if !ok {
+			continue
+		}
+		if h.Script == name {
+			out = append(out, harnessChain{names: []string{name}, h: h})
+		} else {
+			out = append(out, harnessChain{names: []string{name, h.Script}, h: h})
 		}
 	}
 	// Or it may call another script that names it.
 	for _, sub := range runScriptNames(cmd) {
 		for _, p := range c.reach(sub, depth-1) {
-			out = append(out, append([]string{name}, p...))
+			names := append([]string{name}, p.names...)
+			out = append(out, harnessChain{names: names, h: p.h})
 		}
 	}
 	return out
@@ -316,4 +363,128 @@ func packageScripts(root string, scope core.FileScope) map[string]string {
 		return nil
 	}
 	return pkg.Scripts
+}
+
+// packageScriptSet is one package.json's scripts section, together with the
+// directory the paths in those commands are written from.
+type packageScriptSet struct {
+	// dir is the package's directory, relative to the repository root. It
+	// is empty for the repository's own package.json.
+	dir string
+	// scripts is that package.json's scripts section.
+	scripts map[string]string
+}
+
+// packageScriptSets finds every package.json in the scope and reads the
+// scripts section of each.
+//
+// A repository can hold more than one package.json. A monorepo has one per
+// package, and each of them declares the checks that package runs. Reading
+// only the root one leaves every nested package's checks invisible, and the
+// tool then reports a repository that runs its own checks as one that has
+// none - which is a HIGH finding that fails the run.
+//
+// The scope decides which package.json count: a package.json the repository
+// does not contain says nothing about what the repository runs.
+func packageScriptSets(root string, scope core.FileScope) []packageScriptSet {
+	if root == "" {
+		return nil
+	}
+	var out []packageScriptSet
+	for _, rel := range packageJSONPaths(root, scope) {
+		scripts, ok := readPackageScripts(filepath.Join(root, filepath.FromSlash(rel)))
+		if !ok || len(scripts) == 0 {
+			continue
+		}
+		dir := ""
+		if d := path.Dir(filepath.ToSlash(rel)); d != "." && d != "/" {
+			dir = d
+		}
+		out = append(out, packageScriptSet{dir: dir, scripts: scripts})
+	}
+	return out
+}
+
+// packageJSONPaths lists the package.json files in the scope.
+//
+// The repository's own package.json is included when the scope allows it.
+// The rest come from the scope's own list of files - which is the list of
+// files the repository actually contains, and therefore the list of
+// package.json files it actually has.
+//
+// A scope that means "the whole disk" has no list to enumerate, so it is
+// walked instead.
+func packageJSONPaths(root string, scope core.FileScope) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(rel string) {
+		rel = filepath.ToSlash(rel)
+		if seen[rel] || !scope.Allows(rel) {
+			return
+		}
+		if isUnderNodeModules(rel) {
+			// A dependency's package.json says what the dependency runs,
+			// not what this repository runs.
+			return
+		}
+		seen[rel] = true
+		out = append(out, rel)
+	}
+
+	if scope.Allows("package.json") {
+		add("package.json")
+	}
+	for _, rel := range scope.Paths() {
+		if path.Base(filepath.ToSlash(rel)) != "package.json" {
+			continue
+		}
+		add(rel)
+	}
+	if scope.IsEverything() {
+		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				if d.Name() == "node_modules" || d.Name() == ".git" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if d.Name() == "package.json" {
+				if rel, rerr := filepath.Rel(root, p); rerr == nil {
+					add(rel)
+				}
+			}
+			return nil
+		})
+	}
+	sort.Strings(out)
+	return out
+}
+
+// isUnderNodeModules reports whether a path is inside a node_modules
+// directory.
+func isUnderNodeModules(rel string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if part == "node_modules" {
+			return true
+		}
+	}
+	return false
+}
+
+// readPackageScripts reads the scripts section of one package.json.
+func readPackageScripts(file string) (map[string]string, bool) {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return nil, false
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(b, &pkg); err != nil {
+		return nil, false
+	}
+	return pkg.Scripts, true
 }

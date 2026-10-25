@@ -2,6 +2,7 @@ package detect
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -77,12 +78,38 @@ type HarnessCommand struct {
 	// Files are the repository-local files the command runs, relative to
 	// the repository root.
 	Files []string
+	// Dir is the directory of the package.json that declares the script,
+	// relative to the repository root. It is empty for the repository's
+	// own package.json.
+	//
+	// It is here because the command line is written relative to the
+	// package that declares it: "node scripts/verify.mjs" in
+	// packages/core/package.json means packages/core/scripts/verify.mjs.
+	// Without the directory the report would point at a path that does not
+	// exist.
+	Dir string
+}
+
+// Label spells out how this harness is run.
+//
+// A script declared by a package deeper in the tree needs its directory:
+// "npm run verify" alone does not say which package.json it comes from, and
+// the command that follows it is written relative to that package.
+func (h HarnessCommand) Label() string {
+	if h.Script == "" {
+		return h.Command
+	}
+	label := "npm run " + h.Script
+	if h.Dir != "" {
+		label += " (" + h.Dir + ")"
+	}
+	return label
 }
 
 // HarnessCommands finds the repository's own check commands that this tool
 // cannot drive.
 //
-// It reads one file - package.json - and looks for scripts whose name says
+// It reads the package.json files and looks for scripts whose name says
 // "checks" and whose command runs a file inside this repository. That
 // combination is what separates a real harness from a build step:
 //
@@ -90,6 +117,14 @@ type HarnessCommand struct {
 //   - "build": "node scripts/build.mjs"            -> not a harness
 //   - "check:theme": "node ../other/check.mjs x"   -> not this repository's
 //   - "test": "jest"                               -> a runner the tool drives
+//
+// ★ Every package.json counts, not just the one at the repository root. A
+// repository can hold several: a monorepo has one per package, and each of
+// them declares the checks that package runs. Reading only the root one
+// leaves every nested package's checks invisible - and the tool then
+// reports a repository that runs its own checks as one that has no checks
+// at all. That report is a HIGH, it fails the run, and it tells the reader
+// to write tests that already exist.
 //
 // The scope says which files this looks at. package.json and the scripts it
 // names have to be part of the repository: a harness the repository does not
@@ -99,7 +134,11 @@ func HarnessCommands(root string, scope core.FileScope) []HarnessCommand {
 	if root == "" {
 		return nil
 	}
-	return harnessFromScripts(root, packageScripts(root, scope), scope)
+	var out []HarnessCommand
+	for _, ps := range packageScriptSets(root, scope) {
+		out = append(out, harnessFromScripts(root, ps.dir, ps.scripts, scope)...)
+	}
+	return out
 }
 
 // harnessFromScripts selects the scripts that are checks rather than build
@@ -109,7 +148,10 @@ func HarnessCommands(root string, scope core.FileScope) []HarnessCommand {
 // that every part of the tool reads the same file the same way. The CI
 // check needs the scripts table too - to follow the chain from
 // "npm run build" down to the script that actually checks something.
-func harnessFromScripts(root string, scripts map[string]string, scope core.FileScope) []HarnessCommand {
+//
+// dir is the directory the package that declares these scripts lives in.
+// The paths in the commands are relative to it, not to the repository root.
+func harnessFromScripts(root, dir string, scripts map[string]string, scope core.FileScope) []HarnessCommand {
 	names := make([]string, 0, len(scripts))
 	for name := range scripts {
 		names = append(names, name)
@@ -128,7 +170,7 @@ func harnessFromScripts(root string, scripts map[string]string, scope core.FileS
 		if namesSupportedRunner(cmd) {
 			continue
 		}
-		files := harnessLocalFiles(root, cmd, scope)
+		files := harnessLocalFiles(root, cmd, dir, scope)
 		if len(files) == 0 {
 			continue
 		}
@@ -136,6 +178,7 @@ func harnessFromScripts(root string, scripts map[string]string, scope core.FileS
 			Script:  name,
 			Command: cmd,
 			Files:   files,
+			Dir:     dir,
 		})
 	}
 	return out
@@ -299,7 +342,12 @@ func localCheckCommand(ext, rel string) string {
 // "Inside this repository" means inside the scope: a script file that the
 // repository does not contain is not a harness this repository runs. It is
 // on disk, and it is not part of the answer.
-func harnessLocalFiles(root, cmd string, scope core.FileScope) []string {
+//
+// base is the directory the command's paths are relative to. For the
+// repository's own package.json that is the repository root; for a package
+// deeper in the tree it is that package's own directory, because that is
+// where the paths in its commands are written from.
+func harnessLocalFiles(root, cmd, base string, scope core.FileScope) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, token := range strings.Fields(cmd) {
@@ -316,12 +364,10 @@ func harnessLocalFiles(root, cmd string, scope core.FileScope) []string {
 		if !harnessScriptExts[ext] {
 			continue
 		}
-		rel := filepath.ToSlash(filepath.Clean(token))
-		if filepath.IsAbs(token) || rel == ".." || strings.HasPrefix(rel, "../") {
-			// Outside this repository.
+		rel, ok := repoRelativePath(base, token)
+		if !ok {
 			continue
 		}
-		rel = strings.TrimPrefix(rel, "./")
 		if !scope.Allows(rel) {
 			continue
 		}
@@ -338,4 +384,30 @@ func harnessLocalFiles(root, cmd string, scope core.FileScope) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// repoRelativePath resolves a path from a command line against the package
+// that declares the command, and reports the path relative to the
+// repository root.
+//
+// A path that leaves the repository belongs to a sibling checkout, and that
+// sibling's script is not this repository's harness.
+func repoRelativePath(base, token string) (string, bool) {
+	if filepath.IsAbs(token) {
+		return "", false
+	}
+	joined := token
+	if base != "" {
+		joined = base + "/" + token
+	}
+	rel := path.Clean(filepath.ToSlash(joined))
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		// Outside this repository.
+		return "", false
+	}
+	rel = strings.TrimPrefix(rel, "./")
+	if rel == "." {
+		return "", false
+	}
+	return rel, true
 }
