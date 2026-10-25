@@ -185,14 +185,19 @@ func parseGoFile(abs string) (*token.FileSet, *ast.File, error) {
 
 // goScopes returns the facts of every function in a file, plus the facts of
 // the file scope itself.
-func goScopes(fset *token.FileSet, f *ast.File, markers map[string]bool, lines []string) []goScope {
+//
+// inTestFile says whether this file is a test file. It is not a detail:
+// the same call means different things in the two places. "t.Fatal" fails a
+// test, and "log.Fatal" ends a process - so whether a branch fails the test
+// or stops the program depends on the file it sits in.
+func goScopes(fset *token.FileSet, f *ast.File, markers map[string]bool, lines []string, inTestFile bool) []goScope {
 	var scopes []goScope
 	for _, decl := range f.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
-		w := &goWalker{markers: markers, lines: lines, fset: fset}
+		w := &goWalker{markers: markers, lines: lines, fset: fset, inTestFile: inTestFile}
 		w.scope = goScope{}
 		w.stmt(fn.Body, nil)
 		scopes = append(scopes, w.scope)
@@ -205,7 +210,13 @@ type goWalker struct {
 	markers map[string]bool
 	lines   []string
 	fset    *token.FileSet
-	scope   goScope
+	// inTestFile says whether the file being walked is a test file.
+	//
+	// It decides what a branch means: inside a test file "t.Fatal" fails
+	// the test, and outside one "log.Fatal" ends the process. The two are
+	// different events and the report says different things about them.
+	inTestFile bool
+	scope      goScope
 }
 
 // builtinCalls are the functions that never read a file, so calling one
@@ -233,8 +244,13 @@ func (w *goWalker) stmt(s ast.Stmt, guards []string) {
 		// Record what this condition compares, and what the branch it
 		// guards does. Both halves are needed to say whether a discarded
 		// error is dangerous here, and how.
-		fails := branchFailsTest(x.Body)
-		bails := branchBailsOut(x.Body)
+		//
+		// One question, one answer: what the branch does when it runs.
+		// It either fails the test or stops the program - and the two
+		// lead to different reports.
+		eff := branchEffectOf(x.Body, w.inTestFile)
+		fails := eff == effectFailsTest
+		bails := eff == effectStopsProgram
 		for _, e := range emptinessChecks(x.Cond, w) {
 			e.fails = fails
 			e.bails = bails
@@ -532,7 +548,7 @@ func (w *goWalker) expr(e ast.Expr, guards []string) {
 				switch {
 				case isLenCall(x):
 					kind = "len"
-				case isAssertionCall(x):
+				case isAssertionCall(x, w.inTestFile):
 					kind = "assert-call"
 				}
 				w.use(id, kind)
@@ -915,23 +931,15 @@ func isLenCall(call *ast.CallExpr) bool {
 }
 
 // isAssertionCall reports whether a call is a test assertion.
-func isAssertionCall(call *ast.CallExpr) bool {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	recv, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	switch recv.Name {
-	case "t", "b", "tb":
-		switch sel.Sel.Name {
-		case "Fatal", "Fatalf", "Error", "Errorf", "Fail", "FailNow":
-			return true
-		}
-	case "assert", "require", "suite":
-		return true
-	}
-	return false
+//
+// ★ It asks the same question as failsTheTest - "does this call fail the
+// test" - and it answers it by asking that question, not by keeping a list
+// of its own.
+//
+// The list it used to keep had drifted: it knew the assertion libraries
+// ("require.Equal") and the emptiness checker did not, and it counted
+// "suite.Run" (which starts a suite, and fails nothing) as an assertion.
+// Two copies of one question, and they had drifted apart.
+func isAssertionCall(call *ast.CallExpr, inTestFile bool) bool {
+	return failsTheTest(call, inTestFile)
 }

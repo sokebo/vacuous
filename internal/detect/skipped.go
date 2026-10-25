@@ -64,7 +64,7 @@ func SkippedWithOptions(root string, files []string, opts Options) ([]core.Findi
 		}
 		markers := opts.skipMarkers()
 		idx := packageFuncIndex(repoRoot, rel, scope)
-		for _, fnScope := range goScopes(fset, f, markers, lines) {
+		for _, fnScope := range goScopes(fset, f, markers, lines, isTestPath(rel)) {
 			for _, sk := range fnScope.skips {
 				out = append(out, skipFinding(repo, repoRoot, rel, sk, fnScope, lines, opts, idx))
 			}

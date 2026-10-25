@@ -86,7 +86,7 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 			continue
 		}
 		markers := opts.skipMarkers()
-		for _, scope := range goScopes(fset, f, markers, lines) {
+		for _, scope := range goScopes(fset, f, markers, lines, isTestPath(rel)) {
 			for _, d := range scope.discards {
 				// Two variables with the same name in one function: the
 				// tool cannot tell which one the later assertion is

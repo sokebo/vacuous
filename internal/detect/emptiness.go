@@ -303,31 +303,64 @@ func lenTarget(e ast.Expr) (string, bool) {
 	return arg.Name, true
 }
 
-// branchFailsTest reports whether the guarded branch makes the test fail.
+// branchEffect is what a guarded branch does when it runs.
 //
-// The receiver decides, not the method name.
+// The emptiness finding has two shapes and they are not the same thing:
 //
-// "t.Fatal" fails the test. "log.Error" does not: it writes a line and
-// the test carries on, passing. Matching the method name alone turns
-// every logger call in the guarded branch into an assertion - and then the
-// tool reports a hollow test that is not hollow, and accuses a line that
-// only ever logged something.
+//   - the branch FAILS THE TEST → the assertion is a decoration: the test
+//     reports success having checked nothing;
+//   - the branch STOPS THE CODE → the guard never fires: the program walks
+//     straight past a check it was supposed to honour.
 //
-// So the names are the ones the testing package uses, and the receiver has
-// to look like a test object.
-func branchFailsTest(body *ast.BlockStmt) bool {
+// Which one it is depends on the branch, and a branch can say so in several
+// ways that all mean the same thing. Before this was one question, the tool
+// gave three answers to it:
+//
+//	panic("...")      → neither: the finding disappeared
+//	log.Fatal("...")  → "the assertion passes"
+//	os.Exit(1)        → "the guard was skipped"
+//
+// All three stop the code right there. The difference between them was the
+// difference between a finding and no finding, and between a true sentence
+// and a false one.
+type branchEffect int
+
+const (
+	// effectNone means the branch does not end anything: it logs, prints,
+	// assigns.
+	effectNone branchEffect = iota
+	// effectFailsTest means the branch fails the test it runs in.
+	effectFailsTest
+	// effectStopsProgram means the branch stops the code from carrying on.
+	effectStopsProgram
+)
+
+// branchEffectOf reports what the guarded branch does when it runs.
+//
+// A branch that does both is reported as failing the test: that is the
+// stronger statement, and it is the one the test runner acts on.
+func branchEffectOf(body *ast.BlockStmt, inTestFile bool) branchEffect {
 	if body == nil {
-		return false
+		return effectNone
 	}
-	found := false
+	found := effectNone
 	ast.Inspect(body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if failsTheTest(call) {
-			found = true
+		if found == effectFailsTest {
 			return false
+		}
+		switch x := n.(type) {
+		case *ast.ReturnStmt:
+			found = effectStopsProgram
+			return false
+		case *ast.CallExpr:
+			switch {
+			case failsTheTest(x, inTestFile):
+				found = effectFailsTest
+				return false
+			case stopsProgram(x, inTestFile):
+				found = effectStopsProgram
+				return false
+			}
 		}
 		return true
 	})
@@ -336,17 +369,27 @@ func branchFailsTest(body *ast.BlockStmt) bool {
 
 // failsTheTest reports whether a call fails the test it runs in.
 //
-// The two families are treated differently on purpose:
+// Three ways to fail a test:
 //
-//   - Fatal and Fail only exist on test objects and on process-killing
-//     helpers ("log.Fatal" ends the process). Either way the test run
-//     ends, so the receiver does not have to be recognised - and refusing
-//     to recognise it would lose a real finding on a repository that
-//     wraps its test object in its own type.
-//   - Error and Errorf are everywhere. "log.Error", "logger.Error" and
-//     "l.Error" are the ordinary way to write something down, and none of
-//     them fail a test.
-func failsTheTest(call *ast.CallExpr) bool {
+//   - a failure method of the testing package ("t.Fatalf", "b.FailNow"):
+//     these names exist on test objects and on process-killing helpers;
+//   - an assertion library ("require.Equal", "assert.Equal"): the whole
+//     purpose of those packages is to fail the test;
+//   - a panic: inside a test file it fails the test.
+//
+// The receiver decides, not the method name. "t.Fatal" fails the test.
+// "log.Error" does not: it writes a line and the test carries on, passing.
+// Matching the method name alone turns every logger call in the guarded
+// branch into an assertion - and then the tool reports a hollow test that
+// is not hollow, and accuses a line that only ever logged something.
+//
+// ★ The file decides the rest. Outside a test file there is no test to
+// fail, so the same names mean something else: "log.Fatal" ends the
+// process, which is a guard, not an assertion. See stopsProgram.
+func failsTheTest(call *ast.CallExpr, inTestFile bool) bool {
+	if isPanicCall(call) {
+		return inTestFile
+	}
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return false
@@ -355,11 +398,86 @@ func failsTheTest(call *ast.CallExpr) bool {
 	if recv == "" {
 		return false
 	}
+	// An assertion library is called through its package name, so this is
+	// the one place that can tell "require.Equal" from a local variable
+	// that happens to be called "require".
+	if isAssertionLibrary(recv) {
+		return true
+	}
 	switch sel.Sel.Name {
 	case "Fatal", "Fatalf", "Fatalln", "Fail", "FailNow":
-		return true
+		// Inside a test file the receiver is not checked: a repository may
+		// wrap its test object in its own type ("helper.Fatal"), and
+		// refusing to recognise it would lose a real finding.
+		return inTestFile || isTestReceiver(recv)
 	case "Error", "Errorf":
+		// "Error" and "Errorf" are everywhere. "log.Error", "logger.Error"
+		// and "l.Error" are the ordinary way to write something down, and
+		// none of them fail a test.
 		return isTestReceiver(recv)
+	}
+	return false
+}
+
+// stopsProgram reports whether a call stops the program from carrying on.
+//
+//   - os.Exit: the process is gone;
+//   - a panic: the program unwinds;
+//   - the Fatal family on something that is not a test object ("log.Fatal"):
+//     the process is gone.
+//
+// The Fatal family is the one that needs the file: inside a test file
+// "t.Fatal" fails the test, and outside one "log.Fatal" ends the process.
+// The two are different events and the report says different things about
+// them, so they cannot share one answer.
+func stopsProgram(call *ast.CallExpr, inTestFile bool) bool {
+	if isPanicCall(call) {
+		return !inTestFile
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if pkg.Name == "os" && (sel.Sel.Name == "Exit" || sel.Sel.Name == "Exitf") {
+		return true
+	}
+	if inTestFile {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "Fatal", "Fatalf", "Fatalln", "Fail", "FailNow":
+		// Not a test object, so this is a process-killing helper.
+		return true
+	}
+	return false
+}
+
+// isPanicCall reports whether a call is a panic.
+func isPanicCall(call *ast.CallExpr) bool {
+	id, ok := call.Fun.(*ast.Ident)
+	return ok && id.Name == "panic"
+}
+
+// isAssertionLibrary reports whether a name is one of the assertion
+// libraries whose calls fail the test.
+//
+// "assert" and "require" are the two spellings testify (and its clones)
+// use. Every call through them exists to fail the test when the comparison
+// does not hold: "require.Equal" and "assert.Equal" are the same act as
+// "t.Fatalf", only written through a package.
+//
+// ★ They used to be invisible to the emptiness checker, which only knew
+// the method names of the testing package - so a test that failed its
+// assertion through testify looked, to the checker, like a branch that did
+// not fail anything, and the hollow assertion it guards went unreported.
+func isAssertionLibrary(name string) bool {
+	switch name {
+	case "assert", "require":
+		return true
 	}
 	return false
 }
@@ -402,10 +520,7 @@ func isTestReceiver(name string) bool {
 	return true
 }
 
-// branchBailsOut reports whether the guarded branch stops the code from
-// carrying on.
-//
-// This is the shape of a protective guard:
+// The shape of a protective guard:
 //
 //	if len(existing) > 0 {
 //	    fmt.Println("库里已有数据，要继续请先清空")
@@ -415,31 +530,10 @@ func isTestReceiver(name string) bool {
 // The check exists to stop the program. When the value it looks at is empty
 // because the load failed, the branch does not run and the program walks
 // straight past the check.
-func branchBailsOut(body *ast.BlockStmt) bool {
-	if body == nil {
-		return false
-	}
-	found := false
-	ast.Inspect(body, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.ReturnStmt:
-			found = true
-			return false
-		case *ast.CallExpr:
-			sel, ok := x.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			pkg, ok := sel.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			if pkg.Name == "os" && (sel.Sel.Name == "Exit" || sel.Sel.Name == "Exitf") {
-				found = true
-				return false
-			}
-		}
-		return true
-	})
-	return found
-}
+//
+// ★ This used to be a question of its own ("does the branch stop the
+// code?"), asked apart from "does the branch fail the test?". The two
+// answers drifted: a panic stopped the code and was asked about neither, so
+// the finding disappeared; "log.Fatal" was read as failing a test, so it
+// was reported as a decoration of an assertion. One question, one place to
+// ask it: branchEffectOf.
