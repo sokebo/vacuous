@@ -33,9 +33,14 @@ const (
 	// prompt, a hung network fetch) must not hang the audit.
 	commandTimeout = 60 * time.Second
 
-	// emptyTree is git's well-known hash of the empty tree. It is the
+	// EmptyTree is git's well-known hash of the empty tree. It is the
 	// base of a root commit's diff.
-	emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	//
+	// It is exported because a caller that assembles a change window has
+	// to recognise it: a window whose base is the empty tree reaches the
+	// repository's first commit, and there is no tree before that one to
+	// compare it against.
+	EmptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 	// commitFormat packs one commit into a single line: the record
 	// separator (\x1e) ends a commit, the field separator (\x1f) splits
@@ -219,6 +224,26 @@ func (r *Repo) CommitsSince(base string, limit int) ([]core.CommitInfo, error) {
 	return parseCommits(out), nil
 }
 
+// CommitsInRange returns the commits between base and head, newest first.
+//
+// It is the range-aware counterpart of CommitsSince, and the difference
+// matters for a change window: the window's head is not always HEAD (the
+// --commit flag names one), and a window that says "these commits" has to
+// be able to say exactly which ones.
+func (r *Repo) CommitsInRange(base, head string) ([]core.CommitInfo, error) {
+	if strings.TrimSpace(base) == "" {
+		return nil, errors.New("git: CommitsInRange requires a base revision")
+	}
+	if strings.TrimSpace(head) == "" {
+		return nil, errors.New("git: CommitsInRange requires a head revision")
+	}
+	out, err := r.run("log", "--no-color", "--format="+commitFormat, base+".."+head)
+	if err != nil {
+		return nil, fmt.Errorf("git: list commits between %q and %q: %w", base, head, err)
+	}
+	return parseCommits(out), nil
+}
+
 // CommitFiles lists the files a commit changed, against its first parent.
 //
 // IsTest is filled with a language-agnostic heuristic. The real, per-language
@@ -232,17 +257,38 @@ func (r *Repo) CommitFiles(sha string) ([]core.FileChange, error) {
 	if err != nil {
 		return nil, err
 	}
-	names, err := r.run("diff", "--name-status", "-M", "-z", base, sha)
+	return r.DiffFiles(base, sha)
+}
+
+// DiffFiles lists the files that changed between two revisions.
+//
+// This is the range-aware counterpart of CommitFiles: CommitFiles always
+// diffs a commit against its own first parent, which is the right question
+// for "what did this commit change" and the wrong question for "what changed
+// between these two points".
+//
+// The counterfactual of a change window needs the second one. A window that
+// spans three commits has no single first parent to diff against, and
+// diffing only its head would silently narrow the window to one commit - the
+// very unit change the window exists to replace.
+func (r *Repo) DiffFiles(base, head string) ([]core.FileChange, error) {
+	if strings.TrimSpace(base) == "" {
+		return nil, errors.New("git: DiffFiles requires a base revision")
+	}
+	if strings.TrimSpace(head) == "" {
+		return nil, errors.New("git: DiffFiles requires a head revision")
+	}
+	names, err := r.run("diff", "--name-status", "-M", "-z", base, head)
 	if err != nil {
-		return nil, fmt.Errorf("git: changed files of %q: %w", sha, err)
+		return nil, fmt.Errorf("git: changed files between %q and %q: %w", base, head, err)
 	}
 	entries, err := parseNameStatus(names)
 	if err != nil {
-		return nil, fmt.Errorf("git: changed files of %q: %w", sha, err)
+		return nil, fmt.Errorf("git: changed files between %q and %q: %w", base, head, err)
 	}
-	patch, err := r.run("diff", "-M", "-U3", base, sha)
+	patch, err := r.run("diff", "-M", "-U3", base, head)
 	if err != nil {
-		return nil, fmt.Errorf("git: diff of %q: %w", sha, err)
+		return nil, fmt.Errorf("git: diff between %q and %q: %w", base, head, err)
 	}
 
 	hunks := map[string]string{}
@@ -384,6 +430,53 @@ func (r *Repo) Patch(sha string, paths []string) (string, error) {
 	return out, nil
 }
 
+// PatchRange returns the unified diff between two revisions, restricted to
+// paths.
+//
+// It is the range-aware counterpart of Patch. The counterfactual of a change
+// window is built by taking the window's source changes away and keeping its
+// test changes, and the test changes of a window are the diff between the
+// window's base and its head - not the diff of its head against its own
+// first parent.
+//
+// An empty path list means "no files", exactly as in Patch: a caller that
+// asks for "the changes to these files" and hands over an empty list would
+// otherwise get the fix along with the tests, and a counterfactual that
+// still contains the fix is not a counterfactual at all.
+func (r *Repo) PatchRange(base, head string, paths []string) (string, error) {
+	if strings.TrimSpace(base) == "" {
+		return "", errors.New("git: PatchRange requires a base revision")
+	}
+	if strings.TrimSpace(head) == "" {
+		return "", errors.New("git: PatchRange requires a head revision")
+	}
+	if len(paths) == 0 {
+		return "", nil
+	}
+	args := []string{"diff", "--no-color", "--no-ext-diff", "--binary", base, head}
+	args = append(args, "--")
+	args = append(args, paths...)
+	out, err := r.run(args...)
+	if err != nil {
+		return "", fmt.Errorf("git: patch between %q and %q: %w", base, head, err)
+	}
+	return out, nil
+}
+
+// BaseOf returns the revision a change window that ends at sha starts from:
+// the commit's first parent, or the empty tree for a root commit.
+//
+// It is the same question CommitFiles asks, asked in the open. The caller
+// that assembles a window needs it to name the window's own base, and the
+// difference matters: a window of three commits has no parent of its own,
+// and the revision it starts from is the one before its oldest commit.
+func (r *Repo) BaseOf(sha string) (string, error) {
+	if strings.TrimSpace(sha) == "" {
+		return "", errors.New("git: BaseOf requires a commit")
+	}
+	return r.commitBase(sha)
+}
+
 // commitBase returns the tree a commit's diff is taken against: its first
 // parent, or the empty tree for a root commit.
 func (r *Repo) commitBase(sha string) (string, error) {
@@ -396,7 +489,7 @@ func (r *Repo) commitBase(sha string) (string, error) {
 	case 0:
 		return "", fmt.Errorf("git: %q is not a commit", sha)
 	case 1:
-		return emptyTree, nil // root commit
+		return EmptyTree, nil // root commit
 	default:
 		return fields[1], nil // first parent
 	}

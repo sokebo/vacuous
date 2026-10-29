@@ -12,6 +12,7 @@ package counterfactual
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -24,7 +25,15 @@ import (
 // Result describes what happened for one commit under examination.
 type Result struct {
 	// Commit is the commit that was examined.
+	//
+	// For a window of more than one commit this is the window's last
+	// commit - the one the window ends at. The window itself is in Window.
 	Commit core.CommitInfo
+	// Window describes the range of commits that were judged together.
+	//
+	// For a single commit it holds that commit alone, and the tool behaves
+	// exactly as it did before windows existed.
+	Window Window
 	// Changed lists the files the commit touched.
 	Changed []core.FileChange
 	// TestFiles are the test files among them.
@@ -59,6 +68,63 @@ type Result struct {
 	// Contradiction explains why the verdict could not be trusted, when
 	// the tool's own output disagrees with its own conclusion.
 	Contradiction string
+}
+
+// Window is the range of commits that were judged as one unit.
+//
+// The unit of judgement used to be the commit. It is the window now,
+// because a change is rarely made in one commit: a fix lands in one commit
+// and its test in the next. A judgement per commit then accuses the fix of
+// having no test watching it, while the test sits in the very next commit -
+// and the advice it gives ("add a test") is wrong, because the test is
+// already there.
+//
+// The window's experiment is the commit's experiment, generalized: take away
+// the window's source changes, keep the window's test changes, and see
+// whether anything turns red. For a window of one commit that is exactly the
+// experiment that was always run.
+type Window struct {
+	// Base is the revision the window starts from. The window covers the
+	// commits after it, up to Head.
+	Base string
+	// BaseShort is the abbreviated form of Base, for display.
+	BaseShort string
+	// Head is the last commit of the window.
+	Head string
+	// Commits are the commits in the window, newest first.
+	Commits []core.CommitInfo
+}
+
+// unit names the thing that was judged, for the report's prose.
+func (r *Result) unit() string {
+	if len(r.Window.Commits) <= 1 {
+		return r.Commit.Short
+	}
+	return fmt.Sprintf("%s..%s (%d commits)", r.Window.BaseShort, r.Commit.Short, len(r.Window.Commits))
+}
+
+// subject is the grammatical subject of a sentence about the judged unit.
+//
+// For a single commit it reads exactly as it always did. For a window it
+// says what the window is, because a reader who is told "commit 637ddbd
+// changed behavior and no test watched it" would look at one commit and
+// never find the change the report is about.
+func (r *Result) subject() string {
+	if len(r.Window.Commits) <= 1 {
+		return "Commit " + r.Commit.Short
+	}
+	return "The change window " + r.unit()
+}
+
+// about names the judged unit in the middle of a sentence.
+//
+// It is the same name as subject, in the case a sentence needs: "the test
+// patch of the change window a1b2c3d..e4f5a6b (3 commits) does apply".
+func (r *Result) about() string {
+	if len(r.Window.Commits) <= 1 {
+		return "commit " + r.Commit.Short
+	}
+	return "the change window " + r.unit()
 }
 
 // smallChangeLines is the number of changed lines below which a commit that
@@ -292,12 +358,14 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	if err != nil {
 		return nil, err
 	}
-	changed, err := a.repo.DiffFiles(ctx, parentOf(sha), sha)
-	if err != nil {
-		return nil, fmt.Errorf("diff %s: %w", sha, err)
-	}
 
-	res := &Result{Commit: info, Changed: changed}
+	res := &Result{Commit: info}
+	res.Window = Window{
+		Base:      parentOf(sha),
+		BaseShort: a.shortRev(ctx, parentOf(sha)),
+		Head:      sha,
+		Commits:   []core.CommitInfo{info},
+	}
 
 	// A merge commit is not a change anybody made. It is the integration of
 	// a branch whose commits were already examined one by one, and diffing
@@ -344,7 +412,113 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		return res, nil
 	}
 
-	for _, f := range changed {
+	// The diff is taken only now: a root commit has no parent to diff
+	// against, and asking git for one would fail with a message about
+	// revisions rather than about the commit.
+	changed, err := a.repo.DiffFiles(ctx, parentOf(sha), sha)
+	if err != nil {
+		return nil, fmt.Errorf("diff %s: %w", sha, err)
+	}
+	res.Changed = changed
+
+	return a.auditRange(ctx, parentOf(sha), sha, res)
+}
+
+// AuditWindow examines a range of commits as one unit.
+//
+// The range covers the commits after base, up to and including head. The
+// commits are listed newest first, and the first one is the window's head.
+//
+// The experiment is the commit's experiment, generalized to the range: the
+// window's source changes are taken away, the window's test changes are
+// kept, and the suite is run. If something turns red, the window's tests
+// really do watch the window's changes - including the case where the fix
+// and its test landed in different commits, which is the case a per-commit
+// judgement got wrong.
+func (a *Auditor) AuditWindow(ctx context.Context, base, head string, commits []core.CommitInfo) (*Result, error) {
+	if strings.TrimSpace(base) == "" {
+		return nil, errors.New("counterfactual: AuditWindow requires a base revision")
+	}
+	if strings.TrimSpace(head) == "" {
+		return nil, errors.New("counterfactual: AuditWindow requires a head revision")
+	}
+
+	headInfo := core.CommitInfo{SHA: head, Short: a.shortRev(ctx, head)}
+	if len(commits) > 0 {
+		headInfo = commits[0]
+	}
+
+	res := &Result{Commit: headInfo}
+	res.Window = Window{
+		Base:      base,
+		BaseShort: a.shortRev(ctx, base),
+		Head:      head,
+		Commits:   commits,
+	}
+
+	// A window that reaches back to the repository's first commit has no
+	// earlier tree to compare against: the baseline would be the empty
+	// tree, and there is nothing to check out.
+	//
+	// Saying so plainly is much better than letting git report an invalid
+	// reference, and much better than quietly auditing nothing.
+	if !a.isCommit(ctx, base) {
+		res.Verdict = VerdictNotApplicable
+		res.Findings = append(res.Findings, core.Finding{
+			Kind:     core.KindNotApplicable,
+			Severity: core.SevInfo,
+			Summary:  "This change reaches the repository's first commit — there is no earlier tree to compare it against",
+			Detail: fmt.Sprintf(
+				"%s is the first commit of this repository, so there is no tree before it.\n"+
+					"A counterfactual audit needs that earlier tree as its baseline, so this does not apply — "+
+					"this is not a \"there is a problem\" conclusion.", res.unit()),
+			Hint: "A first commit has nothing to be compared against — ignore this one",
+		})
+		return res, nil
+	}
+
+	changed, err := a.repo.DiffFiles(ctx, base, head)
+	if err != nil {
+		return nil, fmt.Errorf("diff %s..%s: %w", base, head, err)
+	}
+	res.Changed = changed
+
+	return a.auditRange(ctx, base, head, res)
+}
+
+// isCommit reports whether a revision is a commit.
+//
+// The empty tree is a perfectly good thing to diff against, and it is not
+// a thing you can check out. The difference matters here, so it is asked
+// rather than assumed.
+func (a *Auditor) isCommit(ctx context.Context, rev string) bool {
+	out, err := a.repo.RunGit(ctx, a.repo.Root(), "cat-file", "-t", rev)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(out) == "commit"
+}
+
+// shortRev resolves a revision to an abbreviated commit id, for display.
+//
+// An empty result is not a failure: the revision may be a name that git
+// cannot shorten, and the report can say so by leaving the field blank.
+func (a *Auditor) shortRev(ctx context.Context, rev string) string {
+	out, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-parse", "--short", rev)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// auditRange does the part of the audit that is the same for a commit and
+// for a window.
+//
+// The two questions that only make sense about a single commit - "is it a
+// merge?" and "is it the first commit?" - are answered before this is
+// called. Everything below is asked about the range.
+func (a *Auditor) auditRange(ctx context.Context, base, head string, res *Result) (*Result, error) {
+	for _, f := range res.Changed {
 		switch {
 		case a.isTest(f.Path):
 			res.TestFiles = append(res.TestFiles, f)
@@ -400,12 +574,12 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		res.Findings = append(res.Findings, core.Finding{
 			Kind:     core.KindNoTestForFix,
 			Severity: core.SevInfo,
-			Summary:  "This commit only added tests and changed no code — there is no fix to remove",
+			Summary:  "This change only added tests and changed no code — there is no fix to remove",
 			Detail: fmt.Sprintf(
-				"Commit %s changed %d test files and no code at all.\n"+
+				"%s changed %d test files and no code at all.\n"+
 					"The question \"if you remove the fix, does the test go red\" has no answer here — "+
 					"because this commit introduced no behavior that a test could be watching.",
-				info.Short, len(res.TestFiles)),
+				res.subject(), len(res.TestFiles)),
 			File: firstPath(res.TestFiles),
 			Hint: "To find out whether those tests are any good, use mutation testing",
 		})
@@ -427,7 +601,7 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	// A commit that renames a symbol and rewrites the comment around it
 	// is a real change and is judged below; this is only about changes
 	// that leave the code exactly as it was.
-	change, err := a.sourceChange(ctx, sha, res.SourceFiles)
+	change, err := a.sourceChangeRange(ctx, base, head, res.SourceFiles)
 	if err == nil {
 		// How much the commit changed is what decides how loudly the
 		// report says things about it. It is recorded here, once, so
@@ -442,9 +616,9 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 			Severity: core.SevInfo,
 			Summary:  "This change did not alter the behavior of the code — it needs no new test",
 			Detail: fmt.Sprintf(
-				"Commit %s changed %d source files, but the changes are only comments and whitespace.\n"+
+				"%s changed %d source files, but the changes are only comments and whitespace.\n"+
 					"It did not change any behavior, so no test needs to come with it.",
-				info.Short, len(res.SourceFiles)),
+				res.subject(), len(res.SourceFiles)),
 			File:     firstPath(res.SourceFiles),
 			Evidence: "Line-by-line comparison: once comments and whitespace are removed, the two sides are identical",
 			Hint:     "If this commit does change behavior, then it needs a test",
@@ -474,12 +648,12 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		res.Findings = append(res.Findings, core.Finding{
 			Kind:     core.KindNotApplicable,
 			Severity: core.SevInfo,
-			Summary:  "This commit deleted the tests — there is no test left to compare against",
+			Summary:  "This change deleted the tests — there is no test left to compare against",
 			Detail: fmt.Sprintf(
-				"Commit %s deleted %d test files and added or modified no test.\n"+
+				"%s deleted %d test files and added or modified no test.\n"+
 					"A counterfactual audit needs a test to \"remove the fix and see whether it goes red\" — "+
 					"and here there is neither a fix to remove nor a test to keep.",
-				info.Short, len(res.TestFiles)),
+				res.subject(), len(res.TestFiles)),
 			Hint: "Deleting tests is worth a look of its own, but it is not a question this tool can answer",
 		})
 		return res, nil
@@ -524,7 +698,7 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	// decides, and a repository may keep its tests anywhere - so there
 	// the experiment has to do the talking instead.
 	if !shippedItsOwnTest && a.testDiscoveryIsAuthoritative() {
-		hasTests, tracked, err := a.treeHasTests(ctx, sha)
+		hasTests, tracked, err := a.treeHasTests(ctx, head)
 		if err == nil && !hasTests {
 			res.Verdict = VerdictNoTest
 			res.Findings = append(res.Findings, noTestAtAllFinding(res, tracked))
@@ -533,7 +707,7 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	}
 
 	// The experiment. Build the counterfactual tree: parent + tests, no fix.
-	run, err := a.runCounterfactual(ctx, sha, res)
+	run, err := a.runCounterfactual(ctx, base, head, res)
 	if err != nil {
 		return nil, err
 	}
@@ -820,18 +994,18 @@ func foreignSourceFinding(res *Result) core.Finding {
 	return core.Finding{
 		Kind:     core.KindUnsupportedSource,
 		Severity: core.SevInfo,
-		Summary:  "This commit changes code this tool cannot run in this repository — it cannot be judged",
+		Summary:  "This change is code this tool cannot run in this repository — it cannot be judged",
 		Detail: fmt.Sprintf(
-			"Commit %s changed %d files. They are code, but they are written in a language this repository's test runner does not speak:\n"+
+			"%s changed %d files. They are code, but they are written in a language this repository's test runner does not speak:\n"+
 				"  %s\n"+
 				"What a counterfactual audit does is \"remove the fix and see whether the test goes red\" — "+
 				"and this repository's runner cannot run that kind of code, so the question has no answer here.\n"+
 				"This is not \"no test is watching this change\": it is \"this tool did not look at this part\".\n"+
 				"(Runners this tool can drive: go test / pytest / python -m unittest / jest / vitest)",
-			res.Commit.Short, len(res.ForeignSourceFiles), strings.Join(paths, "\n  ")),
+			res.subject(), len(res.ForeignSourceFiles), strings.Join(paths, "\n  ")),
 		File: firstPath(res.ForeignSourceFiles),
 		Hint: "To judge this part, the repository needs a test runner that can drive that language; " +
-			"until then, this commit counts neither as verified nor as problematic",
+			"until then, this change counts neither as verified nor as problematic",
 	}
 }
 
@@ -920,10 +1094,10 @@ type runOutcome struct {
 
 // runCounterfactual builds the "fix removed, test kept" tree and runs the
 // suite on it.
-func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result) (*runOutcome, error) {
-	wt, err := a.worktree.Create(ctx, parentOf(sha))
+func (a *Auditor) runCounterfactual(ctx context.Context, base, head string, res *Result) (*runOutcome, error) {
+	wt, err := a.worktree.Create(ctx, base)
 	if err != nil {
-		return nil, fmt.Errorf("create worktree at %s: %w", parentOf(sha), err)
+		return nil, fmt.Errorf("create worktree at %s: %w", base, err)
 	}
 	defer wt.Remove()
 
@@ -949,11 +1123,17 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 		_ = preparer.PrepareWorktree(ctx, a.repo.Root(), wt.Path())
 	}
 
-	// Apply only the test-side changes. The fix stays out.
+	// Apply only the test-side changes. The fixes stay out.
+	//
+	// For a window this is the test-side diff between the window's two
+	// ends: every test the window added or changed, and none of the fixes
+	// it added or changed. A fix that landed in one commit of the window
+	// and its test in another is exactly the case this handles - the fix
+	// is gone and the test is there, which is the experiment.
 	testPaths := pathsOf(res.TestFiles)
-	patch, err := a.repo.Patch(ctx, sha, testPaths)
+	patch, err := a.repo.PatchRange(ctx, base, head, testPaths)
 	if err != nil {
-		return nil, fmt.Errorf("build test patch for %s: %w", sha, err)
+		return nil, fmt.Errorf("build test patch for %s..%s: %w", base, head, err)
 	}
 	if strings.TrimSpace(patch) != "" {
 		if err := applyPatch(ctx, wt.Path(), patch); err != nil {
@@ -961,7 +1141,7 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 			// the fix at the source level. That is a real, reportable
 			// state: the question cannot be answered.
 			return &runOutcome{command: "", result: core.RunResult{
-				BuildErrors: []string{fmt.Sprintf("test patch cannot be applied to the parent commit: %v", err)},
+				BuildErrors: []string{fmt.Sprintf("test patch cannot be applied to the base of the range: %v", err)},
 			}}, nil
 		}
 	}
@@ -1080,22 +1260,22 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 	// tree changed no behaviour. The tree the experiment runs in is the
 	// right place to look: the duplicate is still there.
 	if countFailures(result) == 0 && len(res.SourceFiles) > 0 {
-		out.deduplicated = a.removedCodeStillExists(ctx, sha, res.SourceFiles, wt.Path())
+		out.deduplicated = a.removedCodeStillExists(ctx, base, head, res.SourceFiles, wt.Path())
 	}
 
 	if countFailures(result) > 0 {
-		base := a.newFailuresWithoutFix(ctx, sha, target, plan, result)
+		baseline := a.newFailuresWithoutFix(ctx, head, target, plan, result)
 		switch {
-		case !base.ran:
+		case !baseline.ran:
 			// The baseline never ran. It cannot say whether the red was
 			// already there, and neither can the tool. Saying "it was
 			// already there" would blame the suite for a checkout that
 			// was never set up.
 			out.baselineUnknown = true
-			out.baselineUnknownDetail = base.detail
-		case len(base.newFailures) == 0:
+			out.baselineUnknownDetail = baseline.detail
+		case len(baseline.newFailures) == 0:
 			out.preExisting = true
-			out.preExistingDetail = base.detail
+			out.preExistingDetail = baseline.detail
 		}
 	}
 
@@ -1582,19 +1762,19 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		severity := core.SevWarn
 		summary := "Nothing is watching this change"
 		detail := fmt.Sprintf(
-			"Commit %s changed both code and tests. With the fix removed and only the tests kept, %d tests all passed.\n"+
+			"%s changed both code and tests. With the fix removed and only the tests kept, %d tests all passed.\n"+
 				"In other words: this change's behavior has **no test at all watching it**.\n"+
 				"That does not mean the test is bad — it may never have been written for this behavior"+
 				"(adjusted in passing during a refactor, a flaky test stabilized, a new case for old code).\n"+
 				"What needs a test is \"this behavior\", not \"that test\".",
-			res.Commit.Short, countPass(run))
+			res.subject(), countPass(run))
 		if res.SourceChange.biggestFile <= smallChangeLines {
 			summary = "The change is small and nothing is watching it — most likely not a problem"
 			detail = fmt.Sprintf(
-				"Commit %s changed both code and tests, but the code side changed only %d lines. With those lines removed and only the tests kept, %d tests all passed.\n"+
+				"%s changed both code and tests, but the code side changed only %d lines. With those lines removed and only the tests kept, %d tests all passed.\n"+
 					"With a change that small, \"nothing is watching it\" is most likely not a problem — version numbers, message text and wording tweaks all fall into this class.\n"+
 					"If those lines really do change behavior, then it needs a test.",
-				res.Commit.Short, res.SourceChange.biggestFile, countPass(run))
+				res.subject(), res.SourceChange.biggestFile, countPass(run))
 		}
 		if run.deduplicated {
 			// The commit removed code that still exists elsewhere in the
@@ -1603,11 +1783,11 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			severity = core.SevInfo
 			summary = "This change only deleted a copy of code that exists elsewhere — behavior did not change"
 			detail = fmt.Sprintf(
-				"The code that commit %s deleted still exists in another part of the tree.\n"+
+				"%s deleted code that still exists in another part of the tree.\n"+
 					"That is, it did not change any behavior — so \"nothing is watching it\" does not hold here; "+
 					"there is nothing for a test to watch.\n"+
-					"(%d tests all passed after the fix was removed, but this commit never changed behavior in the first place.)",
-				res.Commit.Short, countPass(run))
+					"(%d tests all passed after the fix was removed, but this change never changed behavior in the first place.)",
+				res.subject(), countPass(run))
 		}
 		out = append(out, core.Finding{
 			Kind:     core.KindVacuousTest,
@@ -1651,19 +1831,19 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		// reader that the test "references something the fix introduced"
 		// would be a different (and wrong) story.
 		detail := fmt.Sprintf(
-			"The test changes of commit %s cannot be applied to the parent commit on their own — the test depends on something this fix introduced.\n"+
+			"The test changes of %s cannot be applied to the tree before the change on their own — the test depends on something this fix introduced.\n"+
 				"So the question \"if you remove the fix, does the test go red\" has no answer for this change.",
-			res.Commit.Short)
+			res.about())
 		summary := "Cannot be judged: the test and the fix are coupled and cannot be separated"
 		hint := "This is not an error, it is a heads-up: a coupled test is hard to prove on its own.\n" +
 			"You can add a test that sits closer to the behavior and covers the same scenario"
 		if run != nil && run.command != "" {
 			detail = fmt.Sprintf(
-				"The test patch of commit %s does apply, but with the fix removed the whole package no longer compiles — "+
+				"The test patch of %s does apply, but with the fix removed the whole package no longer compiles — "+
 					"the test references something this fix introduced.\n"+
 					"So the question \"if you remove the fix, does the test go red\" has no answer for this change: "+
 					"the test and the fix are tangled together.",
-				res.Commit.Short)
+				res.about())
 		}
 		if run != nil && run.revertedFile != "" {
 			// The wording depends on WHAT stopped the build, and the two
@@ -1683,39 +1863,39 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			switch run.revertedFileCompiles {
 			case core.CompileRejectedByLint:
 				detail = fmt.Sprintf(
-					"The test patch of commit %s does apply, but with the fix removed this package no longer passes go test's build — "+
+					"The test patch of %s does apply, but with the fix removed this package no longer passes go test's build — "+
 						"the file that broke (%s) is exactly the file this fix changed.\n"+
 						"★ The code itself **compiles fine**: what stopped it is not the compiler, "+
 						"but the extra step go test runs on top of compilation — the set of vet checks it runs by default.\n"+
 						"In other words, this fix fixes that check; "+
 						"without it, this package cannot run a single test.\n"+
 						"So the question \"if you remove the fix, does the test go red\" has no answer for this change.",
-					res.Commit.Short, run.revertedFile)
+					res.about(), run.revertedFile)
 				summary = "Cannot be judged: this package no longer passes go test's build once the fix is removed"
 				hint = "This is not an error: this commit is what makes go test get through, and that is worth something on its own.\n" +
 					"It is only that \"if you remove the fix, does the test go red\" has no answer here — " +
 					"answering it would take a test that does not depend on this fix."
 			case core.CompileFine:
 				detail = fmt.Sprintf(
-					"The test patch of commit %s does apply, but with the fix removed this package no longer passes go test's build — "+
+					"The test patch of %s does apply, but with the fix removed this package no longer passes go test's build — "+
 						"the file that broke (%s) is exactly the file this fix changed.\n"+
 						"★ The code itself **compiles fine**: what stopped it is not the compiler, "+
 						"and it is not go test's vet checks either — this tool could not work out exactly what it was.\n"+
 						"Without it, this package cannot run a single test.\n"+
 						"So the question \"if you remove the fix, does the test go red\" has no answer for this change.",
-					res.Commit.Short, run.revertedFile)
+					res.about(), run.revertedFile)
 				summary = "Cannot be judged: this package no longer passes go test's build once the fix is removed"
 				hint = "This is not an error: this commit is what makes go test get through, and that is worth something on its own.\n" +
 					"It is only that \"if you remove the fix, does the test go red\" has no answer here — " +
 					"answering it would take a test that does not depend on this fix."
 			default:
 				detail = fmt.Sprintf(
-					"The test patch of commit %s does apply, but with the fix removed the code itself does not compile — "+
+					"The test patch of %s does apply, but with the fix removed the code itself does not compile — "+
 						"the file that broke (%s) is exactly the file this fix changed.\n"+
 						"That is, this fix is the fix that made the code compile again; "+
 						"without it, this package cannot run a single test.\n"+
 						"So the question \"if you remove the fix, does the test go red\" has no answer for this change.",
-					res.Commit.Short, run.revertedFile)
+					res.about(), run.revertedFile)
 				summary = "Cannot be judged: the code no longer compiles once the fix is removed"
 				hint = "This is not an error: this commit is what makes the code compile again, and that is worth something on its own.\n" +
 					"It is only that \"if you remove the fix, does the test go red\" has no answer here — " +
@@ -1739,13 +1919,13 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			Severity: core.SevWarn,
 			Summary:  "The test suite did not start up — it executed not a single case, so it proves nothing",
 			Detail: fmt.Sprintf(
-				"The tests of commit %s did start, but some suite crashed while it was being loaded: "+
+				"The tests of %s did start, but some suite crashed while it was being loaded: "+
 					"an import failed, a beforeAll threw, or the runner itself died; "+
 					"it may also be that the runner produced no report at all — for instance because it collected not a single test file.\n"+
 					"Those suites executed not a single case — they were not guarding this fix, and they cannot prove that they were.\n"+
 					"That is a different thing from \"the environment is missing something\": an environment problem is a checkout that lacks what the build needs, "+
 					"whereas a suite that did not start up is this one test file failing to start up. So no conclusion is drawn here.",
-				res.Commit.Short),
+				res.about()),
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Repro:    reproFor(res, run),
@@ -1758,22 +1938,22 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		// build. The other is a counterfactual that built fine and a
 		// baseline that did not - and there the missing piece is in the
 		// BASELINE's checkout, not in the experiment.
-		summary := "This commit cannot be judged: the checked-out code is missing something and does not run"
+		summary := "This change cannot be judged: the checked-out code is missing something and does not run"
 		detail := fmt.Sprintf(
-			"The tests of commit %s do not run, but the reason is not that the test and the fix are coupled — "+
+			"The tests of %s do not run, but the reason is not that the test and the fix are coupled — "+
 				"it is that the checked-out code lacks something the build needs (usually a generated artefact that is not under version control, "+
 				"or a dependency that uses `replace` to point at a local directory and cannot be found in this checkout).\n"+
 				"That has nothing to do with whether the test is any good, so no conclusion is drawn.",
-			res.Commit.Short)
+			res.about())
 		if run != nil && run.baselineUnknown {
-			summary = "This commit cannot be judged: the baseline tree did not run"
+			summary = "This change cannot be judged: the baseline tree did not run"
 			detail = fmt.Sprintf(
-				"The counterfactual experiment of commit %s did run: %d tests went red.\n"+
+				"The counterfactual experiment of %s did run: %d tests went red.\n"+
 					"But the baseline (the same commit, with the fix in place) did not run, so "+
 					"nobody has answered the question \"was this red caused by this fix\".\n"+
 					"%s\n"+
 					"Note: the suite itself may well be green — what is broken is the checkout, not the test.",
-				res.Commit.Short, countFail(run), run.baselineUnknownDetail)
+				res.about(), countFail(run), run.baselineUnknownDetail)
 		}
 		out = append(out, core.Finding{
 			Kind:     core.KindEnvironment,
@@ -1793,10 +1973,10 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			Severity: core.SevCritical,
 			Summary:  "The tool's conclusion and its own raw output disagree — this is a bug in the tool, not in your code",
 			Detail: fmt.Sprintf(
-				"The judgement of commit %s contradicted itself: %s.\n"+
+				"The judgement of %s contradicted itself: %s.\n"+
 					"In that case the tool is not entitled to a conclusion, so it does not draw one.\n"+
 					"Below are both sides — the raw output and the tool's reading of it.",
-				res.Commit.Short, res.Contradiction),
+				res.about(), res.Contradiction),
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Repro:    reproFor(res, run),
@@ -1907,8 +2087,8 @@ func parentOf(sha string) string { return sha + "^" }
 // deleted methods only because every method's name used to come back as the
 // literal word "func", and "func" matches every method in the repository.
 // See funcDeclName.
-func (a *Auditor) removedCodeStillExists(ctx context.Context, sha string, files []core.FileChange, tree string) bool {
-	patch, err := a.repo.Patch(ctx, sha, pathsOf(files))
+func (a *Auditor) removedCodeStillExists(ctx context.Context, base, head string, files []core.FileChange, tree string) bool {
+	patch, err := a.repo.PatchRange(ctx, base, head, pathsOf(files))
 	if err != nil {
 		return false
 	}
@@ -2020,10 +2200,10 @@ func noTestAtAllFinding(res *Result, tracked int) core.Finding {
 		Severity: severity,
 		Summary:  "This change altered behavior, but this tree has not a single test in it",
 		Detail: fmt.Sprintf(
-			"Commit %s changed %d non-test files (the largest of them changed %d lines) and added no test at all.\n"+
+			"%s changed %d non-test files (the largest of them changed %d lines) and added no test at all.\n"+
 				"And the tree it lives in has **not a single test file** — the repository has no tests yet.\n"+
 				"That is, no test is watching this behavior. %s",
-			res.Commit.Short, len(res.SourceFiles), res.SourceChange.biggestFile,
+			res.subject(), len(res.SourceFiles), res.SourceChange.biggestFile,
 			foreignScopeNote(res)),
 		File: firstPath(res.SourceFiles),
 		Hint: "First give the repository a test; then use `vacuous audit` to check that it really catches this bug",
@@ -2053,10 +2233,10 @@ func noTestForFixFinding(res *Result, run *runOutcome) core.Finding {
 		Severity: severity,
 		Summary:  "This change altered behavior and nothing in the repository is watching it",
 		Detail: fmt.Sprintf(
-			"Commit %s changed %d non-test files (the largest of them changed %d lines) and added no test at all.\n"+
+			"%s changed %d non-test files (the largest of them changed %d lines) and added no test at all.\n"+
 				"With this fix removed, every test **already in** the repository passed (%d passed, %d failed, %d skipped) —\n"+
 				"that is, no test is watching this behavior. %s",
-			res.Commit.Short, len(res.SourceFiles), res.SourceChange.biggestFile,
+			res.subject(), len(res.SourceFiles), res.SourceChange.biggestFile,
 			pass, fail, skip, foreignScopeNote(res)),
 		File: firstPath(res.SourceFiles),
 		Hint: "Add a test; then use `vacuous audit` to check that it really catches this bug",

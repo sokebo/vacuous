@@ -430,6 +430,27 @@ type Report struct {
 	// that is examined and then silenced still happened, and the report
 	// has to say that it was examined.
 	Silenced int
+	// AuditedCommits is how many commits the audited change windows
+	// covered.
+	//
+	// The counters above count change windows, because the window is the
+	// unit of judgement: a fix that landed in one commit and its test in
+	// another is one change with one test, and judging the two commits
+	// apart is what made the tool accuse a fix of having no test while
+	// the test sat in the very next commit.
+	//
+	// This number says how much ground those windows covered, so a reader
+	// can tell "one window of twenty commits" from "twenty windows of one
+	// commit each" - two very different runs that a tally of windows
+	// alone would look alike.
+	AuditedCommits int
+	// AuditedWindows is how many change windows the run judged.
+	//
+	// It is the number the verdict counters add up to, and it is kept
+	// apart from AuditedCommits for the reason above: windows and
+	// commits are not the same thing, and a report that counts one of
+	// them and calls it the other is the kind of report nobody can read.
+	AuditedWindows int
 	// RepoRoot is the absolute path the run was rooted at.
 	RepoRoot string
 }

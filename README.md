@@ -148,35 +148,35 @@ that does not exist.
 
 ## What the output looks like
 
-Real output from this repository, `--mode check`:
+Real output from this repository, `--mode audit`:
 
 ```
-vacuous — found 1 problem (critical 0 · high 0 · unwatched 0; audited 5 commits,
-      1 not applicable)
+vacuous — found 1 problem (critical 0 · high 0 · unwatched 0; audited 1 window
+      of 20 commits)
 Project: vacuous
 --------------------------------------------------------------------
-  [    WARN] coupled              internal/cli/coverage_test.go
+  [    WARN] coupled              internal/adapters/go_compile_test.go
       Cannot be judged: the test and the fix are coupled and cannot be separated
-      Detail: The test patch of commit 637ddbd does apply, but with the fix
-      removed the whole package no longer compiles — the test references
-      something this fix introduced.
+      Detail: The test patch of the change window d40caeb..fbc98a0 (20 commits)
+      does apply, but with the fix removed the whole package no longer compiles
+      — the test references something this fix introduced.
       So the question "if you remove the fix, does the test go red" has no
       answer for this change: the test and the fix are tangled together.
-      Evidence: command: go test -json -count=1 ./internal/cli/... ./internal/detect/...
-      internal/detect/harness_test.go:312:12: got[0].Dir undefined (type HarnessCommand has no field or method Dir)
+      Evidence: command: go test -json -count=1 ./internal/adapters/... ./internal/cli/...
+      internal/adapters/go_compile_test.go:61:12: g.Compiles undefined (type *Go has no field or method Compiles)
       How to fix: This is not an error, it is a heads-up: a coupled test is hard
       to prove on its own.
       How to verify it yourself:
-      # 1. Take the parent's code — the starting point of the counterfactual experiment
-      mkdir -p /tmp/vac-verify && git archive 637ddbd^ | tar -x -C /tmp/vac-verify
-      # 2. Apply only the tests; the fix stays out
-      git diff --no-color --no-ext-diff --binary 637ddbd^ 637ddbd -- 'internal/cli/coverage_test.go' > /tmp/vac-verify-tests.patch
+      # 1. Take the code from before the change — the starting point of the counterfactual experiment
+      mkdir -p /tmp/vac-verify && git archive d40caeb | tar -x -C /tmp/vac-verify
+      # 2. Apply only the tests; the fixes stay out
+      git diff --no-color --no-ext-diff --binary d40caeb fbc98a0 -- 'internal/adapters/go_compile_test.go' > /tmp/vac-verify-tests.patch
       cd /tmp/vac-verify && git apply --whitespace=nowarn /tmp/vac-verify-tests.patch
       # 3. Run the tests and see whether they really go red
-      cd /tmp/vac-verify && go test -json -count=1 ./internal/cli/... ./internal/detect/...
+      cd /tmp/vac-verify && go test -json -count=1 ./internal/adapters/... ./internal/cli/...
 
 --------------------------------------------------------------------
-Summary: proven 4 · vacuous 0 · no test 0 · undecidable 1 · not applicable 1 ·
+Summary: proven 0 · vacuous 0 · no test 0 · undecidable 1 · not applicable 0 ·
       could not audit 0
 By kind: coupled 1
 ```
@@ -185,6 +185,11 @@ Every finding ends with the commands that reproduce it by hand. The counters
 at the bottom are deliberately kept apart: `undecidable` and `could not audit`
 are **holes in the report**, not clean bills of health.
 
+The scope line says what was judged: **"audited 1 window of 20 commits"** —
+the last twenty commits, judged **as one change**, because a fix and the test
+that watches it usually land in different commits. One verdict for the range,
+not one per commit.
+
 *(The block above is abridged: a real report prints every failing line and the
 full reproduction recipe.)*
 
@@ -192,13 +197,18 @@ full reproduction recipe.)*
 
 ## How it works
 
-For a commit that claims to fix a bug:
+For a change that claims to fix a bug:
 
-1. Build a throwaway checkout of its **parent commit** (your working tree is
-   never touched).
-2. Apply only that commit's **test changes** — the fix stays out.
+1. Build a throwaway checkout of the tree **before the change** (your working
+   tree is never touched).
+2. Apply only the change's **test changes** — the fix stays out.
 3. Run the test suite.
 4. Decide.
+
+The unit of judgement is the **change window**: the commits you ask about,
+taken together. A fix usually lands in one commit and its test in the next,
+and that is one change with one test — not two changes, one of which is
+missing a test.
 
 The direction is **not negotiable**: remove the fix → expect red. The reverse
 (remove the test → expect green) proves nothing, because a suite without tests
@@ -214,7 +224,7 @@ Multi-module repositories are handled: the tool finds every `go.mod` and runs
 each module separately.
 
 **When the counterfactual turns red**, the tool runs the baseline again — the
-same commit, with the fix in place, over the same scope — and compares
+same tree, with the fix in place, over the same scope — and compares
 **which tests** failed, not **how many**. A test red in the counterfactual and
 green in the baseline is one the fix's removal broke.
 
@@ -328,6 +338,11 @@ default branch, the merge-base range is empty — the tool would report "all
 clear" while having examined nothing, which is exactly the failure mode this
 tool exists to catch. Use `--base` / `--since` for an explicit range.
 
+Those 20 commits are judged **as one change window**, not one by one. The
+number of commits the window reaches back is what `--limit` controls; the
+window's base is the parent of its oldest commit, so the window covers
+exactly the commits that were selected.
+
 ---
 
 ## Suppressing a finding
@@ -412,8 +427,10 @@ repos that depend on a shared sibling library were audited together.
   not as thickly as Go".
 - **When a fix introduces a new API**, the test does not compile without it →
   verdict `coupled`, and no answer.
-- **The unit of judgement is the commit, not the behavior.** A commit that
-  changes two independent behaviors gets one verdict.
+- **The unit of judgement is the change window, not the commit.** The commits
+  you ask about are judged together, so a fix and the test that lands one
+  commit later are one change with one test. A window that changes two
+  independent behaviors gets one verdict.
 - **It needs real history.** A shallow clone has no parent commit.
 
 The full list, with the reasoning behind each edge, is in

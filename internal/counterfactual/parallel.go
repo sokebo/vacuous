@@ -257,6 +257,108 @@ func FailureFor(err error, sha string) error {
 	return nil
 }
 
+// WindowError is the failure of one change window.
+//
+// It names both ends of the window, because "something went wrong" is not
+// actionable when a run judged a range of commits and the reader has to
+// guess which part of it the tool was looking at.
+type WindowError struct {
+	// Base is the revision the window starts from.
+	Base string
+	// Head is the revision the window ends at.
+	Head string
+	// Err is what went wrong.
+	Err error
+}
+
+func (e *WindowError) Error() string {
+	return fmt.Sprintf("counterfactual: audit %s..%s: %v", e.Base, e.Head, e.Err)
+}
+
+// Unwrap gives errors.Is and errors.As the underlying failure.
+func (e *WindowError) Unwrap() error { return e.Err }
+
+// AuditWindow judges one change window under a budget of its own.
+//
+// The budget is the same one a commit gets, and it covers the same ground:
+// the checkout, the patch, and the test run. What changed is the unit - the
+// window's source changes are taken away together and its test changes are
+// kept together, so a fix that landed in one commit and its test in another
+// is judged as what it is: one change with one test.
+//
+// A window that ran out of time is NOT a failure: it has a result, with
+// the verdict VerdictTimeout, because "we could not tell" is an answer the
+// report has to show.
+func (p *ParallelAuditor) AuditWindow(ctx context.Context, base, head string, commits []core.CommitInfo) (*Result, error) {
+	cctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+
+	res, err := p.auditor.AuditWindow(cctx, base, head, commits)
+
+	// The budget ran out. Whatever the interrupted run managed to say, it
+	// did not finish, so the tool does not conclude from it.
+	if errors.Is(cctx.Err(), context.DeadlineExceeded) {
+		return p.timeoutWindowResult(ctx, base, head, res, err), nil
+	}
+	if err != nil {
+		return nil, &WindowError{Base: base, Head: head, Err: err}
+	}
+	return res, nil
+}
+
+// timeoutWindowResult builds the result of a window that ran out of time.
+//
+// It keeps everything the interrupted audit did learn and replaces the
+// conclusion, because a run that did not finish cannot support one.
+func (p *ParallelAuditor) timeoutWindowResult(parent context.Context, base, head string, res *Result, cause error) *Result {
+	out := &Result{Verdict: VerdictTimeout}
+	if res != nil {
+		out.Commit = res.Commit
+		out.Window = res.Window
+		out.Changed = res.Changed
+		out.TestFiles = res.TestFiles
+		out.SourceFiles = res.SourceFiles
+		out.OtherFiles = res.OtherFiles
+		out.TestCommand = res.TestCommand
+		out.FailureOutput = res.FailureOutput
+		out.SourceChange = res.SourceChange
+	}
+	if out.Window.Base == "" {
+		out.Window = Window{Base: base, Head: head}
+	}
+	if out.Commit.SHA == "" {
+		out.Commit = p.commitInfo(parent, head)
+	}
+	out.Findings = []core.Finding{p.timeoutWindowFinding(out, cause)}
+	return out
+}
+
+// timeoutWindowFinding describes a window whose test run did not finish.
+func (p *ParallelAuditor) timeoutWindowFinding(res *Result, cause error) core.Finding {
+	subject := res.unit()
+	evidence := res.FailureOutput
+	if evidence == "" {
+		evidence = "the test process was interrupted after " + p.timeout.String()
+	}
+	if cause != nil {
+		evidence += "\n" + cause.Error()
+	}
+	return core.Finding{
+		Kind:     core.KindEnvironment,
+		Severity: core.SevWarn,
+		Summary:  "The test run timed out — this change window cannot be judged",
+		Detail: fmt.Sprintf(
+			"The tests of the change window %s did not finish within %s and the process was cut off.\n"+
+				"So the question \"if you remove the fix, does the test go red\" has no answer for this change — "+
+				"it is not that the test and the fix are coupled, and it is not that the test failed to guard the fix; the experiment simply never finished.\n"+
+				"The most common cause is a test that hangs: an infinite loop, waiting for a signal that never comes, or waiting on an external service.",
+			subject, p.timeout),
+		File:     firstPath(res.TestFiles),
+		Evidence: evidence,
+		Hint:     "First let this change's tests finish on their own, then audit it",
+	}
+}
+
 // auditOne audits one commit under a budget of its own.
 func (p *ParallelAuditor) auditOne(ctx context.Context, sha string) (*Result, error) {
 	// The budget is per commit, not per round. A commit that hangs gets

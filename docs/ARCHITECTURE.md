@@ -365,25 +365,28 @@ files are **read**, not updated.
 
 ## 7. The experiment, step by step
 
-For a commit `C` with parent `P`:
+For a change window `(B, H]` — the commits after `B` up to and including
+`H`:
 
-1. **Classify the commit.** Merge commits, root commits, docs-only commits and
-   test-only commits have nothing to judge and leave the experiment early.
-   Cosmetic changes (only comments and whitespace) are detected by comparing
-   the source before and after the diff is stripped of comments and blanks.
-2. **Build the counterfactual tree.** Check out `P`, apply **only** the test
-   side of `C`'s diff. The fix stays out.
+1. **Classify the window.** Merge commits and the repository's first commit
+   have nothing to judge and leave the experiment early. Windows that only
+   touch documentation, and windows that only added tests, have nothing to
+   judge either. Cosmetic changes (only comments and whitespace) are detected
+   by comparing the source before and after the diff is stripped of comments
+   and blanks.
+2. **Build the counterfactual tree.** Check out `B`, apply **only** the test
+   side of the window's diff (`B..H`). The fixes stay out.
 3. **Narrow the scope.** The run is limited to the packages the change
    touches — both the source files (where the fix lives) and the test files
    (where the witness lives). A test can sit in a different directory from the
    code it exercises, and leaving it out would hide exactly the failure this
    tool exists to find.
-   - When the commit shipped **no test of its own**, the whole module runs
+   - When the window shipped **no test of its own**, the whole module runs
      instead: the question is then the wider "does *any* existing test guard
      this behaviour?", and the guard may live in another package.
 4. **Run the suite** through the adapter, and parse the result.
-5. **If the counterfactual is red, run the baseline**: the same commit, with
-   the fix in place, over the same scope. What the fix's removal broke is the
+5. **If the counterfactual is red, run the baseline**: the same tree, with
+   the fixes in place, over the same scope. What the fix's removal broke is the
    set of tests that fail in the counterfactual and **do not** fail in the
    baseline.
 6. **Classify** the outcome into a verdict.
@@ -391,6 +394,22 @@ For a commit `C` with parent `P`:
 Step 5 compares **sets**, not counts. Counterfactual red {A,B}, baseline red
 {A,C} — same count, different set. A count comparison says "no change" and
 throws the guard away; a set comparison says "B is new".
+
+### Why a window and not a commit
+
+A window of one commit is the commit's own experiment, unchanged. A window of
+several commits is the same experiment over a range: the range's source
+changes are taken away together and its test changes are kept together.
+
+That difference is the whole point of the unit. A fix that lands in one
+commit and its test in the next is one change with one test, and judging the
+two apart accuses the fix of having no test watching it — a false
+accusation, and a blocking one. Judged as a window, the test is there, the
+fix is taken away, and the test goes red: the change is guarded, and the
+build stays green.
+
+The cost is a window of twenty commits is judged by one experiment instead of
+twenty, which is what makes the tool usable on every push.
 
 ---
 

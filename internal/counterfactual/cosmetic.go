@@ -41,10 +41,29 @@ type sourceChange struct {
 // An error means "could not tell", and the caller must treat that as "not
 // cosmetic": an unanswered question is not an excuse to stay quiet.
 func (a *Auditor) sourceChange(ctx context.Context, sha string, files []core.FileChange) (sourceChange, error) {
+	base, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-parse", "--verify", sha+"^")
+	if err != nil {
+		return sourceChange{}, err
+	}
+	return a.sourceChangeRange(ctx, strings.TrimSpace(base), sha, files)
+}
+
+// sourceChangeRange describes what a range of commits did to its source
+// files.
+//
+// It is the range-aware counterpart of sourceChange. A window's source
+// changes are the diff between the window's two ends, not the diff of its
+// head against its own first parent - so a window of three commits is
+// measured as the three of them together.
+//
+// The measurement is deliberately the same shape as the commit's one: the
+// biggest single file decides the size, because a change that touches four
+// files by one line each is a rename, not a feature.
+func (a *Auditor) sourceChangeRange(ctx context.Context, base, head string, files []core.FileChange) (sourceChange, error) {
 	if len(files) == 0 {
 		return sourceChange{}, nil
 	}
-	patch, err := a.repo.Patch(ctx, sha, pathsOf(files))
+	patch, err := a.repo.PatchRange(ctx, base, head, pathsOf(files))
 	if err != nil {
 		return sourceChange{}, err
 	}

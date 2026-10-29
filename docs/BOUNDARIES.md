@@ -34,26 +34,43 @@ Coupled verdicts are therefore common in repositories that frequently add new
 API. That does not mean the tests there are bad; it means this method does
 not apply there.
 
-### 1.2 The unit of judgement is the commit, not the behavior
+### 1.2 The unit of judgement is the change window, not the commit
 
 The experiment takes the fix away **as a whole**: the counterfactual tree is
-the parent commit with the test side of the diff applied, so every source
-change in that commit is removed at once, and one verdict is produced.
+the tree before the window with the test side of the window's diff applied,
+so every source change in that window is removed at once, and one verdict is
+produced for the window.
+
+The window is a range of commits — the ones you asked about, judged together
+— because a change is rarely made in one commit. A fix lands in one commit
+and its test in the next; judged one commit at a time, the fix commit is
+"a behavior change with no test watching it", and the advice that comes with
+it ("add a test") is wrong, because the test is already there, one commit
+later. The same change squashed into one commit was judged `coupled` and the
+build stayed green. Nothing about the code had changed — only where the line
+was drawn.
 
 Two consequences:
 
-- **A commit that changes two independent behaviors gets one verdict.** If one
+- **A window that changes two independent behaviors gets one verdict.** If one
   of them is guarded by a test and the other is not, the experiment turns red
   because of the first, and the verdict is "proven". The unguarded behavior
   is not reported.
 - **A package that cannot compile masks the other packages in the same
-  commit.** One broken package produces `coupled` for the whole commit, and
-  the conclusions for the packages that did run are lost.
+  window.** One broken package produces `coupled` for the whole window, and
+  the conclusions for the packages that did run are lost. The same holds for
+  a commit: one change whose test cannot be separated from it makes the
+  whole window `coupled`, where before one such commit masked only itself.
 
 Both of these make the tool **miss** findings rather than invent them, which
 is the direction this tool is built to err in. But it does mean that on a
-commit which does several things at once, the verdict is about the commit as
+window which does several things at once, the verdict is about the window as
 a whole.
+
+The window's base is the parent of its oldest commit, so it covers exactly
+the commits that were selected. The repository's first commit has no earlier
+tree to be compared against, so it is judged on its own and the answer is
+"nothing to compare it against".
 
 ### 1.3 A red test is evidence of sensitivity, not of correctness
 
@@ -171,7 +188,7 @@ linter** and they will not replace one.
 The first line is the conclusion:
 
 ```
-vacuous — found 3 problems (critical 0 · high 1 · unwatched 0; audited 20 commits, 1 not applicable)
+vacuous — found 3 problems (critical 0 · high 1 · unwatched 0; audited 1 window of 20 commits, 1 not applicable)
 ```
 
 The counters are deliberately kept apart, because collapsing them makes two
@@ -183,18 +200,20 @@ different situations look the same:
 | **vacuous** | Behaviors whose test passed with or without the fix — they prove nothing. |
 | **no test watching** (`no_test`) | Behavior changes that landed with no test at all. This is an **answer**, not a shrug: "nobody wrote a test" is different from "we could not tell". |
 | **undecidable** (`inconclusive`) | Coupled, environment, suite-crash, skipped, pre-existing. **No answer.** |
-| **not applicable** | Commits with nothing to judge: merges, root commits, docs-only, test-only. |
-| **could not audit** | Commits the tool could not audit at all. **A hole in the report**, and the reason the run exits 2. |
-| **silenced** | Commits whose findings were suppressed by a `// vacuous:ignore` comment. Not a verdict — the commit *was* judged, and the verdict stands. It is counted so that "one finding was suppressed on purpose" is visible next to an empty findings list. |
+| **not applicable** | Change windows with nothing to judge: merges, the repository's first commit, docs-only, test-only. |
+| **could not audit** | Change windows the tool could not audit at all. **A hole in the report**, and the reason the run exits 2. |
+| **silenced** | Change windows whose findings were suppressed by a `// vacuous:ignore` comment. Not a verdict — the change *was* judged, and the verdict stands. It is counted so that "one finding was suppressed on purpose" is visible next to an empty findings list. |
 
 Two readings that look identical and are not:
 
 - **"0 findings"** — either "I looked and found nothing" or "I could not look".
   The counters tell you which: if `undecidable` or `could not audit` is
   non-zero, part of the window was not judged.
-- **"audited N commits"** — `N` counts the commits that reached a verdict,
-  which includes the undecidable ones. The undecidable commits were
-  examined; they just did not produce an answer.
+- **"audited N windows of M commits"** — `N` counts the change windows that
+  reached a verdict, which includes the undecidable ones: they were examined,
+  they just did not produce an answer. `M` is how many commits those windows
+  covered. **A window is judged as one unit**, so a run over twenty commits
+  produces one verdict for the range, not twenty verdicts for the commits.
 
 Every finding carries the raw output that backs it and a `Repro` section with
 the commands to reproduce it by hand. **You never have to take the tool's
