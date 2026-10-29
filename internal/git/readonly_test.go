@@ -191,8 +191,16 @@ func checkoutFiles(t *testing.T, dir string, submodules []string) map[string]boo
 		if rerr != nil {
 			return nil
 		}
+		// The tree's paths come from git, and git always writes them with
+		// forward slashes. filepath.Rel writes whatever the platform's
+		// separator is, so on Windows the two never match and every file
+		// in a subdirectory looks missing.
+		//
+		// The comparison in this file is between two lists of repository
+		// paths, and a repository path has one spelling.
+		rel = filepath.ToSlash(rel)
 		for _, sub := range submodules {
-			if rel == sub || strings.HasPrefix(rel, sub+string(filepath.Separator)) {
+			if rel == sub || strings.HasPrefix(rel, sub+"/") {
 				return nil
 			}
 		}

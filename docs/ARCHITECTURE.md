@@ -376,6 +376,20 @@ files — in that case the implementation falls back to `git worktree add`, so
 the checkout is exact. **The tool always knows whether the checkout it holds
 is exact.**
 
+★ **The pipe has to be drained.** The archive is not read to the end: the tar
+format allows zero padding after the end-of-archive marker, `git archive`
+writes some, and Go's `archive/tar` returns `io.EOF` at the marker without
+reading the padding behind it. git then waits for a reader that has already
+left, blocks on write, and never exits — so `cmd.Wait()` waits forever and the
+audit hangs.
+
+That is not a Windows problem. It hung on Windows and not on Linux only
+because Linux's pipe buffer happened to be big enough for the padding to fit.
+The leftover bytes are there on every platform (dogfood bug 3.94). So the
+implementation reads whatever is left in the pipe before waiting for git:
+**a reader that stops early must drain what is left, or the writer waits
+forever.**
+
 On the toolchain side, `go` subprocesses run under `GOFLAGS=` **and
 `GOENV=off`**. `GOENV=off` makes Go *not read* the machine's own go
 configuration (the file `go env -w` writes), so an empty `GOFLAGS=` really

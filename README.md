@@ -30,6 +30,13 @@ reproduce it by hand. **You never have to take the tool's word for it.**
 - **Requires** — Go 1.26+ · `git` on your machine · the audited project's own toolchain
 - **License** — Apache-2.0
 
+> **Windows** runs: the static checks and the counterfactual audit both work
+> there. They did not, until the archive read was fixed — the audit hung on
+> Windows because the tar reader stopped at the end-of-archive marker and the
+> padding behind it was never read, so `git` blocked on writing forever. The
+> defect was on every platform; Linux's pipe buffer was hiding it. See
+> [dogfood bug 3.94](./docs/dogfood/12-bugs-3.94.md).
+
 ---
 
 ## Contents
@@ -378,7 +385,7 @@ the code first.
 
 ## Results on real repositories
 
-The full record — every run, every finding, and the **92 bugs dogfooding found
+The full record — every run, every finding, and the **94 bugs dogfooding found
 in the tool itself** — is in [`docs/dogfood/`](./docs/dogfood/), with the
 repository names and paths sanitized.
 
@@ -432,6 +439,18 @@ repos that depend on a shared sibling library were audited together.
   commit later are one change with one test. A window that changes two
   independent behaviors gets one verdict.
 - **It needs real history.** A shallow clone has no parent commit.
+- **The checkout is read from a pipe, and the pipe is drained.** `git archive`
+  writes zero padding behind the tar end-of-archive marker, and Go's
+  `archive/tar` stops at the marker without reading it. The implementation
+  reads the rest before waiting for `git` — without that, `git` blocks on
+  writing and the audit hangs forever. It hung on Windows and not on Linux
+  (Linux's pipe buffer was big enough to hide it), and the defect was on
+  every platform. See [dogfood bug 3.94](./docs/dogfood/12-bugs-3.94.md).
+- **On Windows, a run killed by its own timeout leaves its checkout behind.**
+  The killed test process still holds the checkout directory, and Windows
+  refuses to delete a directory that is a running process's working directory.
+  The audit still finishes and still reports; the temporary checkout stays on
+  disk. Linux deletes it either way.
 
 The full list, with the reasoning behind each edge, is in
 [`docs/BOUNDARIES.md`](./docs/BOUNDARIES.md).
@@ -444,7 +463,7 @@ The full list, with the reasoning behind each edge, is in
 |---|---|
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How the tool is put together, and the contracts it holds to |
 | [`docs/BOUNDARIES.md`](./docs/BOUNDARIES.md) | What the method cannot do, and what every finding kind means |
-| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 92 bugs dogfooding found in the tool itself |
+| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 94 bugs dogfooding found in the tool itself |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | How to build, test, and contribute — and the six rules the design holds to |
 | [`SECURITY.md`](./SECURITY.md) | What this tool does to your repository, and how to audit a repository you do not trust |
 | [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) | The behavior expected from everyone taking part |
