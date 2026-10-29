@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **89 bugs the tool had in itself** that dogfooding uncovered.
+the **92 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -59,6 +59,7 @@ in the tables below are the record of that run.
 | [`08-bugs-3.71-3.77.md`](./08-bugs-3.71-3.77.md) | Tool bugs 3.71 – 3.77 |
 | [`09-bugs-3.78-3.87.md`](./09-bugs-3.78-3.87.md) | Tool bugs 3.78 – 3.87 |
 | [`10-bugs-3.90.md`](./10-bugs-3.90.md) | Tool bug 3.90 — the unit of judgement, from the commit to the change window |
+| [`11-bugs-3.91-3.93.md`](./11-bugs-3.91-3.93.md) | Tool bugs 3.91 – 3.93 — three false accusations against real repositories, and the copies of facts the repository already stated |
 
 ---
 
@@ -92,7 +93,7 @@ history is public anyway.
 
 ## The catalog
 
-89 entries. The number in front is a stable identifier: it is referenced from
+92 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
 The log was written over many rounds, and three of its numbers were used
@@ -194,6 +195,9 @@ themselves.
 | **3.88** | The fix was still in the counterfactual tree — an empty path list was taken for "all files" *(originally numbered 3.44)* | Counterfactual mechanics |
 | **3.89** | A commit that could not be audited exited with code 0 *(originally numbered 3.45)* | Exit codes |
 | **3.90** | The unit of judgement was the commit — a fix and its test in two commits got two verdicts | Verdict |
+| **3.91** | A repository with 71 test files in `test/` was reported as having no test file at all | Static detection |
+| **3.92** | The CI ran `make ci` and the tool said the CI runs no tests at all | CI detection |
+| **3.93** | The rule "do not claim what you have not earned" was written down and applied in one half of the tool only | Static detection |
 
 ---
 

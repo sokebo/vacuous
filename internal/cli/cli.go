@@ -282,7 +282,7 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 		// tests but nobody runs them") need the runner to be missing.
 		if adapter == nil {
 			rep.Add(noRunnerFinding(root, files, scope))
-		} else if f, ok := noTestsAtAll(root, files, scope); ok {
+		} else if f, ok := noTestsAtAll(root, files, scope, adapterIsAuthoritative(adapter)); ok {
 			rep.Add(f)
 		}
 		// Say out loud which tests the report does not cover.

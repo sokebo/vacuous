@@ -122,6 +122,28 @@ decides, and a repository may keep its tests anywhere. A tool that says
 "there are no tests here" on the strength of a filename pattern is making a
 claim it has not earned.
 
+★ **This capability has to be consulted everywhere that claim is made, not
+only in the experiment.** The static checks make the same claim — "this
+repository has code and not a single test file", a high-severity finding that
+fails the run — and they have to ask the same question. A principle that is
+written down and applied in one half of the tool is a principle that will be
+applied in the other half eventually, and until then it is a rule that makes
+confident accusations (dogfood bug 3.93).
+
+### 3.1.1 One answer to "is this file a test file?"
+
+`adapters.IsTestFilePath` (`internal/adapters/testpath.go`) is the single
+answer to that question for the whole tool. The language adapters ask it last,
+so their own language-specific rules keep priority, and the CLI's coverage
+count asks it instead of keeping a list of its own.
+
+★ It used to exist in three places with three different answers, and the gap
+between them was a high-severity false accusation: express keeps its suite in a
+root-level `test/` directory, the Node adapter knew that, and the CLI's count
+did not (dogfood bug 3.91). **A rule that answers the same question in two
+places is two rules that will drift** — the fix is to delete the copy, not to
+patch it.
+
 ```go
 // WorktreePreparer — stage the things the build needs that live OUTSIDE
 // the repository.

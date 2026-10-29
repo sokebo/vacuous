@@ -109,6 +109,12 @@ func (p *Python) detectPytest(root string, scope core.FileScope) bool {
 }
 
 // IsTestPath reports whether path is a Python test file.
+//
+// The shared rule in testpath.go knows the shapes every ecosystem uses.
+// This adds the two that are Python's own:
+//
+//   - "test_*.py" and "*_test.py" are tests wherever they sit;
+//   - a "tests/" directory holds tests at any depth.
 func (p *Python) IsTestPath(path string) bool {
 	if IsDependencyPath(path) {
 		return false
@@ -121,7 +127,10 @@ func (p *Python) IsTestPath(path string) bool {
 		return true
 	}
 	dir := filepath.ToSlash(filepath.Dir(path))
-	return strings.Contains(dir+"/", "/tests/") || strings.HasSuffix(dir, "/tests")
+	if strings.Contains(dir+"/", "/tests/") || strings.HasSuffix(dir, "/tests") {
+		return true
+	}
+	return IsTestFilePath(path)
 }
 
 // TestDiscoveryIsAuthoritative reports that the rule above is NOT the whole

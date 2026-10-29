@@ -75,11 +75,10 @@ var nodeTestExts = map[string]bool{
 // a __tests__ directory, and a JavaScript or TypeScript file under a
 // test, tests or spec directory.
 //
-// The third shape is the one that was missing. A project that puts its
-// tests in test/ and names them "helpers.mjs" or "checkout.spec.js"
-// had every one of them classified as source code, so the tool narrowed
-// away from them, ran something else, and reported a verdict about
-// tests it never executed.
+// The shared rule in testpath.go knows the shapes every ecosystem uses.
+// It is asked last, so a shape this file's own rule has not heard of
+// still gets a chance to be right - and the answer cannot drift away
+// from the one the CLI's coverage count gives.
 func (n *Node) IsTestPath(p string) bool {
 	sl := filepath.ToSlash(p)
 	if IsDependencyPath(sl) {
@@ -98,7 +97,7 @@ func (n *Node) IsTestPath(p string) bool {
 			return true
 		}
 	}
-	return false
+	return IsTestFilePath(sl)
 }
 
 // TestDiscoveryIsAuthoritative reports that the rule above is NOT the whole
