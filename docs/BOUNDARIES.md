@@ -136,6 +136,50 @@ high-signal patterns: skipped tests, discarded errors, guards that never run,
 CI that cannot block, and a repository with no tests at all. They are **not a
 linter** and they will not replace one.
 
+### 1.9 "This repository has no tests" is a claim the tool makes only where it can earn it
+
+The static check `no-test-for-fix` is a **high** finding: it says the repository
+has code and no test file, and it fails the run. That is a claim about a whole
+repository, and the tool may only make it when it has looked everywhere.
+
+**For Go it has.** The go toolchain compiles exactly the `_test.go` files and
+nothing else — a file under `testdata/` is never built, and no other file is
+ever treated as a test. So "this Go repository has no test file" is a fact the
+tool can establish by reading the file names.
+
+**For Node and Python it has not.** jest and pytest decide for themselves which
+files are tests, through their own configuration, and a repository is free to
+point that anywhere. The file-name rule is a good guess — not a guarantee. So
+for those languages the tool says:
+
+> **This tool cannot tell whether this repository has tests** (info)
+
+rather than the high-severity claim. "I did not find them" and "there are
+none" lead to opposite next steps, and only one of them is something the
+reader can act on.
+
+★ The counterfactual audit settles the question for those languages: it runs the
+repository's own test command against the tree before and after a change, and
+reports what actually watches it. That is an experiment; a file-name rule is a
+guess.
+
+### 1.10 The CI check reads the repository's own files
+
+The finding "this repository's CI runs no tests at all" is answered by reading
+what the CI actually runs, and by following it into the repository:
+
+- a command line that names a test runner (`pytest`, `go test`, `npm test`…);
+- a `package.json` script chain (`npm run ci` → `npm run test`);
+- **a Makefile target** (`make ci`, where the recipe is `pytest tests`).
+
+The third one matters because a list of command spellings cannot be completed:
+the next repository will use `make test-unit`, and the one after that
+`just test`. So the tool follows the CI's `make <target>` into the target's
+recipe in the repository's own Makefile, and asks that file what it runs.
+
+A CI that **calls** a workflow from another repository is reported as
+"cannot tell" — not seeing the command is not the same as it not being there.
+
 ---
 
 ## 2. The verdict reference
@@ -176,9 +220,9 @@ linter** and they will not replace one.
 | `discards-error` | high | An error was thrown away (`cs, _ := loadCorpus(...)`) and either the assertions after it are computed on an empty set, or a **protective check** was skipped and the program continues with empty results. The two shapes are reported separately, with different wording. |
 | `guard-not-installed` | critical | The guard's files exist, but the directory git actually looks in does not contain them. When `core.hooksPath` is unset that is `.git/hooks/`; when it is set, git ignores `.git/hooks/` entirely. The guard has never run once. |
 | `guard-not-portable` | warn | The guard is wired up but installs itself by absolute path, and breaks the moment the repository moves. |
-| `no-test-for-fix` | high | The repository has code and test files but not a single assertion. |
+| `no-test-for-fix` | high | The repository has code and test files but not a single assertion. **Go only** — for Node and Python the test-file rule is a guess (the runner's configuration decides), so the tool says it *cannot tell* instead. |
 | `no-test-runner` | high | The repository has no way to run its tests at all. The static checks do not need a runner — "there are no tests" is exactly the thing that most needs saying. |
-| `unsupported-tests` | info | Part of the repository's suite is written in a form this tool cannot execute, so the report does not cover it. Its job is to stop an empty report from reading as "no problems". |
+| `unsupported-tests` | info | Part of the repository's suite is written in a form this tool cannot execute, so the report does not cover it. Its job is to stop an empty report from reading as "no problems". **Also used when the tool cannot tell whether the repository has tests at all** — for a language whose test-file rule is a guess. |
 | `uncommitted-changes` | warn | The static checks read the **working tree**, so a finding anchored to a file with uncommitted changes describes code that exists on your disk and not in the repository. The finding names the files involved. |
 
 ---

@@ -466,6 +466,12 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 	for _, w := range workflows {
 		if runsAnyCommand(w.text, commands) || ci.runsTestCommand(w.text) {
 			withTests = append(withTests, w.name)
+		} else if w.runsMakeTargetThatRunsTests(repoRoot, scope) {
+			// The CI reaches the tests through a Makefile target:
+			// "make ci", where the recipe is "pytest tests". The command
+			// line says nothing a spelling list can recognise - only the
+			// repository's own Makefile says what it runs.
+			withTests = append(withTests, w.name)
 		}
 		if callsAnotherWorkflow(w.text) {
 			opaque = append(opaque, w.name)

@@ -26,7 +26,22 @@ import (
 // repository that ships check commands of its own gets the "I cannot drive
 // those" note instead - the checks exist, this tool cannot run them, and
 // that is a different fact.
-func noTestsAtAll(root string, files []string, scope core.FileScope) (core.Finding, bool) {
+//
+// authoritative says whether the language's test-file rule is the WHOLE
+// truth about where this repository's tests live. For Go it is - the
+// toolchain compiles exactly the _test.go files. For Node and Python it is
+// not: the runner's configuration decides, and the repository is free to
+// point it anywhere.
+//
+// That difference decides the SEVERITY of this finding, and it is the
+// difference between a fact and a guess. "This repository has no test
+// file" is true of a Go repository with no _test.go file. It is a guess
+// about a Node repository whose tests sit where the filename rule cannot
+// see them - and the counterfactual engine already knows this, which is
+// why core.TestDiscoveryAuthority exists.
+//
+// A HIGH finding that fails a gate may not rest on a guess.
+func noTestsAtAll(root string, files []string, scope core.FileScope, authoritative bool) (core.Finding, bool) {
 	src := sourceCount(files)
 	if src == 0 || testCount(files) != 0 {
 		return core.Finding{}, false
@@ -42,7 +57,40 @@ func noTestsAtAll(root string, files []string, scope core.FileScope) (core.Findi
 		return harnessFinding(harness, src, 0), true
 	}
 
+	if !authoritative {
+		return cannotSeeTestsFinding(src), true
+	}
+
 	return noTestForFixFinding(src, false), true
+}
+
+// cannotSeeTestsFinding is what the tool says when the filename rule
+// found no test file and the rule is not the whole truth.
+//
+// It is a different sentence from "this repository has no tests", and the
+// difference is the point: the reader is not told to write tests that may
+// already exist.
+//
+// The severity is INFO. The finding is a hole in the report, not a defect
+// in the repository - and the counterfactual audit is what fills the hole.
+func cannotSeeTestsFinding(src int) core.Finding {
+	return core.Finding{
+		Kind:     core.KindUnsupportedTests,
+		Severity: core.SevInfo,
+		Summary:  "This tool cannot tell whether this repository has tests",
+		Detail: fmt.Sprintf(
+			"The repository has %d source files, and this tool found no file that looks like a test.\n"+
+				"For this language that is not the same as \"there are none\": the test runner's own\n"+
+				"configuration decides which files are tests, and the repository is free to point it\n"+
+				"anywhere. The file-name rule this tool uses is a good guess, not a guarantee.\n"+
+				"So this tool cannot conclude that the repository has no tests - it says that it did\n"+
+				"not find them, and that finding a test file by its name is not the same as finding\n"+
+				"the whole suite.",
+			src),
+		Evidence: "source files checked: " + strconv.Itoa(src) + " · test files found by name: 0",
+		Hint: "The counterfactual audit is what settles this: it runs the repository's own test " +
+			"command against the tree before and after a change, and reports what actually watches it",
+	}
 }
 
 // noTestForFixFinding is the "code but no tests" verdict.

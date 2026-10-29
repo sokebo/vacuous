@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -64,33 +63,53 @@ func sourceCount(files []string) int {
 
 // testCount returns how many of the given files look like tests.
 //
-// The patterns cover the three ecosystems the adapters understand. A file
-// that does not match any of them is not counted, which keeps the count
-// conservative: undercounting means the tool says "no tests" about a
-// repository that does have some, which is annoying but not dangerous. The
-// dangerous direction would be claiming a repository is covered when it is
-// not.
+// The rule is adapters.IsTestFilePath, not a list written here.
+//
+// That list existed, and it was wrong in the way that costs the most:
+// it did not include a root-level "test/" directory. express keeps its
+// whole suite there - 71 mocha files, named after what they test
+// ("app.js", "request.js"), run by "npm test" on every push - and the
+// report said the repository had no test file at all. That is a HIGH
+// finding, it exits 1, and it tells the reader to write tests that
+// already exist.
+//
+// The rule now lives in one place, next to the adapters that run the
+// tests, so the count cannot drift away from what the tool would
+// actually execute.
+//
+// The direction of the error is deliberate. Undercounting means the tool
+// says "no tests" about a repository that has some - which is the
+// accusation, and it is the expensive one. Overcounting means the tool
+// misses a real gap, which is the safe direction.
 func testCount(files []string) int {
 	n := 0
 	for _, f := range files {
-		sl := strings.ToLower(filepath.ToSlash(f))
-		base := path.Base(sl)
-		dir := path.Dir(sl)
-
-		switch {
-		case strings.HasSuffix(base, "_test.go"):
-			n++
-		case strings.HasSuffix(base, ".py") &&
-			(strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py")):
-			n++
-		case strings.Contains(base, ".test.") || strings.Contains(base, ".spec."):
-			n++
-		case strings.Contains(dir, "__tests__") || strings.HasSuffix(dir, "/test") ||
-			strings.HasSuffix(dir, "/tests"):
+		if adapters.IsTestFilePath(f) {
 			n++
 		}
 	}
 	return n
+}
+
+// adapterIsAuthoritative reports whether the adapter's test-file rule is
+// the whole truth about where this repository's tests live.
+//
+// It asks the same question the counterfactual engine asks
+// (counterfactual.Auditor.testDiscoveryIsAuthoritative), and it asks it in
+// the same way: an adapter that does not say is NOT taken at its word.
+//
+// The rule is a good guess, not a guarantee, and a tool that says "there
+// are no tests here" on the strength of a guess is making a claim it has
+// not earned. Only Go earns it: the toolchain compiles exactly the
+// _test.go files, so the rule is the whole answer.
+func adapterIsAuthoritative(adapter core.Adapter) bool {
+	type authority interface {
+		TestDiscoveryIsAuthoritative() bool
+	}
+	if a, ok := adapter.(authority); ok {
+		return a.TestDiscoveryIsAuthoritative()
+	}
+	return false
 }
 
 // noRunnerFinding describes a repository that has no test runner.

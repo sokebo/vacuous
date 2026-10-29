@@ -244,9 +244,9 @@ green in the baseline is one the fix's removal broke.
 | `discards-error` | high | An error was thrown away (`cs, _ := loadCorpus(...)`) and either the assertions after it are computed on an empty set, or a **protective check** was skipped and the program continues with empty results. |
 | `guard-not-installed` | critical | The guard's files exist, but the directory git actually looks in does not contain them. The guard has never run once. |
 | `guard-not-portable` | warn | The guard is wired up but installs itself by absolute path, and breaks the moment the repository moves. |
-| `no-test-for-fix` | high | The repository has code and test files but not a single assertion. |
+| `no-test-for-fix` | high | The repository has code and test files but not a single assertion. **Go only** — for Node and Python the test-file rule is a guess (the runner's configuration decides), so the tool says it *cannot tell* instead. |
 | `no-test-runner` | high | The repository has no way to run its tests at all. The static checks do not need a runner — "there are no tests" is exactly the thing that most needs saying. |
-| `unsupported-tests` | info | Part of the repository's suite is written in a form this tool cannot execute, so the report does not cover it. Its job is to stop an empty report from reading as "no problems". |
+| `unsupported-tests` | info | Part of the repository's suite is written in a form this tool cannot execute, so the report does not cover it. Its job is to stop an empty report from reading as "no problems". **Also used when the tool cannot tell whether the repository has tests at all** — for a language whose test-file rule is a guess. |
 | `uncommitted-changes` | warn | The static checks read the **working tree**, so a finding anchored to a file with uncommitted changes describes code that exists on your disk and not in the repository. |
 
 `--mode check` needs **no test runner**. Not finding one is not an error; it
@@ -378,7 +378,7 @@ the code first.
 
 ## Results on real repositories
 
-The full record — every run, every finding, and the **89 bugs dogfooding found
+The full record — every run, every finding, and the **92 bugs dogfooding found
 in the tool itself** — is in [`docs/dogfood/`](./docs/dogfood/), with the
 repository names and paths sanitized.
 
@@ -444,7 +444,7 @@ The full list, with the reasoning behind each edge, is in
 |---|---|
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How the tool is put together, and the contracts it holds to |
 | [`docs/BOUNDARIES.md`](./docs/BOUNDARIES.md) | What the method cannot do, and what every finding kind means |
-| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 89 bugs dogfooding found in the tool itself |
+| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 92 bugs dogfooding found in the tool itself |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | How to build, test, and contribute — and the six rules the design holds to |
 | [`SECURITY.md`](./SECURITY.md) | What this tool does to your repository, and how to audit a repository you do not trust |
 | [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) | The behavior expected from everyone taking part |
