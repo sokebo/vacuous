@@ -135,6 +135,17 @@ func (r *Repo) extractArchive(rev, dir string) error {
 // means the repository in workDir. "git archive" only reads: neither the
 // audited repository nor the submodule's own repository is written to.
 func archiveInto(workDir, gitDir, rev, dest string) (int, error) {
+	got, _, err := archiveIntoDrained(workDir, gitDir, rev, dest, io.Discard)
+	return got, err
+}
+
+// archiveIntoDrained is archiveInto, and it also reports how many bytes it
+// had to drain after the tar stream ended.
+//
+// The number is not an optimisation metric. It is the only observable proof
+// that the drain did something: if it is zero, either git stopped writing
+// padding (which would change the whole diagnosis) or the drain is gone.
+func archiveIntoDrained(workDir, gitDir, rev, dest string, drain io.Writer) (int, int64, error) {
 	args := []string{
 		// The repository may well be owned by somebody else (a CI
 		// checkout, a container mount). These are per-invocation
@@ -153,22 +164,53 @@ func archiveInto(workDir, gitDir, rev, dest string) (int, error) {
 	cmd.Env = gitEnv()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	cmd.Stderr = io.Discard
 	if err := cmd.Start(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	got, err := untar(stdout, dest)
+	// Drain whatever is left in the pipe before waiting for git.
+	//
+	// ★ This is not optional, and the reason is not obvious. The tar
+	// format allows zero padding after the end-of-archive marker, and
+	// "git archive" writes some. Go's archive/tar returns io.EOF the
+	// moment it sees the marker - it does NOT read the padding behind
+	// it.
+	//
+	// So the pipe still holds the padding. git finishes writing it and
+	// then waits for the reader to take the rest - which never happens,
+	// because the reader has already stopped. git blocks on write, the
+	// parent blocks in cmd.Wait() waiting for a process that cannot
+	// exit, and the tool hangs forever.
+	//
+	// It hung on Windows and not on Linux, and that difference is what
+	// made it look like a platform bug. It is not: the leftover bytes
+	// are there on every platform. Linux's pipe buffer happened to be
+	// big enough for the padding to fit, so git never blocked.
+	//
+	// ★ The drain also covers the ERROR path, and that path had the
+	// same deadlock: untar gave up early, the pipe still held the rest
+	// of the archive, git was blocked writing it, and cmd.Wait() waited
+	// for a process that could not exit. Draining first means git gets
+	// to finish and exit, and the error is reported as an error.
+	//
+	// Reading the rest is cheap, and it is the difference between "the
+	// audit finishes" and "the audit hangs".
+	drained, drainErr := io.Copy(drain, stdout)
+	if drainErr != nil && err == nil {
+		err = drainErr
+	}
 	if err != nil {
 		_ = cmd.Wait()
-		return got, err
+		return got, drained, err
 	}
 	if err := cmd.Wait(); err != nil {
-		return got, err
+		return got, drained, err
 	}
-	return got, nil
+	return got, drained, nil
 }
 
 // treeFileCount counts the files in a revision's tree.
