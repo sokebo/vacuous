@@ -57,13 +57,13 @@ the document commits produced by each verification round would invalidate the
 baseline.
 
 ```
-scripts/gate.sh check     # exit code 0=unchanged 1=changed 2=cannot tell
+internal/dogfood/gate/gate.sh check     # exit code 0=unchanged 1=changed 2=cannot tell
 ```
 
 The criteria = five things:
 
 1. **Code fingerprint** — the content hash of every tracked file on HEAD except
-   `docs/` and `*.md` (`Fingerprint` in `internal/gate/gate.go`). Editing
+   `docs/` and `*.md` (`Fingerprint` in `internal/dogfood/gate/gate.go`). Editing
    documents doesn't change the fingerprint; editing code or CI configuration
    does.
 2. **The tool's own worktree** — things changed but not committed (`DirtyPaths`,
@@ -80,7 +80,7 @@ The criteria = five things:
    hooks directory git actually looks at), but the `check` verdict depends on it
    (see 3.82). When the owner installs the guard as the report says, the verdict
    changes on the spot, while the gate had reported "unchanged".
-6. **The remotes of the audited repositories** — `scripts/gate.sh remote` asks
+6. **The remotes of the audited repositories** — `internal/dogfood/gate/gate.sh remote` asks
    the remote: "is the tip of the upstream branch that the local HEAD is
    tracking an ancestor of the local HEAD".
 
@@ -113,7 +113,7 @@ baseline would be invalidated once again.
 **The fingerprint value is not copied here**: a fingerprint changes with the code
 by nature, so copying it into the document is the same as copying a record that
 is guaranteed to expire (the same goes for the audited repositories' HEAD below).
-To see the current value, run `scripts/gate.sh check`.
+To see the current value, run `internal/dogfood/gate/gate.sh check`.
 
 ```
 Repo A  <sha>

@@ -42,7 +42,7 @@ func cloneOf(t *testing.T, remote string) string {
 	dir := t.TempDir()
 	cmd := exec.Command("git", "clone", "-q", remote, dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("克隆失败: %v\n%s", err, out)
+		t.Fatalf("clone failed: %v\n%s", err, out)
 	}
 	return dir
 }
@@ -56,7 +56,7 @@ func TestCheckRemoteReportsLocalCloneBehind(t *testing.T) {
 
 	res := CheckRemote(local)
 	if res.Status != RemoteChanged {
-		t.Fatalf("status = %q, want %q —— 本地落后了，必须报出来", res.Status, RemoteChanged)
+		t.Fatalf("status = %q, want %q — the local checkout is behind, and that must be reported", res.Status, RemoteChanged)
 	}
 	if res.RemoteBranch != "main" {
 		t.Fatalf("remote branch = %q, want main", res.RemoteBranch)
@@ -80,15 +80,15 @@ func TestCheckRemoteReportsStaleCheckoutEvenWhenObjectsArePresent(t *testing.T) 
 	// 对象拉下来了，工作树没动。
 	runGit(t, local, "fetch", "-q", "origin")
 	if got := runGit(t, local, "rev-parse", "HEAD"); got != old {
-		t.Fatalf("前提不成立：本地 HEAD 动了（%s → %s）", old, got)
+		t.Fatalf("premise does not hold: the local HEAD moved (%s → %s)", old, got)
 	}
 	if !hasCommit(local, runGit(t, remote, "rev-parse", "HEAD")) {
-		t.Fatal("前提不成立：远端的提交本地没有对象，这条测试测不到东西")
+		t.Fatal("premise does not hold: the local object store has no object for the remote commit, so this test measures nothing")
 	}
 
 	res := CheckRemote(local)
 	if res.Status != RemoteChanged {
-		t.Fatalf("status = %q, want %q —— 对象在本地不等于本地是新的（fetch 了没 pull）", res.Status, RemoteChanged)
+		t.Fatalf("status = %q, want %q — having the object locally does not mean the local checkout is new (fetched but never pulled)", res.Status, RemoteChanged)
 	}
 	if res.Behind != 1 {
 		t.Errorf("behind = %d, want 1", res.Behind)
@@ -101,7 +101,7 @@ func TestCheckRemoteIsQuietWhenLocalHasEveryRemoteCommit(t *testing.T) {
 
 	res := CheckRemote(local)
 	if res.Status != RemoteSame {
-		t.Fatalf("status = %q, want %q —— 远端没动，必须安静", res.Status, RemoteSame)
+		t.Fatalf("status = %q, want %q — the remote has not moved, so the gate must stay quiet", res.Status, RemoteSame)
 	}
 }
 
@@ -118,7 +118,7 @@ func TestCheckRemoteIgnoresUnmergedRemoteBranches(t *testing.T) {
 
 	res := CheckRemote(local)
 	if res.Status != RemoteSame {
-		t.Fatalf("status = %q, want %q —— 远端上没并进来的分支不是「本地落后」", res.Status, RemoteSame)
+		t.Fatalf("status = %q, want %q — a branch on the remote that was never merged is not \"the local checkout is behind\"", res.Status, RemoteSame)
 	}
 }
 
@@ -129,10 +129,10 @@ func TestCheckRemoteCannotTellWhenRemoteIsUnreachable(t *testing.T) {
 
 	res := CheckRemote(local)
 	if res.Status != RemoteUnknown {
-		t.Fatalf("status = %q, want %q —— 读不出来不等于没变化", res.Status, RemoteUnknown)
+		t.Fatalf("status = %q, want %q — cannot tell is not the same as no change", res.Status, RemoteUnknown)
 	}
 	if res.Detail == "" {
-		t.Fatal("判不出来也得说清楚为什么")
+		t.Fatal("cannot tell must still say why")
 	}
 }
 
@@ -146,7 +146,7 @@ func TestCheckRemoteCannotTellWhenRemoteBranchIsGone(t *testing.T) {
 
 	res := CheckRemote(local)
 	if res.Status != RemoteUnknown {
-		t.Fatalf("status = %q, want %q —— 远端上没这条分支了，判不出本地跟它是什么关系", res.Status, RemoteUnknown)
+		t.Fatalf("status = %q, want %q — the branch is gone from the remote, so how the local checkout relates to it cannot be told", res.Status, RemoteUnknown)
 	}
 }
 
@@ -157,7 +157,7 @@ func TestCheckRemoteCannotTellWhenLocalBranchHasNoUpstream(t *testing.T) {
 
 	res := CheckRemote(local)
 	if res.Status != RemoteUnknown {
-		t.Fatalf("status = %q, want %q —— 没有上游就没有可比的对象", res.Status, RemoteUnknown)
+		t.Fatalf("status = %q, want %q — without an upstream there is nothing to compare against", res.Status, RemoteUnknown)
 	}
 }
 
@@ -177,21 +177,21 @@ func TestCheckRemoteIgnoresPullRequestRefs(t *testing.T) {
 	// 前提：远端确实有这个 PR ref，而本地没有那个对象。
 	raw, err := gitOutput(local, "ls-remote", "origin")
 	if err != nil {
-		t.Fatalf("ls-remote 失败: %v", err)
+		t.Fatalf("ls-remote failed: %v", err)
 	}
 	if !strings.Contains(raw, "refs/pull/1/head") {
-		t.Fatal("前提不成立：远端的 refs/pull/* 没有被列出来，这条测试测不到东西")
+		t.Fatal("premise does not hold: the remote's refs/pull/* were not listed, so this test measures nothing")
 	}
 	if hasCommit(local, newSHA) {
-		t.Fatal("前提不成立：本地有那个提交，这条测试测不到东西")
+		t.Fatal("premise does not hold: the local checkout has that commit, so this test measures nothing")
 	}
 
 	res := CheckRemote(local)
 	if res.Status != RemoteSame {
-		t.Fatalf("status = %q, want %q —— PR 的 ref 不是本地落后的证据", res.Status, RemoteSame)
+		t.Fatalf("status = %q, want %q — a PR ref is not evidence that the local checkout is behind", res.Status, RemoteSame)
 	}
 	if strings.Contains(res.Detail, "refs/pull") {
-		t.Fatalf("detail = %q, want 里面没有 refs/pull/*", res.Detail)
+		t.Fatalf("detail = %q, want no refs/pull/* in it", res.Detail)
 	}
 }
 
@@ -211,12 +211,12 @@ func TestCheckRemoteIgnoresBranchesDeletedOnTheRemote(t *testing.T) {
 
 	// 本地的 tracking ref 还在（没有 fetch --prune），远端已经没了这个分支。
 	if runGit(t, local, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feature") == "" {
-		t.Fatal("前提不成立：本地没有残留的 tracking ref，这条测试测不到东西")
+		t.Fatal("premise does not hold: there is no stale tracking ref locally, so this test measures nothing")
 	}
 
 	res := CheckRemote(local)
 	if res.Status != RemoteSame {
-		t.Fatalf("status = %q, want %q —— 远端删了分支不是「远端往前走」", res.Status, RemoteSame)
+		t.Fatalf("status = %q, want %q — a branch deleted on the remote is not \"the remote moved forward\"", res.Status, RemoteSame)
 	}
 }
 
@@ -232,6 +232,6 @@ func TestRemoteExitCodeDistinguishesUnknownFromChange(t *testing.T) {
 		t.Fatalf("exit = %d, want 1", got)
 	}
 	if got := RemoteExitCode([]RemoteResult{same, unknown}); got != 2 {
-		t.Fatalf("exit = %d, want 2 —— 判不出来必须和「有变化」分开", got)
+		t.Fatalf("exit = %d, want 2 — cannot tell must stay separate from a change", got)
 	}
 }

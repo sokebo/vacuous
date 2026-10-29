@@ -11,9 +11,13 @@
 # 改文档不改指纹；改代码、改 CI 配置、被审仓库往前走了一步，指纹就变。
 #
 # 用法：
-#   scripts/gate.sh check                     只读地判断有没有需要重跑的东西
-#   scripts/gate.sh remote                    问被审仓的远端：你往前走了吗
-#   scripts/gate.sh record -yes -target DIR    记录此刻的状态（核验完成之后）
+#   internal/dogfood/gate/gate.sh check                     只读地判断有没有需要重跑的东西
+#   internal/dogfood/gate/gate.sh remote                    问被审仓的远端：你往前走了吗
+#   internal/dogfood/gate/gate.sh record -yes -target DIR    记录此刻的状态（核验完成之后）
+#
+# 这个脚本不在 scripts/ 里，因为它不是产品的一部分：它服务的是这个项目
+# 自己的核验流水线（审哪几个仓、什么时候该重跑），跟外部用户无关。
+# 所以它跟着 Go 代码一起待在 internal/dogfood/ 里。
 #
 # 退出码（check / remote）：0 = 什么都没变；1 = 有东西变了；2 = 判不出来。
 # 「判不出来」按「有变化」处理 —— 宁可多跑一次，不要把判不出来说成没问题。
@@ -32,6 +36,6 @@ cd "$(git rev-parse --show-toplevel)"
 #
 # 二进制放在 .git/ 里：不进版本库，也不弄脏工作树。
 BIN="$(git rev-parse --absolute-git-dir)/vacuous-gate"
-GOPROXY=off go build -o "$BIN" ./internal/gate/cmd/gatecheck
+GOPROXY=off go build -o "$BIN" ./internal/dogfood/gate/cmd/gatecheck
 
 exec "$BIN" "$@"
