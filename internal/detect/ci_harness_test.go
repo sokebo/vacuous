@@ -12,9 +12,9 @@ import (
 //
 // The report used to contain both sentences at once:
 //
-//	[warn]  这个仓库的 CI 不跑任何测试
-//	        代码坏了，CI 照样是绿的
-//	[info]  这个仓有自己的验证命令，但这个工具跑不了它们
+//	[warn]  This repository's CI runs no tests at all
+//	        This repository's CI never runs a test suite — break the code and CI stays green.
+//	[info]  This repository has its own verification commands, but this tool cannot run them
 //	          npm run smoke:css → node scripts/smoke-test-css.mjs
 //
 // Two checkers, one repository, opposite conclusions - while the CI was in
@@ -55,14 +55,14 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+		if strings.Contains(f.Summary, "CI runs no tests at all") {
 			t.Fatalf("a CI that runs the repository's own check script must not be reported as unguarded: %+v", f)
 		}
 	}
 
 	var found bool
 	for _, f := range findings {
-		if !strings.Contains(f.Summary, "自己写的验证脚本") {
+		if !strings.Contains(f.Summary, "its own verification scripts") {
 			continue
 		}
 		found = true
@@ -106,7 +106,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+		if strings.Contains(f.Summary, "CI runs no tests at all") {
 			t.Fatalf("a CI that runs the repository's own check script must not be reported as unguarded: %+v", f)
 		}
 	}
@@ -150,7 +150,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+		if strings.Contains(f.Summary, "CI runs no tests at all") {
 			t.Fatalf("a CI that runs the repository's own check script must not be reported as unguarded: %+v", f)
 		}
 	}
@@ -195,7 +195,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if f.Kind != core.KindGuardNotInstalled || !strings.Contains(f.Summary, "CI 不跑测试套件") {
+		if f.Kind != core.KindGuardNotInstalled || !strings.Contains(f.Summary, "CI runs no test suite") {
 			continue
 		}
 		// The root package's "verify" is a different script. The report
@@ -206,7 +206,7 @@ jobs:
 		// the CI ran, and "CI 没跑的验证脚本文件" is what it did not.
 		// The root's file belongs to the second one - and saying so is
 		// correct, so the assertion has to be about the first.
-		claimed := evidenceSection(f.Evidence, "CI 跑到的验证脚本文件:")
+		claimed := evidenceSection(f.Evidence, "verification script files CI reached:")
 		if containsLine(claimed, "scripts/verify.mjs") {
 			t.Fatalf("the report claims the CI ran the root package's check script, which it did not: %+v", f)
 		}
@@ -248,7 +248,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+		if strings.Contains(f.Summary, "CI runs no tests at all") {
 			t.Fatalf("a CI that reaches the check script through two hops must not be reported as unguarded: %+v", f)
 		}
 	}
@@ -285,7 +285,7 @@ jobs:
 	}
 	var found bool
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+		if strings.Contains(f.Summary, "CI runs no tests at all") {
 			found = true
 		}
 	}
@@ -327,7 +327,7 @@ jobs:
 	}
 	var found bool
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+		if strings.Contains(f.Summary, "CI runs no tests at all") {
 			found = true
 		}
 	}
@@ -357,7 +357,7 @@ jobs:
 	}
 	var found bool
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+		if strings.Contains(f.Summary, "CI runs no tests at all") {
 			found = true
 		}
 	}
@@ -403,7 +403,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "测试") {
+		if strings.Contains(f.Summary, "test") {
 			t.Fatalf("a CI that runs the tests through a script chain must not be reported: %+v", f)
 		}
 	}
@@ -439,7 +439,7 @@ jobs:
 	}
 	var found bool
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+		if strings.Contains(f.Summary, "CI runs no tests at all") {
 			found = true
 		}
 	}

@@ -26,6 +26,16 @@ func runCLI(t *testing.T, args ...string) (int, string, string) {
 	return code, stdout.String(), stderr.String()
 }
 
+// flat collapses the report's line wrapping, so that an assertion about a
+// sentence is not broken by where the renderer happened to wrap it.
+//
+// The renderer breaks on spaces, so a phrase like "audited 2 commits" can
+// straddle two lines. The assertion is about the sentence the tool wrote,
+// not about the layout it chose, so the wrapping is flattened away first.
+func flat(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // TestCheckOnRepoWithCodeButNoTests proves the headline case: code without
 // tests is reported as an unprotected repository, not as a tool failure.
 func TestCheckOnRepoWithCodeButNoTests(t *testing.T) {
@@ -41,7 +51,7 @@ func TestCheckOnRepoWithCodeButNoTests(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d (findings).\nstdout: %s\nstderr: %s",
 			code, ExitFindings, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "一个测试文件都没有") {
+	if !strings.Contains(flat(stdout), "not a single test file") {
 		t.Errorf("expected the missing-tests finding in the report, got:\n%s", stdout)
 	}
 	if stderr != "" {
@@ -63,7 +73,7 @@ func TestCheckOnRepoWithNoCodeAtAll(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d (nothing above the fail threshold).\nstdout: %s",
 			code, ExitOK, stdout)
 	}
-	if !strings.Contains(stdout, "no-test-runner") && !strings.Contains(stdout, "没有可运行的测试") {
+	if !strings.Contains(stdout, "no-test-runner") && !strings.Contains(flat(stdout), "no runnable tests") {
 		t.Errorf("expected an informational note about the missing runner, got:\n%s", stdout)
 	}
 	if stderr != "" {
@@ -84,7 +94,7 @@ func TestCheckOnRepoWithTestsButNoRunner(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d (a warning is below the default threshold).\nstdout: %s",
 			code, ExitOK, stdout)
 	}
-	if !strings.Contains(stdout, "没有能跑它们的命令") {
+	if !strings.Contains(flat(stdout), "no command that can run them") {
 		t.Errorf("expected the orphan-tests warning, got:\n%s", stdout)
 	}
 }
@@ -147,7 +157,7 @@ func load() ([]string, error) { return nil, nil }
 import "testing"
 
 func TestLoad(t *testing.T) {
-	items, _ := load() // vacuous:ignore 这一行是有意的
+	items, _ := load() // vacuous:ignore this line is deliberate
 	if len(items) != 0 {
 		t.Fatal("expected none")
 	}
@@ -195,7 +205,7 @@ func TestAuditHonoursASuppressionCommentInTheAuditedCommit(t *testing.T) {
 	repo := auditFixture(t)
 	repo.Write(t, "a.go", `package auditsup
 
-// vacuous:ignore 这一行是刻意的 —— 纯重构
+// vacuous:ignore this line is deliberate — a pure refactor
 func Add(a, b int) int {
 	return a + b + 1
 }
@@ -232,7 +242,7 @@ func Add(a, b int) int {
 
 	repo.Write(t, "a.go", `package auditsup
 
-// vacuous:ignore 这一行是刻意的
+// vacuous:ignore this line is deliberate
 func Add(a, b int) int {
 	return a + b + 2
 }
@@ -254,7 +264,7 @@ func Add(a, b int) int {
 // TestASilencedFindingIsHiddenAndItsCommitIsStillCounted keeps the report
 // from contradicting itself.
 //
-// Counting a silenced finding produced "无测试 1" next to an empty list of
+// Counting a silenced finding produced "no test 1" next to an empty list of
 // findings: the statistics claimed something the report did not show, and
 // the JSON said no_test 1 with findings [] - a document a consumer cannot
 // read.
@@ -271,7 +281,7 @@ func TestASilencedFindingIsHiddenAndItsCommitIsStillCounted(t *testing.T) {
 	repo := auditFixture(t)
 	repo.Write(t, "a.go", `package auditsup
 
-// vacuous:ignore 这一行是刻意的 —— 纯重构
+// vacuous:ignore this line is deliberate — a pure refactor
 func Add(a, b int) int {
 	return a + b + 1
 }
@@ -296,7 +306,7 @@ func Add(a, b int) int {
 // TestASilencedCommitIsStillCountedInTheScope is the regression guard for
 // the commit that vanished.
 //
-// The scope line - "审了 N 个提交" - is the one number that tells a reader
+// The scope line - "audited N commits" - is the one number that tells a reader
 // how much was examined. A commit whose finding was silenced was examined
 // all the same; dropping it from that count made the line describe a
 // smaller run than the one that happened, and the difference was invisible:
@@ -316,7 +326,7 @@ func Add(a, b int) int {
 
 	repo.Write(t, "a.go", `package auditsup
 
-// vacuous:ignore 这一行是刻意的 —— 纯重构
+// vacuous:ignore this line is deliberate — a pure refactor
 func Add(a, b int) int {
 	return a + b + 2
 }
@@ -327,10 +337,10 @@ func Add(a, b int) int {
 	if stderr != "" {
 		t.Fatalf("unexpected stderr: %s", stderr)
 	}
-	if !strings.Contains(stdout, "审了 2 个提交") {
+	if !strings.Contains(flat(stdout), "audited 2 commits") {
 		t.Errorf("both commits were examined, silenced or not:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "豁免: 1") {
+	if !strings.Contains(flat(stdout), "Silenced: 1") {
 		t.Errorf("the silence needs its own line, or the tally cannot be read:\n%s", stdout)
 	}
 }
@@ -386,10 +396,10 @@ func TestAuditOnARepoWithNoTestsSaysSo(t *testing.T) {
 	// because their runner is missing stops looking at the ones that are
 	// covered. So the check is for the sentence that calls this
 	// repository a unittest project, not for the word.
-	if strings.Contains(stderr, "这个仓的 Python 测试用的是 python -m unittest") {
+	if strings.Contains(flat(stderr), "This repository's Python tests use python -m unittest") {
 		t.Errorf("a repo with no tests must not be described as a unittest project, got: %s", stderr)
 	}
-	if !strings.Contains(stderr, "no supported test runner") {
+	if !strings.Contains(flat(stderr), "no supported test runner") {
 		t.Errorf("expected the plain no-runner message, got: %s", stderr)
 	}
 }

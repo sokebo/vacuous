@@ -106,7 +106,7 @@ func TestSuppressorTreatsProseAsSilenceAll(t *testing.T) {
 	dir := t.TempDir()
 	writeSource(t, dir, "a.go", `package a
 
-func A() {} // vacuous:ignore 因为这是纯重构
+func A() {} // vacuous:ignore because this is a pure refactor
 `)
 
 	s := newSuppressor(dir)
@@ -157,7 +157,7 @@ func TestSuppressorSilencesAFindingThatNamesOnlyAFile(t *testing.T) {
 	dir := t.TempDir()
 	writeSource(t, dir, "a.go", `package a
 
-// vacuous:ignore 这是刻意的重构
+// vacuous:ignore this is a deliberate refactor
 func A() {}
 `)
 
@@ -196,7 +196,7 @@ func TestSuppressorKeepsLineFindingsPrecise(t *testing.T) {
 	dir := t.TempDir()
 	writeSource(t, dir, "a.go", `package a
 
-// vacuous:ignore 这一条是有意的
+// vacuous:ignore this one is deliberate
 
 func A() {}
 `)
@@ -246,7 +246,7 @@ func TestSuppressorReadsTheSourceAtTheAuditedRevision(t *testing.T) {
 	repo.Init(t)
 	first := repo.Head(t)
 
-	repo.Write(t, "a.go", "package rev\n\n// vacuous:ignore 这是刻意的\nfunc A() int { return 2 }\n")
+	repo.Write(t, "a.go", "package rev\n\n// vacuous:ignore this is deliberate\nfunc A() int { return 2 }\n")
 	second := repo.Commit(t, "second")
 
 	opened, err := git.Open(repo.Dir)

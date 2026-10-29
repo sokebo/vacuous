@@ -75,7 +75,7 @@ func TestTheOtherShapeCoverageStatementNamesEveryClaimedRunner(t *testing.T) {
 	}
 	var other core.Finding
 	for _, f := range findings {
-		if f.Kind == core.KindUnsupportedTests && strings.Contains(f.Detail, "其它形态") {
+		if f.Kind == core.KindUnsupportedTests && strings.Contains(f.Detail, "other shapes") {
 			other = f
 		}
 	}

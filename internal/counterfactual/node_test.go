@@ -236,7 +236,7 @@ test('never runs', () => {
 		}
 		// The command itself says "jest", so the line that matters is
 		// the one that names the project's own test command.
-		if !strings.Contains(f.Evidence, "项目自己的测试命令: jest") {
+		if !strings.Contains(f.Evidence, "the project's own test command: jest") {
 			t.Errorf("the evidence does not show the project's own test command: %q", f.Evidence)
 		}
 	}

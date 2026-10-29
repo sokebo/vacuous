@@ -119,30 +119,34 @@ func skipFinding(repo gitRepo, repoRoot, rel string, sk goSkip, scope goScope,
 		}
 		ignored, _ := repo.ignored(repoRelative)
 		detail := fmt.Sprintf(
-			"%s:%d 的跳过条件依赖 %q，这个文件不在仓库里%s。\n"+
-				"在开发者机器上它可能存在，于是测试跑起来并通过；"+
-				"在 CI、干净 clone、别人的机器上它不存在，于是测试被跳过。\n"+
-				"两种环境两种结果，而且没有任何症状。",
+			"The skip condition at %s:%d depends on %q, and that file is not in the repository%s.\n"+
+				"On a developer's machine it may be there, so the test runs and passes; "+
+				"in CI, in a clean clone, or on someone else's machine it is not there, so the "+
+				"test is skipped.\n"+
+				"Two environments, two outcomes, and no symptom anywhere.",
 			rel, sk.line, repoRelative, ignoredSuffix(ignored))
 		evidence := status
 		if evidence == "" {
 			evidence = repoRelative
 		}
 		return finding(core.KindSkippedTest, core.SevHigh, rel, sk.line,
-			"测试的跳过条件依赖一个没入库的文件 —— 在 CI 和干净 clone 里它永远不会跑",
+			"The test's skip condition depends on a file that was never committed — "+
+				"it never runs in CI or in a clean clone",
 			detail, evidence,
-			"把测试语料入库（进版本库），或者让语料缺失时直接失败而不是跳过")
+			"Commit the test corpus (put it under version control), or make the test fail "+
+				"outright when the corpus is missing instead of skipping")
 	}
 
 	// A skip we cannot pin to an uncommitted file. Reported, but mildly:
 	// plenty of skips are legitimate.
 	return finding(core.KindSkippedTest, core.SevWarn, rel, sk.line,
-		"测试里有跳过语句",
+		"This test contains a skip",
 		fmt.Sprintf(
-			"%s:%d 有一条跳过语句。被跳过的测试没有证明任何事 —— "+
-				"覆盖率会把它算进去，但它一次都没跑过。", rel, sk.line),
+			"%s:%d contains a skip statement. A skipped test proves nothing — "+
+				"coverage counts it, but it has never run even once.", rel, sk.line),
 		sourceLine(lines, sk.line),
-		"确认这条跳过在 CI 里不会触发；如果它依赖某个本地才有的文件，把它入库")
+		"Confirm that this skip will not fire in CI; if it depends on a file that only "+
+			"exists locally, commit that file")
 }
 
 // readBelongsToSkip reports whether a file read is one of the reasons the
@@ -193,7 +197,7 @@ func containsName(names []string, name string) bool {
 // ignoredSuffix describes whether a path is gitignored.
 func ignoredSuffix(ignored bool) string {
 	if ignored {
-		return "（而且它被 .gitignore 明确忽略了）"
+		return " (and it is explicitly ignored by .gitignore)"
 	}
 	return ""
 }
@@ -276,12 +280,13 @@ func textSkipped(root, repoRoot, rel string, opts Options) []core.Finding {
 		}
 		_ = name
 		out = append(out, finding(core.KindSkippedTest, core.SevWarn, rel, i+1,
-			"测试里有跳过语句",
+			"This test contains a skip",
 			fmt.Sprintf(
-				"%s:%d 有一条跳过语句。被跳过的测试没有证明任何事 —— "+
-					"覆盖率会把它算进去，但它一次都没跑过。", rel, i+1),
+				"%s:%d contains a skip statement. A skipped test proves nothing — "+
+					"coverage counts it, but it has never run even once.", rel, i+1),
 			strings.TrimSpace(line),
-			"确认这条跳过在 CI 里不会触发；如果它依赖某个本地才有的文件，把它入库"))
+			"Confirm that this skip will not fire in CI; if it depends on a file that only "+
+				"exists locally, commit that file"))
 	}
 	return out
 }

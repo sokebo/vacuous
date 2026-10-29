@@ -1,0 +1,71 @@
+name: False positive / gate blocked a good change
+description: The gate fired on something that is not a problem
+title: "[false positive] "
+labels: ["false positive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The gate firing on something that is fine is the expensive kind of
+        report: the reader's next action is to go and change code that was
+        never broken, or to disable the check for good.
+
+        Please fill this in as precisely as you can.
+
+  - type: textarea
+    id: what-it-said
+    attributes:
+      label: What the tool said
+      description: The finding, verbatim, including the Evidence and Repro sections.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-wrong
+    attributes:
+      label: Why it is wrong
+      description: What is actually true about the code or the commit.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: |
+        The commit, the command, and the scope that was run.
+      placeholder: |
+        repo: <url or path>
+        commit: <sha>
+        command: vacuous --mode audit --commit <sha> --limit 20
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Which finding kind
+      description: The Kind column of the report.
+      options:
+        - vacuous-test
+        - no-test-for-fix
+        - skipped-test
+        - discards-error
+        - guard-not-installed
+        - guard-not-portable
+        - coupled
+        - environment
+        - suite-crash
+        - pre-existing-failure
+        - contradictory
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: |
+        Whether the fix is a one-liner or a large change, whether the suite was
+        already red, and whether you found a way to make the tool quiet.

@@ -160,11 +160,11 @@ func TestShortText(t *testing.T) {
 	if detail == "" {
 		t.Fatalf("the finding on line 6 is missing: %+v", findings)
 	}
-	if !strings.Contains(detail, "2 个字节") {
+	if !strings.Contains(detail, "2 bytes") {
 		t.Errorf("the report must name the length the error path leaves "+
-			"(%q), got: %s", "2 个字节", detail)
+			"(%q), got: %s", "2 bytes", detail)
 	}
-	if strings.Contains(detail, "是空的") {
+	if strings.Contains(detail, "is empty") {
 		t.Errorf("the report must not call a two-byte string empty, got: %s", detail)
 	}
 }

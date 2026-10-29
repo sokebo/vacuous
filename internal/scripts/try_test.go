@@ -144,18 +144,18 @@ func TestTryScriptTallyMatchesTheReport(t *testing.T) {
 	out, _ := runTry(t, tryScript(t), stub, target.Dir)
 
 	// 12 commits were audited: 3 + 0 + 2 + 5 + 2.
-	if !strings.Contains(out, "审到提交 : 12") {
+	if !strings.Contains(out, "Commits reached   : 12") {
 		t.Errorf("the script must count every commit the report covers:\n%s", out)
 	}
 	// 5 of them have a conclusion: 3 guarded + 2 with no test at all.
-	if !strings.Contains(out, "有结论   : 5") {
+	if !strings.Contains(out, "Real conclusions  : 5") {
 		t.Errorf("a commit whose fix has no test at all is still a conclusion:\n%s", out)
 	}
-	if !strings.Contains(out, "2 条「没有测试看着」") {
+	if !strings.Contains(out, "2 unwatched") {
 		t.Errorf("the script must not report \"no test watching\" as zero while the report says otherwise:\n%s", out)
 	}
 	// 5 could not be judged, so the run is not a clean all-clear.
-	if !strings.Contains(out, "△ 有 5 条结论，5 条判不了") {
+	if !strings.Contains(out, "△ 5 conclusions, 5 undecidable.") {
 		t.Errorf("a run with undecidable commits must not read as a clean bill of health:\n%s", out)
 	}
 }
@@ -178,7 +178,7 @@ func TestTryScriptVerdictPerSummary(t *testing.T) {
 			report: &core.Report{
 				Proven: 4,
 			},
-			want:    []string{"✓ 有 4 条真结论。这次的数字可以用。"},
+			want:    []string{"✓ 4 real conclusions. The numbers in this run are usable."},
 			notWant: []string{"△", "✗", "⚠"},
 		},
 		{
@@ -188,15 +188,15 @@ func TestTryScriptVerdictPerSummary(t *testing.T) {
 				NoTest:       1,
 				Inconclusive: 2,
 			},
-			want:    []string{"△ 有 3 条结论，2 条判不了"},
-			notWant: []string{"✓ 有 3 条真结论"},
+			want:    []string{"△ 3 conclusions, 2 undecidable."},
+			notWant: []string{"✓ 3 real conclusions"},
 		},
 		{
 			name: "nothing concluded at all",
 			report: &core.Report{
 				Inconclusive: 3,
 			},
-			want:    []string{"✗ 值得审的 3 条里一条结论都没有（3 条判不了）"},
+			want:    []string{"✗ Not one conclusion out of 3 worth auditing (3 undecidable)."},
 			notWant: []string{"✓", "△"},
 		},
 		{
@@ -204,7 +204,7 @@ func TestTryScriptVerdictPerSummary(t *testing.T) {
 			report: &core.Report{
 				NotApplicable: 7,
 			},
-			want:    []string{"✗ 这个窗口里没有值得审的提交"},
+			want:    []string{"✗ Nothing worth auditing in this window"},
 			notWant: []string{"✓", "△", "⚠"},
 		},
 		{
@@ -212,7 +212,7 @@ func TestTryScriptVerdictPerSummary(t *testing.T) {
 			report: &core.Report{
 				AuditFailed: 2,
 			},
-			want:    []string{"⚠ 报告里有 2 个洞", "✗ 一个提交都没审成"},
+			want:    []string{"⚠ The report has 2 holes", "✗ Not a single commit could be audited"},
 			notWant: []string{"✓"},
 		},
 	}

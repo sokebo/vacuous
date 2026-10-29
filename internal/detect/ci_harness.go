@@ -22,11 +22,12 @@ import (
 // the output is broken. The CI does guard the repository - just not with a
 // test suite.
 //
-// Before this file existed, the tool reported that repository as "这个仓库的
-// CI 不跑任何测试", with the detail "代码坏了，CI 照样是绿的". Both
-// sentences were false, and they were false in the same report that listed
-// the very script the CI runs (as "这个仓有自己的验证命令，但这个工具跑不了
-// 它们"). One report, two checkers, two opposite conclusions.
+// Before this file existed, the tool reported that repository as a repository
+// whose CI runs no tests at all, with the detail that the code could be
+// broken while CI stayed green. Both sentences were false, and they were
+// false in the same report that listed the very script the CI runs (as a
+// repository that has its own verification commands, which this tool cannot
+// run). One report, two checkers, two opposite conclusions.
 //
 // So the tool now resolves what the CI actually does, and says that.
 
@@ -364,10 +365,10 @@ func notRunByCISection(notRun []HarnessCommand) (detail, evidence string) {
 		lines = append(lines, "  "+h.Label()+" → "+h.Command)
 		files = append(files, h.Files...)
 	}
-	detail = "仓里还声明了这些验证命令，CI 一个都没跑：\n" + strings.Join(lines, "\n") +
-		"\nCI 不跑它们 —— 它们盯着的东西坏掉时，CI 不会变红。"
-	evidence = "\nCI 没跑的验证命令:\n" + strings.Join(lines, "\n") +
-		"\nCI 没跑的验证脚本文件:"
+	detail = "The repository also declares these verification commands, and CI runs none of them:\n" + strings.Join(lines, "\n") +
+		"\nCI does not run them — when the thing they watch breaks, CI will not turn red."
+	evidence = "\nverification commands CI does not run:\n" + strings.Join(lines, "\n") +
+		"\nverification script files CI does not run:"
 	for _, f := range dedupe(files) {
 		evidence += "\n  " + f
 	}

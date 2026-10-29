@@ -261,7 +261,7 @@ func readLeftValue(e ast.Expr, verdict emptinessVerdict) errorPathLeaves {
 		case isNilIdent(e):
 			return errorPathLeaves{known: true, empty: true, text: "nil"}
 		case isAddressOf(e):
-			return errorPathLeaves{known: true, empty: false, text: "不是 nil 的值"}
+			return errorPathLeaves{known: true, empty: false, text: "a non-nil value"}
 		}
 		return errorPathLeaves{}
 	}
@@ -388,7 +388,7 @@ func errorPathLength(e ast.Expr) (int, string, bool) {
 	switch x := e.(type) {
 	case *ast.CompositeLit:
 		n := len(x.Elts)
-		return n, fmt.Sprintf("%d 个元素", n), true
+		return n, fmt.Sprintf("%d elements", n), true
 	case *ast.BasicLit:
 		if x.Kind != token.STRING {
 			return 0, "", false
@@ -399,7 +399,7 @@ func errorPathLength(e ast.Expr) (int, string, bool) {
 		}
 		// Go's len counts bytes, and so does this.
 		n := len(s)
-		return n, fmt.Sprintf("%d 个字节", n), true
+		return n, fmt.Sprintf("%d bytes", n), true
 	case *ast.Ident:
 		if x.Name == "nil" {
 			// A nil slice or map has no elements.

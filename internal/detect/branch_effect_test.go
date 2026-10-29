@@ -41,8 +41,8 @@ func TestEveryWayOfStoppingTheCodeIsSeen(t *testing.T) {
 		{
 			name:    "a panic in ordinary code stops the program",
 			file:    "seed.go",
-			want:    "检查被跳过",
-			notWant: "断言",
+			want:    "is skipped",
+			notWant: "assertion",
 			src: `package demo
 
 type store struct{ items int }
@@ -60,8 +60,8 @@ func Seed(st *store) {
 		{
 			name:    "a log.Fatal in ordinary code stops the program",
 			file:    "seed.go",
-			want:    "检查被跳过",
-			notWant: "断言",
+			want:    "is skipped",
+			notWant: "assertion",
 			src: `package demo
 
 import "log"
@@ -81,8 +81,8 @@ func Seed(st *store) {
 		{
 			name:    "an os.Exit in ordinary code stops the program",
 			file:    "seed.go",
-			want:    "检查被跳过",
-			notWant: "断言",
+			want:    "is skipped",
+			notWant: "assertion",
 			src: `package demo
 
 import "os"
@@ -102,7 +102,7 @@ func Seed(st *store) {
 		{
 			name: "a panic in a test file fails the test",
 			file: "seed_test.go",
-			want: "断言却要求",
+			want: "the assertion demands",
 			src: `package demo
 
 import "testing"
@@ -123,7 +123,7 @@ func TestSeed(t *testing.T) {
 		{
 			name: "a t.Fatal in a test file fails the test",
 			file: "seed_test.go",
-			want: "断言却要求",
+			want: "the assertion demands",
 			src: `package demo
 
 import "testing"
@@ -144,7 +144,7 @@ func TestSeed(t *testing.T) {
 		{
 			name: "a require.Equal in a test file fails the test",
 			file: "seed_test.go",
-			want: "断言却要求",
+			want: "the assertion demands",
 			src: `package demo
 
 import (
@@ -169,7 +169,7 @@ func TestSeed(t *testing.T) {
 		{
 			name: "an assert.Equal in a test file fails the test",
 			file: "seed_test.go",
-			want: "断言却要求",
+			want: "the assertion demands",
 			src: `package demo
 
 import (

@@ -591,8 +591,8 @@ func Greet(name string) string {
 // "the code does not compile", which is false: `go build` succeeds on this
 // tree. The reader was sent after type errors that are not there.
 //
-// The shape is taken from a real commit (alpha e2d22b7, "fix(bench): 修 vet
-// 报错（冗余换行）").
+// The shape is taken from a real commit (a "fix(bench): fix the vet error"
+// commit in one of the repositories this tool was dogfooded against).
 func VetRejectedFixture(t *testing.T) *GoModule {
 	t.Helper()
 	m := NewGoModule(t, "example.com/vet")
@@ -618,7 +618,7 @@ func main() {
 	fmt.Println("bench")
 }
 `)
-	m.Commit(t, "fix(bench): 修 vet 报错（冗余换行）")
+	m.Commit(t, "fix(bench): fix the vet error (redundant line break)")
 	return m
 }
 

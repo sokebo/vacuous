@@ -160,8 +160,8 @@ func parse(args []string, stderr io.Writer) (*Options, error) {
 	fs := flag.NewFlagSet("vacuous", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "vacuous %s —— 找出那些「撤掉修复也照样绿」的测试\n\n", Version)
-		fmt.Fprintf(stderr, "用法: vacuous [flags] [目录]\n\n")
+		fmt.Fprintf(stderr, "vacuous %s — find the tests that stay green even after the fix is reverted\n\n", Version)
+		fmt.Fprintf(stderr, "Usage: vacuous [flags] [directory]\n\n")
 		fs.PrintDefaults()
 	}
 	fs.StringVar(&opts.Mode, "mode", opts.Mode, "analysis mode: audit | check | all")
@@ -314,9 +314,10 @@ func execute(ctx context.Context, opts *Options) (*core.Report, error) {
 // noRunnerMessage builds the sentence the tool says when it cannot drive
 // a repository's tests.
 //
-// Two situations, two sentences. "这个仓的测试是 unittest，但这次没找到能
-// 驱动它们的运行器" and "这个仓压根没有测试" lead the reader to opposite
-// next steps, and the first one is easy to miss.
+// Two situations, two sentences. "This repository's Python tests use
+// python -m unittest, but this time no runner was found that can drive
+// them" and "this repository has no tests at all" lead the reader to
+// opposite next steps, and the first one is easy to miss.
 //
 // The list of runners the tool CAN drive comes from the one place that
 // holds it (adapters.SupportedRunners). This message used to spell the
@@ -331,10 +332,10 @@ func noRunnerMessage(root string, scope core.FileScope) string {
 	suites := adapters.UnittestSuites(root, scope)
 	if len(suites) > 0 {
 		return fmt.Sprintf(
-			"这个仓的 Python 测试用的是 python -m unittest（%s），"+
-				"但这次没有找到能驱动它们的运行器"+
-				"（这个工具能驱动的是 %s）；"+
-				"先用 --mode check 看静态体检的结果",
+			"This repository's Python tests use python -m unittest (%s), "+
+				"but this time no runner that could drive them was found "+
+				"(the runners this tool can drive are: %s); "+
+				"run --mode check first to see the static analysis",
 			strings.Join(suites, ", "),
 			adapters.SupportedRunnersText(" / "))
 	}
@@ -401,7 +402,7 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 		if res == nil {
 			// One bad commit must not sink the whole run. Record it and
 			// keep going; the report will show it was not judged.
-			detail := "这个提交没有产生结果"
+			detail := "This commit produced no result"
 			if auditErr != nil {
 				if one := counterfactual.FailureFor(auditErr, sha); one != nil {
 					detail = one.Error()
@@ -417,7 +418,7 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 			rep.Add(core.Finding{
 				Kind:     core.KindAuditFailed,
 				Severity: core.SevHigh,
-				Summary:  "这个提交没能审成 —— 报告里有一个洞",
+				Summary:  "This commit could not be audited — there is a hole in the report",
 				Detail:   detail,
 			})
 			continue

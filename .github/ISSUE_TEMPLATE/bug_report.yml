@@ -1,0 +1,87 @@
+name: Bug report
+description: The tool reported something wrong, or it said something it should not have said
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug in `vacuous`.
+
+        The most useful reports come with a **negative control**: a fixture, a
+        repository and a commit, where the tool produces the wrong answer.
+        That is what lets the fix be proven.
+
+  - type: textarea
+    id: what-it-said
+    attributes:
+      label: What the tool said
+      description: The whole report, verbatim — not a summary.
+      placeholder: |
+        vacuous — found 2 problems (critical 0 · high 1 · ...)
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-is-true
+    attributes:
+      label: What the truth is
+      description: And how you verified it by a means *outside* the tool.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: |
+        A repository and a commit, or a minimal fixture. If you can show that
+        breaking the logic under test makes a test go red, say so.
+      placeholder: |
+        repo: <url or path>
+        commit: <sha>
+        command: vacuous --mode audit --commit <sha>
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: "vacuous version or commit sha"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: language
+    attributes:
+      label: Language of the audited repository
+      options:
+        - Go
+        - Python
+        - Node
+        - Other
+        - Not applicable
+    validations:
+      required: false
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - audit
+        - check
+        - all
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: |
+        Platform, Go version, the project's own test command, whether the
+        suite was already red, and whether the finding looks like a false
+        positive.

@@ -1,0 +1,17 @@
+name: Config
+description: Blank issues are not accepted — pick a template
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please pick one of the templates above.
+
+        If you are reporting something the tool got wrong, the **bug report**
+        template is the one that gets fixed fastest: it asks for a negative
+        control, which is what proves the fix works.
+
+        If the gate fired on something that is fine, use the **false positive**
+        template instead — that is a different kind of problem and it has a
+        different fix.
+title: "[config] "
+labels: ["question"]

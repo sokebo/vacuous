@@ -403,7 +403,7 @@ func TestParallelAuditRecordsATimeoutWithoutDraggingTheRound(t *testing.T) {
 	}
 	var explained bool
 	for _, f := range slow.Findings {
-		if strings.Contains(f.Summary, "超时") {
+		if strings.Contains(f.Summary, "timed out") {
 			explained = true
 		}
 	}

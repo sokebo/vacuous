@@ -35,10 +35,10 @@ var unsupportedTestPatterns = []struct {
 	// kind names the test flavour, for the report.
 	kind string
 }{
-	{".bats", "shell 测试（bats）"},
-	{".feature", "BDD 场景（gherkin）"},
-	{".t", "Perl 测试"},
-	{".tcl", "Tcl 测试"},
+	{".bats", "shell tests (bats)"},
+	{".feature", "BDD scenarios (gherkin)"},
+	{".t", "Perl tests"},
+	{".tcl", "Tcl tests"},
 }
 
 // makefileTestTargets are the Makefile targets that run a test suite.
@@ -92,29 +92,30 @@ func UnsupportedTests(root string, files []string) []core.Finding {
 		out = append(out, core.Finding{
 			Kind:     core.KindUnsupportedTests,
 			Severity: core.SevInfo,
-			Summary:  "这个仓有一部分测试是 shell 脚本 —— 我跑不了它们，所以没审",
+			Summary:  "Part of this repository's tests are shell scripts — I cannot run them, so I did not audit them",
 			Detail: strings.Join([]string{
-				"找到 " + itoa(len(shell)) + " 个 shell 驱动的测试文件。",
-				"这个工具目前只会跑 " + adapters.SupportedRunnersText("、") + " 的测试；",
-				"这一部分不在它的能力范围内，所以报告里没有它们的结论。",
-				"这不是说它们有问题 —— 是说这份报告没有覆盖到它们。",
+				"Found " + itoa(len(shell)) + " shell-driven test files.",
+				"This tool currently only runs the tests of " + adapters.SupportedRunnersText(", ") + ";",
+				"this part is outside what it can do, so the report has no conclusions about them.",
+				"This is not saying they are broken — it is saying this report does not cover them.",
 			}, "\n"),
 			File:     shell[0],
 			Evidence: strings.Join(shell, "\n"),
-			Hint: "想让它们也进这份报告，需要给工具加一个 shell 适配器 —— " +
-				"但先确认它们在检出里能独立跑起来：不少 e2e 需要跑着的服务、" +
-				"数据库和凭据，那种是工具这种形态跑不了的",
+			Hint: "To bring them into this report, the tool needs a shell adapter — " +
+				"but check first that they can run on their own in a fresh checkout: many e2e " +
+				"suites need a running service, a database and credentials, and a tool of this " +
+				"shape cannot run those",
 		})
 	}
 	if len(other) > 0 {
 		out = append(out, core.Finding{
 			Kind:     core.KindUnsupportedTests,
 			Severity: core.SevInfo,
-			Summary:  "这个仓有一部分测试不是 Go/Python/Node 的 —— 我没审它们",
+			Summary:  "Part of this repository's tests are not Go/Python/Node — I did not audit them",
 			Detail: strings.Join([]string{
-				"找到 " + itoa(len(other)) + " 个其它形态的测试文件。",
-				"这个工具目前只会跑 " + adapters.SupportedRunnersText("、") + " 的测试。",
-				"这一部分不在它的能力范围内，所以报告里没有它们的结论。",
+				"Found " + itoa(len(other)) + " test files of other shapes.",
+				"This tool currently only runs the tests of " + adapters.SupportedRunnersText(", ") + ".",
+				"This part is outside what it can do, so the report has no conclusions about them.",
 			}, "\n"),
 			File:     other[0],
 			Evidence: strings.Join(other, "\n"),

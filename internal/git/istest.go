@@ -13,7 +13,7 @@ import "strings"
 // Nothing here decides anything. The path that decides is
 // internal/counterfactual/audit.go: it asks the adapter's IsTestPath and
 // IsSourcePath, and the adapters ask adapters.IsTestDataPath. A note in
-// docs/DOGFOOD.md once pointed the other way - at this file - and sent the
+// docs/dogfood/ once pointed the other way - at this file - and sent the
 // next round of work to a function no verdict has ever come from. The
 // heuristic stays because core.FileChange.IsTest is part of the frozen data
 // model, but it is not the judge.

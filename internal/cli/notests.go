@@ -53,19 +53,19 @@ func noTestsAtAll(root string, files []string, scope core.FileScope) (core.Findi
 func noTestForFixFinding(src int, noRunner bool) core.Finding {
 	missingRunner := ""
 	if noRunner {
-		missingRunner = "，也没有能跑测试的命令"
+		missingRunner = ", and no command that can run tests either"
 	}
 	return core.Finding{
 		Kind:     core.KindNoTestForFix,
 		Severity: core.SevHigh,
-		Summary:  "这个仓库有代码，但一个测试文件都没有",
+		Summary:  "This repository has code, but not a single test file",
 		Detail: fmt.Sprintf(
-			"仓库里有 %d 个源文件，但没有找到任何测试文件%s。\n"+
-				"这意味着这里的每一次行为修改都没有对应的断言 —— "+
-				"改错了，没有任何东西会变红。",
+			"The repository has %d source files, but no test file was found%s.\n"+
+				"That means every behaviour change here has no assertion behind it — "+
+				"break something and nothing turns red.",
 			src, missingRunner),
-		Evidence: "检查过的源文件数: " + strconv.Itoa(src) + " · 找到的测试文件数: 0",
-		Hint: "先给最关键的那条路径补一个测试。" +
-			"不需要全套 —— 一个能在改坏时变红的测试就够了",
+		Evidence: "source files checked: " + strconv.Itoa(src) + " · test files found: 0",
+		Hint: "Write one test for the most critical path first. " +
+			"It does not need to be a whole suite — one test that turns red when the code is broken is enough",
 	}
 }

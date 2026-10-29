@@ -19,7 +19,7 @@ import (
 )
 
 // Layout constants. Everything drawn here is ASCII (rules, brackets) or
-// plain CJK text, because a report that lands in a Windows CI log must not
+// plain text, because a report that lands in a Windows CI log must not
 // turn into a box of mojibake.
 const (
 	// maxWidth is the column budget for the lines this package generates.
@@ -38,15 +38,15 @@ const (
 func severityLabel(s core.Severity) string {
 	switch s {
 	case core.SevCritical:
-		return "严重"
+		return "critical"
 	case core.SevHigh:
-		return "高危"
+		return "high"
 	case core.SevWarn:
-		return "警告"
+		return "warn"
 	case core.SevInfo:
-		return "提示"
+		return "info"
 	}
-	return "未知"
+	return "unknown"
 }
 
 // severityTag is the fixed-width marker printed on every finding. The

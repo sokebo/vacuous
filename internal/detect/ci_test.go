@@ -55,7 +55,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "测试") {
+		if strings.Contains(f.Summary, "test") {
 			t.Fatalf("a repository whose CI does run its tests must not be reported: %+v", f)
 		}
 	}
@@ -90,7 +90,7 @@ jobs:
 	}
 	var found bool
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+		if strings.Contains(f.Summary, "CI runs no tests at all") {
 			found = true
 			// The finding must say what the repository DOES have, so the
 			// reader can judge the severity.
@@ -126,7 +126,7 @@ jobs:
 	}
 	var found bool
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "不会阻断合并") {
+		if strings.Contains(f.Summary, "does not block the merge") {
 			found = true
 		}
 	}
@@ -157,13 +157,13 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "不跑任何测试") {
+		if strings.Contains(f.Summary, "runs no tests at all") {
 			t.Fatalf("a reusable workflow must not be reported as 'no tests': %+v", f)
 		}
 	}
 	var sawUnknown bool
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "看不出来") {
+		if strings.Contains(f.Summary, "Cannot tell") {
 			sawUnknown = true
 			if f.Severity > core.SevInfo {
 				t.Errorf("not being able to see is information, not a defect: %+v", f)
@@ -202,7 +202,7 @@ jobs:
 	}
 	var sawNoTests bool
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "不跑任何测试") {
+		if strings.Contains(f.Summary, "runs no tests at all") {
 			sawNoTests = true
 		}
 	}

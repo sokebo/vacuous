@@ -46,29 +46,29 @@ func sampleReport() *core.Report {
 	r.Add(core.Finding{
 		Kind:     core.KindVacuousTest,
 		Severity: core.SevHigh,
-		Summary:  "这个测试在撤掉修复后依然是绿的 —— 它没有测到修复修的那个行为",
-		Detail:   "断言只覆盖了输入构造，没有覆盖分隔符边界的合并行为。",
+		Summary:  "This test stays green after the fix is reverted — it does not cover the behaviour the fix changed",
+		Detail:   "The assertion only covers building the input; it does not cover the merge behaviour at the separator boundary.",
 		File:     "internal/link/engine_test.go",
 		Line:     136,
-		Evidence: "TestAnalyzeDoesNotFuseAcrossSeparators 通过 (0.02s)",
-		Hint:     "断言要落在可观察行为上，不要断言实现细节",
+		Evidence: "TestAnalyzeDoesNotFuseAcrossSeparators PASS (0.02s)",
+		Hint:     "Assert on observable behaviour, not on implementation details",
 	})
 	r.Add(core.Finding{
 		Kind:     core.KindGuardNotInstalled,
 		Severity: core.SevCritical,
-		Summary:  ".githooks/pre-push 存在，但 core.hooksPath 没有设置 —— 守卫从未运行",
-		Hint:     "跑 scripts/install-hooks.sh",
+		Summary:  ".githooks/pre-push exists, but core.hooksPath is not set — the guard has never run",
+		Hint:     "Run scripts/install-hooks.sh",
 	})
 	r.Add(core.Finding{
 		Kind:     core.KindSkippedTest,
 		Severity: core.SevInfo,
-		Summary:  "这个测试被 t.Skip 掉了，本地不会执行",
+		Summary:  "This test is skipped with t.Skip, so it never runs locally",
 		File:     "internal/scan/scan_test.go",
 	})
 	r.Add(core.Finding{
 		Kind:     core.KindGuardNotPortable,
 		Severity: core.SevWarn,
-		Summary:  "守卫用绝对路径安装，目录一搬就失效",
+		Summary:  "The guard installs itself by absolute path — it breaks the moment the directory moves",
 		File:     ".githooks/pre-push",
 		Line:     1,
 	})
@@ -119,7 +119,7 @@ func TestRenderTextCoversEverySeverity(t *testing.T) {
 		}
 	}
 	// The headline names the two severities that block a release.
-	for _, want := range []string{"严重", "高危"} {
+	for _, want := range []string{"critical", "high"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output is missing severity label %q:\n%s", want, out)
 		}
@@ -148,7 +148,7 @@ func TestRenderTextEmptyReportIsNotEmpty(t *testing.T) {
 	// The headline must say that nothing was judged, not merely that
 	// nothing was found. Those are different, and a window of merge
 	// commits produces the first while looking like the second.
-	if !strings.Contains(out, "没有可判的提交") {
+	if !strings.Contains(out, "nothing to judge in this run") {
 		t.Errorf("clean report does not state the conclusion:\n%s", out)
 	}
 	if !strings.Contains(out, "proven 0") {
@@ -160,8 +160,50 @@ func TestRenderTextEmptyReportIsNotEmpty(t *testing.T) {
 // headline says what was actually checked.
 func TestRenderTextEmptyReportStillCountsProven(t *testing.T) {
 	out := textOf(t, &core.Report{Project: "demo", Proven: 3})
-	if !strings.Contains(out, "3 个修复都有测试守住") {
+	if !strings.Contains(out, "3 fixes are guarded by a test") {
 		t.Errorf("clean report does not say what was checked:\n%s", out)
+	}
+}
+
+// TestRenderTextCountsAreSingledWhenTheyAreOne guards the number agreement
+// in the headline.
+//
+// English inflects for number and Chinese does not, so this is a mistake
+// that only becomes visible after a translation — and it lands on the first
+// line of every report. "found 1 problems" is the kind of detail that makes
+// a tool look machine-made, and it is the kind of detail nobody fixes
+// because nobody is looking at the first line of a report they just
+// generated.
+func TestRenderTextCountsAreSingledWhenTheyAreOne(t *testing.T) {
+	out := textOf(t, &core.Report{
+		Project:       "demo",
+		Proven:        1,
+		NotApplicable: 1,
+		Findings: []core.Finding{
+			{Kind: core.KindVacuousTest, Severity: core.SevWarn, Summary: "one finding"},
+		},
+	})
+
+	for _, want := range []string{
+		"found 1 problem",
+		"audited 1 commit",
+		"1 not applicable",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the report must say %q when there is exactly one:\n%s", want, out)
+		}
+	}
+
+	// The plural forms must be there too, and the singular ones must not
+	// appear where they would be wrong.
+	for _, wrong := range []string{
+		"found 1 problems",
+		"audited 1 commits",
+		"1 fixes",
+	} {
+		if strings.Contains(out, wrong) {
+			t.Errorf("the report must not say %q:\n%s", wrong, out)
+		}
 	}
 }
 
@@ -268,10 +310,10 @@ func TestRenderTextShowsUnanchoredFinding(t *testing.T) {
 	r.Add(core.Finding{
 		Kind:     core.KindGuardNotInstalled,
 		Severity: core.SevCritical,
-		Summary:  "守卫没装上",
+		Summary:  "The guard is not installed",
 	})
 	out := textOf(t, r)
-	if !strings.Contains(out, "(仓库根)") {
+	if !strings.Contains(out, "(repository root)") {
 		t.Errorf("output does not mark the finding as unanchored:\n%s", out)
 	}
 }
@@ -281,16 +323,16 @@ func TestRenderTextShowsUnanchoredFinding(t *testing.T) {
 func TestRenderTextShowsHintAndEvidence(t *testing.T) {
 	out := textOf(t, sampleReport())
 
-	evidence := "TestAnalyzeDoesNotFuseAcrossSeparators 通过 (0.02s)"
-	if !strings.Contains(out, "证据: "+evidence) {
+	evidence := "TestAnalyzeDoesNotFuseAcrossSeparators PASS (0.02s)"
+	if !strings.Contains(out, "Evidence: "+evidence) {
 		t.Errorf("output is missing the evidence:\n%s", out)
 	}
-	hint := "断言要落在可观察行为上，不要断言实现细节"
-	if !strings.Contains(out, "怎么修: "+hint) {
+	hint := "Assert on observable behaviour, not on implementation details"
+	if !strings.Contains(out, "How to fix: "+hint) {
 		t.Errorf("output is missing the hint:\n%s", out)
 	}
-	detail := "断言只覆盖了输入构造"
-	if !strings.Contains(out, "说明: "+detail) {
+	detail := "The assertion only covers building the input"
+	if !strings.Contains(out, "Detail: "+detail) {
 		t.Errorf("output is missing the detail:\n%s", out)
 	}
 }
@@ -298,10 +340,10 @@ func TestRenderTextShowsHintAndEvidence(t *testing.T) {
 // TestRenderTextShowsTallies checks the footer.
 func TestRenderTextShowsTallies(t *testing.T) {
 	out := textOf(t, sampleReport())
-	if !strings.Contains(out, "统计: proven 2 · vacuous 1 · 无测试 0 · 无法判定 1") {
+	if !strings.Contains(out, "Summary: proven 2 · vacuous 1 · no test 0 · undecidable 1") {
 		t.Errorf("output is missing the tallies:\n%s", out)
 	}
-	if !strings.Contains(out, "按类别: ") {
+	if !strings.Contains(out, "By kind: ") {
 		t.Errorf("output is missing the per-kind counts:\n%s", out)
 	}
 	for _, want := range []string{
@@ -328,7 +370,7 @@ func TestRenderTextHasNoANSI(t *testing.T) {
 // lines the renderer generates itself. Raw evidence is exempt: it is
 // quoted output and must stay verbatim.
 func TestRenderTextKeepsLinesWithinBudget(t *testing.T) {
-	long := strings.Repeat("很长的一个句子用来把这一行撑开", 12)
+	long := strings.Repeat("a long sentence used to push this line past the budget ", 12)
 	r := &core.Report{Project: strings.Repeat("a-very-long-project-name-", 5)}
 	for _, f := range []core.Finding{
 		{Kind: core.KindVacuousTest, Severity: core.SevHigh, Summary: long, Detail: long, Hint: long,
@@ -519,7 +561,7 @@ func TestSampleOutput(t *testing.T) {
 	out := textOf(t, sampleReport())
 	t.Logf("\n%s", out)
 
-	if !strings.Contains(out, "vacuous — 发现 4 个问题") {
+	if !strings.Contains(out, "vacuous — found 4 problems") {
 		t.Errorf("unexpected headline:\n%s", out)
 	}
 }

@@ -536,12 +536,12 @@ func TestAtLeastFive(t *testing.T) {
 		t.Fatalf("the finding on line 6 is missing: %+v", findings)
 	}
 	// "少于 5" is what "n >= 5" demands of the value.
-	if !strings.Contains(got, "少于 5") {
+	if !strings.Contains(got, "less than 5") {
 		t.Errorf("the report must name what the assertion demands of the value "+
-			"(\"少于 5\" for \"n >= 5\"), got: %s", got)
+			"(\"less than 5\" for \"n >= 5\"), got: %s", got)
 	}
-	// "空的" would be a false sentence about this comparison.
-	if strings.Contains(got, "空的") {
+	// "empty" would be a false sentence about this comparison.
+	if strings.Contains(got, "empty") {
 		t.Errorf("the report must not describe \"n >= 5\" as wanting an empty "+
 			"value, got: %s", got)
 	}
@@ -990,7 +990,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if f.Summary == "CI 里的测试失败不会阻断合并" {
+		if f.Summary == "A failing test in CI does not block the merge" {
 			t.Errorf("a lint step that may fail does not excuse the test step: %+v", f)
 		}
 	}
@@ -1019,7 +1019,7 @@ jobs:
 	}
 	found := false
 	for _, f := range findings {
-		if f.Summary == "CI 里的测试失败不会阻断合并" {
+		if f.Summary == "A failing test in CI does not block the merge" {
 			found = true
 		}
 	}
