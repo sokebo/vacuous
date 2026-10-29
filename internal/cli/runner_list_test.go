@@ -69,7 +69,7 @@ func TestTheUnittestMessageNamesEveryRunnerTheToolCanDrive(t *testing.T) {
 func TestTheUnittestMessageDoesNotSayTheToolCannotDriveUnittest(t *testing.T) {
 	msg := noRunnerMessage(unittestRepo(t))
 
-	for _, lie := range []string{"只会驱动 pytest", "跑不了它们"} {
+	for _, lie := range []string{"only drives pytest", "cannot drive them"} {
 		if strings.Contains(msg, lie) {
 			t.Errorf("the message says %q, which stopped being true when the "+
 				"unittest adapter landed:\n%s", lie, msg)

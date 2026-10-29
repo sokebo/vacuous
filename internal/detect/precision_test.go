@@ -244,10 +244,10 @@ func seed(t *testing.T) {
 	if f.Severity < core.SevHigh {
 		t.Errorf("severity = %v, want high", f.Severity)
 	}
-	if !strings.Contains(f.Summary, "检查被跳过") {
+	if !strings.Contains(f.Summary, "is skipped") {
 		t.Errorf("the finding must describe the skipped guard, got: %q", f.Summary)
 	}
-	if strings.Contains(f.Detail, "断言") {
+	if strings.Contains(f.Detail, "assertion") {
 		t.Errorf("the finding must not call a guard an assertion: %q", f.Detail)
 	}
 }

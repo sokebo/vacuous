@@ -173,20 +173,23 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 					// report has to name that thing.
 					want, quoted := wantsSpelling(verdict.op, verdict.limit)
 					summary := fmt.Sprintf(
-						"错误被丢掉，断言却要求它%s —— 加载失败时这条断言照样通过",
+						"The error is thrown away, yet the assertion demands that it %s — "+
+							"the assertion still passes when the load fails",
 						want)
 					out = append(out, finding(core.KindDiscardsError, core.SevHigh,
 						rel, d.line,
 						summary,
 						fmt.Sprintf(
-							"%s:%d 把 %s 的错误丢掉了（`%s, _ := ...`）。\n"+
-								"%s，而这条断言要的正是「%s」—— "+
-								"于是断言通过，测试报告成功，实际什么都没读出来。\n"+
-								"（如果断言要求的是非空或具体数量，那反而是安全的，不算问题。）",
+							"%s:%d throws away the error from %s (`%s, _ := ...`).\n"+
+								"%s, and that is exactly what this assertion demands (\"%s\") — "+
+								"so the assertion passes, the test reports success, and nothing was "+
+								"actually read.\n"+
+								"(An assertion that demands a non-empty value or an exact count is the "+
+								"safe case — it is not a problem.)",
 							rel, d.line, d.name, d.name, emptyOnFailure(d.name), quoted),
 						sourceLine(lines, d.line),
-						"别丢掉错误：要么处理它，要么在错误时直接失败。"+
-							"读不出来的东西不能当成「没有」"))
+						"Do not throw the error away: handle it, or fail outright when it errors. "+
+							"A value you could not read cannot be treated as \"none\""))
 
 				case emptinessGuardSkipped:
 					// The last clause describes what the program carries on
@@ -197,17 +200,17 @@ func DiscardedErrorsWithOptions(root string, files []string, opts Options) ([]co
 					carried := carriedValue(verdict, errLeaves)
 					out = append(out, finding(core.KindDiscardsError, core.SevHigh,
 						rel, d.line,
-						"错误被丢掉，一个本该拦住你的检查被跳过了",
+						"The error is thrown away, and a check that was supposed to stop you is skipped",
 						fmt.Sprintf(
-							"%s:%d 把 %s 的错误丢掉了（`%s, _ := ...`）。\n"+
-								"%s，于是守着它的那段代码不会执行 —— "+
-								"那段代码本来就是为了在这种情况下中止流程的。\n"+
-								"丢掉错误之后，程序带着%s继续往下走，"+
-								"而这正是它当初要防的那种情况。",
+							"%s:%d throws away the error from %s (`%s, _ := ...`).\n"+
+								"%s, so the code that was guarding it does not run — "+
+								"and that code was there to abort the flow in exactly this case.\n"+
+								"After throwing the error away, the program carries on with %s — "+
+								"which is precisely the situation it was written to prevent.",
 							rel, d.line, d.name, d.name, emptyOnFailure(d.name), carried),
 						sourceLine(lines, d.line),
-						"别丢掉错误：要么处理它，要么在错误时直接失败。"+
-							"读不出来的东西不能当成「没有」"))
+						"Do not throw the error away: handle it, or fail outright when it errors. "+
+							"A value you could not read cannot be treated as \"none\""))
 				}
 			}
 		}
@@ -233,20 +236,20 @@ func failureSentence(name string, verdict emptinessVerdict, leaves errorPathLeav
 	case limitString:
 		switch {
 		case leaves.known && leaves.empty:
-			return fmt.Sprintf("加载失败时 %s 是空字符串", name)
+			return fmt.Sprintf("When the load fails, %s is an empty string", name)
 		case leaves.known:
-			return fmt.Sprintf("加载失败时 %s 是 %s", name, leaves.text)
+			return fmt.Sprintf("When the load fails, %s is %s", name, leaves.text)
 		default:
-			return fmt.Sprintf("加载失败时 %s 会是空字符串", name)
+			return fmt.Sprintf("When the load fails, %s will be an empty string", name)
 		}
 	case limitNilable:
 		switch {
 		case leaves.known && leaves.empty:
-			return fmt.Sprintf("加载失败时 %s 是 nil", name)
+			return fmt.Sprintf("When the load fails, %s is nil", name)
 		case leaves.known:
-			return fmt.Sprintf("加载失败时 %s %s", name, leaves.text)
+			return fmt.Sprintf("When the load fails, %s is %s", name, leaves.text)
 		default:
-			return fmt.Sprintf("加载失败时 %s 会是 nil", name)
+			return fmt.Sprintf("When the load fails, %s will be nil", name)
 		}
 	}
 	if !verdict.direct {
@@ -254,20 +257,20 @@ func failureSentence(name string, verdict emptinessVerdict, leaves errorPathLeav
 		// an empty collection is one with no elements.
 		switch {
 		case leaves.known && leaves.empty:
-			return fmt.Sprintf("加载失败时 %s 是空的（零值）", name)
+			return fmt.Sprintf("When the load fails, %s is empty (the zero value)", name)
 		case leaves.known:
-			return fmt.Sprintf("加载失败时 %s 有 %s", name, leaves.text)
+			return fmt.Sprintf("When the load fails, %s has %s", name, leaves.text)
 		default:
-			return fmt.Sprintf("加载失败时 %s 会是空的（零值）", name)
+			return fmt.Sprintf("When the load fails, %s will be empty (the zero value)", name)
 		}
 	}
 	switch {
 	case leaves.known && leaves.empty:
-		return fmt.Sprintf("加载失败时 %s 是空的（零值）", name)
+		return fmt.Sprintf("When the load fails, %s is empty (the zero value)", name)
 	case leaves.known:
-		return fmt.Sprintf("加载失败时 %s 是 %s", name, leaves.text)
+		return fmt.Sprintf("When the load fails, %s is %s", name, leaves.text)
 	default:
-		return fmt.Sprintf("加载失败时 %s 会是空的（零值）", name)
+		return fmt.Sprintf("When the load fails, %s will be empty (the zero value)", name)
 	}
 }
 
@@ -281,25 +284,25 @@ func carriedValue(verdict emptinessVerdict, leaves errorPathLeaves) string {
 	switch verdict.limit.kind {
 	case limitString:
 		if leaves.known && !leaves.empty {
-			return fmt.Sprintf("一个 %s 的结果", leaves.text)
+			return fmt.Sprintf("a %s result", leaves.text)
 		}
-		return "一个空字符串的结果"
+		return "an empty string result"
 	case limitNilable:
 		if leaves.known && !leaves.empty {
-			return fmt.Sprintf("一个%s的结果", leaves.text)
+			return "a non-nil result"
 		}
-		return "一个 nil 的结果"
+		return "a nil result"
 	}
 	if !verdict.direct {
 		if leaves.known && !leaves.empty {
-			return fmt.Sprintf("一个装着 %s 的结果", leaves.text)
+			return fmt.Sprintf("a result holding %s", leaves.text)
 		}
-		return "一个空的结果"
+		return "an empty result"
 	}
 	if leaves.known && !leaves.empty {
-		return fmt.Sprintf("一个 %s 的结果", leaves.text)
+		return fmt.Sprintf("a result of %s", leaves.text)
 	}
-	return "一个空的结果"
+	return "an empty result"
 }
 
 // packageIndexFor returns the index of the package a file belongs to.

@@ -165,7 +165,7 @@ func (n *Node) Plan(ctx context.Context, req core.PlanRequest) (core.Plan, error
 		Args:        args,
 		Dir:         req.Root,
 		Env:         []string{"CI=1", "NO_COLOR=1", "FORCE_COLOR=0"},
-		Description: fmt.Sprintf("npx %s (package.json %s 脚本: %q)", runner, name, script),
+		Description: fmt.Sprintf("npx %s (package.json %s script: %q)", runner, name, script),
 		Script:      script,
 	}
 
@@ -347,7 +347,7 @@ func (n *Node) runOnce(ctx context.Context, plan core.Plan, args []string) (core
 			msg = strings.TrimSpace(stdout.String())
 		}
 		res.SuiteErrors = append(res.SuiteErrors,
-			fmt.Sprintf("运行器没有产出可解析的报告: %v: %s", err, truncate(msg, 2000)))
+			fmt.Sprintf("the runner produced no parsable report: %v: %s", err, truncate(msg, 2000)))
 		return res, nil
 	}
 

@@ -363,7 +363,7 @@ func TestExactText(t *testing.T) {
 		t.Errorf("the report must name the string the error path leaves "+
 			"(%q), got: %s", "partial", detail)
 	}
-	if strings.Contains(detail, "空字符串") {
+	if strings.Contains(detail, "empty string") {
 		t.Errorf("the report must not call a partial string empty, got: %s", detail)
 	}
 }
@@ -407,10 +407,10 @@ func TestNoPointer(t *testing.T) {
 	if detail == "" {
 		t.Fatalf("the finding on line 6 is missing: %+v", findings)
 	}
-	if !strings.Contains(detail, "加载失败时 p 是 nil") {
+	if !strings.Contains(detail, "When the load fails, p is nil") {
 		t.Errorf("the report must say the error path leaves nil, got: %s", detail)
 	}
-	if strings.Contains(detail, "零值") {
+	if strings.Contains(detail, "zero value") {
 		t.Errorf("the report must not call a nil pointer an empty count, got: %s", detail)
 	}
 }
@@ -455,11 +455,11 @@ func TestNotTooMany(t *testing.T) {
 	if detail == "" {
 		t.Fatalf("the finding on line 6 is missing: %+v", findings)
 	}
-	if !strings.Contains(detail, "1 个元素") {
+	if !strings.Contains(detail, "1 element") {
 		t.Errorf("the report must name what the error path leaves "+
 			"(one element), got: %s", detail)
 	}
-	if strings.Contains(detail, "是空的") {
+	if strings.Contains(detail, "is empty") {
 		t.Errorf("the report must not call a collection of one element empty, "+
 			"got: %s", detail)
 	}

@@ -57,7 +57,7 @@ func TestAuditReportsAVetRejectionAsAVetRejection(t *testing.T) {
 	if !strings.Contains(f.Detail, "vet") {
 		t.Errorf("report does not name what actually stopped the run:\n%s", f.Detail)
 	}
-	if strings.Contains(f.Detail, "套件一次都跑不起来") {
+	if strings.Contains(f.Detail, "the suite cannot run even once") {
 		t.Errorf("report says the whole suite could not run - the other "+
 			"packages did:\n%s", f.Detail)
 	}

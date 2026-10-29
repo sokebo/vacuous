@@ -17,8 +17,8 @@ import (
 //
 // And the sentence it produced was an accusation inside a HIGH finding:
 //
-//	这个仓库有代码，但一个测试文件都没有
-//	仓库里有 N 个源文件，但没有找到任何测试文件，也没有能跑测试的命令。
+//	This repository has code, but not a single test file
+//	The repository has N source files, but no test files were found, and no command that can run tests either.
 //
 // The first part is true and worth saying. The second part is false, and it
 // sends the reader off to write a runner they already have.
@@ -38,11 +38,11 @@ func TestCheckOnARepoWhoseRunnerLivesInAPackageDoesNotSayThereIsNoCommand(t *tes
 
 	code, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
 
-	if !strings.Contains(stdout, "一个测试文件都没有") {
+	if !strings.Contains(flat(stdout), "not a single test file") {
 		t.Errorf("expected the missing-tests finding in the report, got:\n%s", stdout)
 	}
-	if strings.Contains(stdout, "也没有能跑测试的命令") {
-		t.Errorf("packages/core 声明了跑测试的命令 —— 工具不能说这个仓「没有能跑测试的命令」。\nstdout: %s", stdout)
+	if strings.Contains(flat(stdout), "and no command that can run tests either") {
+		t.Errorf("packages/core declares a command that runs the tests — the tool must not say this repository has no command that can run tests.\nstdout: %s", stdout)
 	}
 	if code != ExitFindings {
 		t.Errorf("exit code = %d, want %d (the repository really has no test file).\nstdout: %s\nstderr: %s",
@@ -62,11 +62,11 @@ func TestCheckOnARepoWithAMakefileTestTargetDoesNotSayThereIsNoCommand(t *testin
 
 	code, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
 
-	if !strings.Contains(stdout, "一个测试文件都没有") {
+	if !strings.Contains(flat(stdout), "not a single test file") {
 		t.Errorf("expected the missing-tests finding in the report, got:\n%s", stdout)
 	}
-	if strings.Contains(stdout, "也没有能跑测试的命令") {
-		t.Errorf("这个仓有一个 make test 目标 —— 工具不能说它「没有能跑测试的命令」。\nstdout: %s", stdout)
+	if strings.Contains(flat(stdout), "and no command that can run tests either") {
+		t.Errorf("this repository has a make test target — the tool must not say it has no command that can run tests.\nstdout: %s", stdout)
 	}
 	if code != ExitFindings {
 		t.Errorf("exit code = %d, want %d (the repository really has no test file).\nstdout: %s\nstderr: %s",
@@ -89,8 +89,8 @@ func TestCheckOnARepoWithNoTestCommandAnywhereSaysSo(t *testing.T) {
 
 	code, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
 
-	if !strings.Contains(stdout, "也没有能跑测试的命令") {
-		t.Errorf("这个仓真的没有能跑测试的命令 —— 工具必须说出来。\nstdout: %s\nstderr: %s", stdout, stderr)
+	if !strings.Contains(flat(stdout), "and no command that can run tests either") {
+		t.Errorf("this repository really has no command that can run tests — the tool must say so.\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 	if code != ExitFindings {
 		t.Errorf("exit code = %d, want %d (findings).\nstdout: %s\nstderr: %s",
@@ -111,8 +111,8 @@ func TestCheckIgnoresAnUncommittedTestCommandInAPackage(t *testing.T) {
 
 	code, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
 
-	if !strings.Contains(stdout, "也没有能跑测试的命令") {
-		t.Errorf("一个没提交的 package.json 不该改掉这个仓的结论 —— 仓里没有它。\nstdout: %s\nstderr: %s", stdout, stderr)
+	if !strings.Contains(flat(stdout), "and no command that can run tests either") {
+		t.Errorf("an uncommitted package.json must not change the conclusion about this repository — the repository does not contain it.\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 	if code != ExitFindings {
 		t.Errorf("exit code = %d, want %d.\nstdout: %s", code, ExitFindings, stdout)

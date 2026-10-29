@@ -40,23 +40,23 @@ func TestCheckIgnoresAnUntrackedGoMod(t *testing.T) {
 	m.Init(t)
 
 	code, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
-	if !strings.Contains(stdout, "一个测试文件都没有") {
-		t.Fatalf("基线就不对：有代码没测试的仓必须报高危。\nstdout: %s\nstderr: %s", stdout, stderr)
+	if !strings.Contains(flat(stdout), "not a single test file") {
+		t.Fatalf("the baseline is wrong: a repository with code and no tests must be reported as high severity.\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 	if code != ExitFindings {
-		t.Fatalf("退出码 = %d，期望 %d。\nstdout: %s", code, ExitFindings, stdout)
+		t.Fatalf("exit code = %d, want %d.\nstdout: %s", code, ExitFindings, stdout)
 	}
 
 	// 一个没提交的 go.mod —— 磁盘上有，仓里没有。
 	m.Write(t, "go.mod", "module scratch\n\ngo 1.21\n")
 
 	code, stdout, stderr = runCLI(t, "--mode", "check", m.Dir)
-	if !strings.Contains(stdout, "一个测试文件都没有") {
-		t.Errorf("一个没提交的 go.mod 不该改掉这个仓的结论 —— 仓里没有它，"+
-			"所以这个仓真的没有能跑的测试。\nstdout: %s\nstderr: %s", stdout, stderr)
+	if !strings.Contains(flat(stdout), "not a single test file") {
+		t.Errorf("an uncommitted go.mod must not change the conclusion about this repository — the repository does not contain it, "+
+			"so this repository really has no runnable tests.\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 	if code != ExitFindings {
-		t.Errorf("退出码 = %d，期望 %d：一个没提交的 go.mod 不该让高危消失。\nstdout: %s",
+		t.Errorf("exit code = %d, want %d: an uncommitted go.mod must not make the high-severity finding disappear.\nstdout: %s",
 			code, ExitFindings, stdout)
 	}
 	// 这一句更要紧：工具必须仍然认为「这个仓没有能跑的运行器」。
@@ -65,8 +65,8 @@ func TestCheckIgnoresAnUntrackedGoMod(t *testing.T) {
 	// 那一侧（3.68 之后）。两边的**标题**一模一样，只有这句话在不在。
 	// 所以只断言标题的话，这条测试就分不出「运行器被正确地忽略了」和
 	// 「运行器被错误地认了」—— 而那正是这条修复要防的事。
-	if !strings.Contains(stdout, "也没有能跑测试的命令") {
-		t.Errorf("这个仓没有提交 go.mod，工具必须仍然说它没有能跑的运行器。\nstdout: %s", stdout)
+	if !strings.Contains(flat(stdout), "and no command that can run tests either") {
+		t.Errorf("this repository has not committed a go.mod, so the tool must still say it has no runnable runner.\nstdout: %s", stdout)
 	}
 }
 
@@ -85,17 +85,17 @@ func TestCheckIgnoresAnUntrackedPackageJSONWithATestScript(t *testing.T) {
 	m.Write(t, "package.json", `{"scripts": {"test": "jest"}}`)
 
 	code, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
-	if !strings.Contains(stdout, "一个测试文件都没有") {
-		t.Errorf("一个没提交的 package.json 不该让高危消失 —— 仓里没有它，"+
-			"所以这个仓没有能驱动的运行器。\nstdout: %s\nstderr: %s", stdout, stderr)
+	if !strings.Contains(flat(stdout), "not a single test file") {
+		t.Errorf("an uncommitted package.json must not make the high-severity finding disappear — the repository does not contain it, "+
+			"so this repository has no runner it can drive.\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 	if code != ExitFindings {
-		t.Errorf("退出码 = %d，期望 %d。\nstdout: %s", code, ExitFindings, stdout)
+		t.Errorf("exit code = %d, want %d.\nstdout: %s", code, ExitFindings, stdout)
 	}
 	// 高危那条发现有两个来源（见 TestCheckIgnoresAnUntrackedGoMod 的说明），
 	// 标题一模一样，只有这句话在不在 —— 所以这里要断的是它。
-	if !strings.Contains(stdout, "也没有能跑测试的命令") {
-		t.Errorf("这个仓没有提交 package.json，工具必须仍然说它没有能跑的运行器。\nstdout: %s", stdout)
+	if !strings.Contains(flat(stdout), "and no command that can run tests either") {
+		t.Errorf("this repository has not committed a package.json, so the tool must still say it has no runnable runner.\nstdout: %s", stdout)
 	}
 }
 
@@ -122,15 +122,15 @@ func TestCheckIgnoresAnUntrackedHarness(t *testing.T) {
 	m.Write(t, "scripts/verify/run-all.mjs", "process.exit(0)\n")
 
 	code, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
-	if !strings.Contains(stdout, "一个测试文件都没有") {
-		t.Errorf("一个没提交的脚本不该把高危降成信息级 —— 仓里没有它，"+
-			"所以这个仓没有能跑的验证命令。\nstdout: %s\nstderr: %s", stdout, stderr)
+	if !strings.Contains(flat(stdout), "not a single test file") {
+		t.Errorf("an uncommitted script must not downgrade the high-severity finding to an informational one — the repository does not contain it, "+
+			"so this repository has no runnable verification command.\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 	if code != ExitFindings {
-		t.Errorf("退出码 = %d，期望 %d。\nstdout: %s", code, ExitFindings, stdout)
+		t.Errorf("exit code = %d, want %d.\nstdout: %s", code, ExitFindings, stdout)
 	}
-	if strings.Contains(stdout, "这个仓有自己的验证命令") {
-		t.Errorf("报告把这个仓说成「有自己的验证命令」，而那个脚本并不在仓里。\nstdout: %s", stdout)
+	if strings.Contains(flat(stdout), "This repository has its own verification commands") {
+		t.Errorf("the report describes this repository as having its own verification commands, but that script is not in the repository.\nstdout: %s", stdout)
 	}
 }
 
@@ -158,15 +158,15 @@ func TestCheckIgnoresAnUntrackedPackageJSONThatNamesATrackedScript(t *testing.T)
 	m.Write(t, "package.json", `{"scripts": {"verify": "node scripts/verify/run-all.mjs"}}`)
 
 	code, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
-	if !strings.Contains(stdout, "一个测试文件都没有") {
-		t.Errorf("一个没提交的 package.json 不该把高危降成信息级 —— 仓里没有它，"+
-			"所以这个仓没有声明过任何验证命令。\nstdout: %s\nstderr: %s", stdout, stderr)
+	if !strings.Contains(flat(stdout), "not a single test file") {
+		t.Errorf("an uncommitted package.json must not downgrade the high-severity finding to an informational one — the repository does not contain it, "+
+			"so this repository has never declared any verification command.\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 	if code != ExitFindings {
-		t.Errorf("退出码 = %d，期望 %d。\nstdout: %s", code, ExitFindings, stdout)
+		t.Errorf("exit code = %d, want %d.\nstdout: %s", code, ExitFindings, stdout)
 	}
-	if strings.Contains(stdout, "这个仓有自己的验证命令") {
-		t.Errorf("报告把这个仓说成「有自己的验证命令」，而那个声明并不在仓里。\nstdout: %s", stdout)
+	if strings.Contains(flat(stdout), "This repository has its own verification commands") {
+		t.Errorf("the report describes this repository as having its own verification commands, but that declaration is not in the repository.\nstdout: %s", stdout)
 	}
 }
 
@@ -191,8 +191,8 @@ jobs:
 	m.Init(t)
 
 	_, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
-	if !strings.Contains(stdout, "CI 不跑任何测试") {
-		t.Fatalf("基线就不对：这个仓的 CI 确实不跑测试，必须报出来。\nstdout: %s\nstderr: %s",
+	if !strings.Contains(flat(stdout), "CI runs no tests at all") {
+		t.Fatalf("the baseline is wrong: this repository's CI really does not run tests, and that must be reported.\nstdout: %s\nstderr: %s",
 			stdout, stderr)
 	}
 
@@ -208,9 +208,9 @@ jobs:
 `)
 
 	_, stdout, stderr = runCLI(t, "--mode", "check", m.Dir)
-	if !strings.Contains(stdout, "CI 不跑任何测试") {
-		t.Errorf("一条没提交的 workflow 不该改掉这个仓的结论 —— CI 是这个仓的 CI，"+
-			"草稿不是。\nstdout: %s\nstderr: %s", stdout, stderr)
+	if !strings.Contains(flat(stdout), "CI runs no tests at all") {
+		t.Errorf("an uncommitted workflow must not change the conclusion about this repository — CI is this repository's CI, "+
+			"a draft is not.\nstdout: %s\nstderr: %s", stdout, stderr)
 	}
 }
 
@@ -229,8 +229,8 @@ func TestCheckIgnoresAnUntrackedHook(t *testing.T) {
 	m.WriteExecutable(t, ".githooks/pre-commit", "#!/bin/sh\nexit 1\n")
 
 	_, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
-	if strings.Contains(stdout, "守卫文件在") {
-		t.Errorf("一个没提交的 hook 不是这个仓的守卫，工具不该报它没被装上。\nstdout: %s\nstderr: %s",
+	if strings.Contains(flat(stdout), "The guard file is there") {
+		t.Errorf("an uncommitted hook is not this repository's guard, so the tool must not report it as not installed.\nstdout: %s\nstderr: %s",
 			stdout, stderr)
 	}
 }

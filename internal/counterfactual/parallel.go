@@ -329,7 +329,7 @@ func (p *ParallelAuditor) timeoutFinding(res *Result, cause error) core.Finding 
 	}
 	evidence := res.FailureOutput
 	if evidence == "" {
-		evidence = "测试进程在 " + p.timeout.String() + " 之后被中断"
+		evidence = "the test process was interrupted after " + p.timeout.String()
 	}
 	if cause != nil {
 		evidence += "\n" + cause.Error()
@@ -337,16 +337,16 @@ func (p *ParallelAuditor) timeoutFinding(res *Result, cause error) core.Finding 
 	return core.Finding{
 		Kind:     core.KindEnvironment,
 		Severity: core.SevWarn,
-		Summary:  "测试跑超时了 —— 这个提交没法判定",
+		Summary:  "The test run timed out — this commit cannot be judged",
 		Detail: fmt.Sprintf(
-			"提交 %s 的测试在 %s 内没有跑完，进程被掐断了。\n"+
-				"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案 —— "+
-				"不是测试和修复耦合，也不是测试没看守住修复，是这次实验根本没跑完。\n"+
-				"最常见的原因是测试卡住了：死循环、等一个永远不会来的信号、或者在等一个外部服务。",
+			"The tests of commit %s did not finish within %s and the process was cut off.\n"+
+				"So the question \"if you remove the fix, does the test go red\" has no answer for this change — "+
+				"it is not that the test and the fix are coupled, and it is not that the test failed to guard the fix; the experiment simply never finished.\n"+
+				"The most common cause is a test that hangs: an infinite loop, waiting for a signal that never comes, or waiting on an external service.",
 			short, p.timeout),
 		File:     firstPath(res.TestFiles),
 		Evidence: evidence,
-		Hint:     "先让这个提交的测试自己能跑完，再来审它",
+		Hint:     "First let this commit's tests finish on their own, then audit it",
 	}
 }
 

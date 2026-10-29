@@ -44,15 +44,20 @@ func coupledFinding(t *testing.T, verdict core.CompileVerdict) core.Finding {
 
 // The two phrases the report has to keep apart.
 //
-// The old wording also contains "编译得过去" - it says the fix is "让代码
-// 重新编译得过去的那个修复" - so a bare substring would match both and
-// the test would pass on a report that says the opposite. The markers
+// The old wording also contains "compiles" - it says the fix is "the fix
+// that made the code compile again" - so a bare substring would match both
+// and the test would pass on a report that says the opposite. The markers
 // below are phrases only one of the two wordings uses.
 const (
 	// saysCompiles is the new wording: the code compiles.
-	saysCompiles = "代码本身**编译得过去**"
+	//
+	// The markers deliberately start after the article, because the two
+	// wordings put the phrase in different places in the sentence - one
+	// of them starts a clause with it - and a marker that depends on the
+	// capital letter would only match one of the two.
+	saysCompiles = "code itself **compiles fine**"
 	// saysDoesNotCompile is the old wording: the code does not compile.
-	saysDoesNotCompile = "代码本身编译不过"
+	saysDoesNotCompile = "code itself does not compile"
 )
 
 // TestCoupledReportDoesNotClaimCompilationItDoesNotHave is the fix.
@@ -74,7 +79,7 @@ func TestCoupledReportDoesNotClaimCompilationItDoesNotHave(t *testing.T) {
 	if strings.Contains(f.Detail, saysDoesNotCompile) {
 		t.Errorf("detail still claims the code does not compile:\n%s", f.Detail)
 	}
-	if strings.Contains(f.Summary, "编译不过") {
+	if strings.Contains(f.Summary, "does not compile") {
 		t.Errorf("summary still claims the code does not compile: %q", f.Summary)
 	}
 	if !strings.Contains(f.Detail, saysCompiles) {
@@ -134,7 +139,7 @@ func TestCoupledReportDoesNotSayTheWholeSuiteStopped(t *testing.T) {
 		core.CompileRejectedByLint, core.CompileBroken, core.CompileUnknown,
 	} {
 		f := coupledFinding(t, verdict)
-		if strings.Contains(f.Detail, "套件一次都跑不起来") {
+		if strings.Contains(f.Detail, "the suite cannot run even once") {
 			t.Errorf("detail (%v) says the whole suite could not run - the other "+
 				"packages did:\n%s", verdict, f.Detail)
 		}

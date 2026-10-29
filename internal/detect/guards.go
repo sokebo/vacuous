@@ -114,12 +114,12 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 			if _, err := os.Stat(resolved); err != nil {
 				out = append(out, finding(core.KindGuardNotInstalled, core.SevCritical,
 					dir, 0,
-					"core.hooksPath 指向的目录不存在 —— 守卫等于没有",
+					"core.hooksPath points at a directory that does not exist — there is no guard",
 					fmt.Sprintf(
-						"core.hooksPath 指向 %q，但那个目录不存在。\n"+
-							"git 会静默忽略一个不存在的 hooks 路径。", resolved),
+						"core.hooksPath points at %q, but that directory does not exist.\n"+
+							"git silently ignores a hooks path that does not exist.", resolved),
 					"git config --get core.hooksPath → "+configured,
-					"修正 core.hooksPath，或者把守卫目录恢复"))
+					"Fix core.hooksPath, or restore the guard directory"))
 				continue
 			}
 
@@ -128,13 +128,14 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 			if abs := absoluteHookInstall(repoRoot, dir, scope, opts); abs != "" {
 				out = append(out, finding(core.KindGuardNotPortable, core.SevWarn,
 					"scripts/install-hooks.sh", 0,
-					"守卫用绝对路径安装 —— 目录一搬就失效",
+					"The guard installs itself by absolute path — it breaks the moment the directory moves",
 					fmt.Sprintf(
-						"安装脚本把 core.hooksPath 写成了绝对路径 %q。\n"+
-							"仓库目录一换、换台机器、或者 CI 缓存复用，这个路径就不对了 —— "+
-							"守卫会静默消失。", abs),
+						"The install script writes an absolute path into core.hooksPath: %q.\n"+
+							"The moment the repository moves, the checkout lands somewhere else, "+
+							"or a CI cache is reused, that path is wrong — and the guard "+
+							"disappears silently.", abs),
 					abs,
-					"用相对路径：git config core.hooksPath "+dir))
+					"Use a relative path: git config core.hooksPath "+dir))
 			}
 		}
 
@@ -173,30 +174,30 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 		if !isSet {
 			out = append(out, finding(core.KindGuardNotInstalled, core.SevCritical,
 				dir, 0,
-				"守卫文件在，但从来没被装上 —— 它一次都没运行过",
+				"The guard file is there, but it was never installed — it has never run even once",
 				fmt.Sprintf(
-					"%s/ 里有可执行的守卫（%s），但 core.hooksPath 没有设置，"+
-						"默认的 hooks 目录里也没有它们。\n"+
-						"这意味着 git 根本不知道它们存在：推代码不会跑它们。\n"+
-						"守卫没装上没有任何症状 —— 直到出事那天。",
+					"%s/ holds executable guards (%s), but core.hooksPath is not set and "+
+						"the default hooks directory does not hold them either.\n"+
+						"That means git does not know they exist at all: a push will not run them.\n"+
+						"A guard that is not installed has no symptom — until the day it is needed.",
 					dir, strings.Join(notInstalled, ", ")),
-				"git config --get core.hooksPath → (未设置)\n"+
+				"git config --get core.hooksPath → (not set)\n"+
 					hookEvidence(effective, notInstalled, reasons),
-				"跑仓库里的安装脚本，或者手动：git config core.hooksPath "+dir))
+				"Run the repository's install script, or set it by hand: git config core.hooksPath "+dir))
 			continue
 		}
 
 		out = append(out, finding(core.KindGuardNotInstalled, core.SevCritical,
 			dir, 0,
-			"core.hooksPath 指到了别的地方 —— 这个守卫不会被执行",
+			"core.hooksPath points somewhere else — this guard will not run",
 			fmt.Sprintf(
-				"core.hooksPath 指向 %q，但那个目录里没有 %s/ 里的守卫（%s）。\n"+
-					"git 只在 core.hooksPath 指的目录里找 hook —— 设了它，"+
-					"别处的守卫一律不跑。",
+				"core.hooksPath points at %q, but that directory does not hold the guards from %s/ (%s).\n"+
+					"git only looks for hooks in the directory core.hooksPath points at — once it is set, "+
+					"guards anywhere else never run.",
 				configured, dir, strings.Join(notInstalled, ", ")),
 			"git config --get core.hooksPath → "+configured+"\n"+
 				hookEvidence(effective, notInstalled, reasons),
-			"把守卫放进 "+configured+"，或者把 core.hooksPath 指回 "+dir))
+			"Put the guards in "+configured+", or point core.hooksPath back at "+dir))
 	}
 	return out
 }
@@ -204,6 +205,49 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 // effectiveHooksDir returns the directory git actually looks in for hooks,
 // and whether that answer could be established at all.
 //
+// plural renders a count with the right noun form: "1 workflow", "2 workflows".
+//
+// English inflects for number and Chinese does not, so this is the kind of
+// mistake that only shows up after a translation — and it shows up in the
+// sentence the reader reads first.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// workflowsWithNoTests renders the sentence the report opens with when CI
+// has workflows but none of them runs a test.
+//
+// English inflects for number and Chinese does not, so "There are 1
+// workflows" is a mistake that only becomes visible after a translation —
+// and it lands in the first sentence of the finding.
+func workflowsWithNoTests(n int) string {
+	if n == 1 {
+		return "There is 1 workflow under .github/workflows and it runs no test."
+	}
+	return fmt.Sprintf("There are %d workflows under .github/workflows and not one of them runs a test.", n)
+}
+
+// workflowsWithNoTestSuite is workflowsWithNoTests for the case where CI
+// does run something — its own verification scripts, just not a test suite.
+func workflowsWithNoTestSuite(n int) string {
+	if n == 1 {
+		return "There is 1 workflow under .github/workflows and it runs no test suite."
+	}
+	return fmt.Sprintf("There are %d workflows under .github/workflows and not one of them runs a test suite.", n)
+}
+
+// workflowsReusingElsewhere renders the count of workflows that call a
+// workflow living in another repository.
+func workflowsReusingElsewhere(n int) string {
+	if n == 1 {
+		return "1 workflow reuses"
+	}
+	return fmt.Sprintf("%d workflows reuse", n)
+}
+
 // Git uses core.hooksPath when it is set and the default hooks directory
 // otherwise - exactly one of the two. Setting core.hooksPath makes git
 // ignore .git/hooks entirely, so "the hook is in .git/hooks" stops being
@@ -249,18 +293,18 @@ func effectiveHooksDir(repoRoot, configured string, isSet bool) (string, bool) {
 // exactly as much as no copy at all.
 func guardRuns(hooksDir, repoRoot, dir, name string) (bool, string) {
 	if hooksDir == "" {
-		return false, "不知道 git 在哪儿找 hook"
+		return false, "cannot tell where git looks for hooks"
 	}
 	installed := filepath.Join(hooksDir, name)
 	info, err := os.Stat(installed)
 	if err != nil {
-		return false, "不存在"
+		return false, "does not exist"
 	}
 	if info.IsDir() {
-		return false, "不是文件"
+		return false, "not a file"
 	}
 	if info.Mode()&0o111 == 0 {
-		return false, "不可执行"
+		return false, "not executable"
 	}
 
 	guard := filepath.Join(repoRoot, dir, name)
@@ -278,7 +322,7 @@ func guardRuns(hooksDir, repoRoot, dir, name string) (bool, string) {
 
 	data, err := os.ReadFile(installed)
 	if err != nil {
-		return false, "读不出来"
+		return false, "cannot be read"
 	}
 	// The same bytes: the guard copied into place.
 	if guardData, err := os.ReadFile(guard); err == nil && bytes.Equal(data, guardData) {
@@ -289,7 +333,7 @@ func guardRuns(hooksDir, repoRoot, dir, name string) (bool, string) {
 	if strings.Contains(string(data), rel) {
 		return true, ""
 	}
-	return false, "不是这个守卫"
+	return false, "not this guard"
 }
 
 // hookEvidence renders where the tool looked for a hook that is not there,
@@ -297,7 +341,7 @@ func guardRuns(hooksDir, repoRoot, dir, name string) (bool, string) {
 func hookEvidence(hooksDir string, names, reasons []string) string {
 	lines := make([]string, 0, len(names))
 	for i, name := range names {
-		why := "不存在"
+		why := "does not exist"
 		if i < len(reasons) {
 			why = reasons[i]
 		}
@@ -456,16 +500,17 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 				harnessNotRunByCI(ci.harness, local)))
 		} else {
 			detail := fmt.Sprintf(
-				".github/workflows/ 下有 %d 个 workflow，没有一个跑测试。\n"+
-					"这个仓库的 CI 从来不执行测试套件 —— 代码坏了，CI 照样是绿的。",
-				len(workflows))
-			evidence := "扫描到的 workflow: " + strings.Join(workflowNames(workflows), ", ")
+				"%s\n"+
+					"This repository's CI never runs a test suite — break the code and CI stays green.",
+				workflowsWithNoTests(len(workflows)))
+			evidence := "workflows found: " + strings.Join(workflowNames(workflows), ", ")
 			if len(checks) > 0 {
 				detail += fmt.Sprintf(
-					"\n它有这些检查：%s —— 它们能挡住语法错误和类型错误，"+
-						"但挡不住「测试是空的」或者「逻辑写错了但类型没错」。",
+					"\nIt has these checks: %s — they catch syntax errors and type errors, "+
+						"but they cannot catch \"the test is empty\" or \"the logic is wrong "+
+						"but the types are fine\".",
 					strings.Join(dedupe(checks), ", "))
-				evidence += "\n找到的检查: " + strings.Join(dedupe(checks), ", ")
+				evidence += "\nchecks found: " + strings.Join(dedupe(checks), ", ")
 			}
 			// The repository may declare check commands of its own that the
 			// CI never reaches. Saying so is the difference between "this
@@ -475,13 +520,13 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 			notRunDetail, notRunEvidence := notRunByCISection(harnessNotRunByCI(ci.harness, local))
 			detail += notRunDetail
 			evidence += notRunEvidence
-			hint := "加一个跑测试的步骤，并让它失败时阻断合并"
+			hint := "Add a step that runs the tests, and make it block the merge when they fail"
 			if notRunDetail != "" {
-				hint += "。仓里已有的验证命令也可以接进 CI —— 现在 CI 一个都没跑它们"
+				hint += ". The verification commands the repository already declares can be wired into CI too — right now CI runs none of them"
 			}
 			out = append(out, finding(core.KindGuardNotInstalled, core.SevWarn,
 				".github/workflows", 0,
-				"这个仓库的 CI 不跑任何测试",
+				"This repository's CI runs no tests at all",
 				detail, evidence,
 				hint))
 		}
@@ -495,15 +540,17 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 		// tool exists to stop making.
 		out = append(out, finding(core.KindUnsupportedTests, core.SevInfo,
 			".github/workflows", 0,
-			"看不出来这个仓库的 CI 跑不跑测试",
+			"Cannot tell whether this repository's CI runs tests",
 			fmt.Sprintf(
-				"有 %d 个 workflow 复用了别处的 workflow（%s），"+
-					"测试命令可能在那个仓库里，本工具看不到。\n"+
-					"所以这里不下「CI 不跑测试」的结论 —— 看不到不等于没有。",
-				len(opaque), strings.Join(dedupe(opaque), ", ")),
-			"复用了 workflow: "+strings.Join(dedupe(opaque), ", "),
-			"如果那些被复用的 workflow 里确实不跑测试，"+
-				"把测试命令直接写进本仓库的 workflow 里，这个工具才看得见"))
+				"%s a workflow from somewhere else (%s). "+
+					"The test command may live in that repository, and this tool cannot see it.\n"+
+					"So this report does not conclude that CI runs no tests — not seeing it is "+
+					"not the same as it not being there.",
+				workflowsReusingElsewhere(len(opaque)), strings.Join(dedupe(opaque), ", ")),
+			"reused workflows: "+strings.Join(dedupe(opaque), ", "),
+			"If those reused workflows really do not run tests, "+
+				"write the test command into this repository's own workflow — that is the only "+
+				"way this tool can see it"))
 	}
 
 	// A workflow that runs the tests and then ignores the failures.
@@ -516,14 +563,14 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 		}
 		out = append(out, finding(core.KindGuardNotInstalled, core.SevWarn,
 			".github/workflows/"+w.name, 0,
-			"CI 里的测试失败不会阻断合并",
+			"A failing test in CI does not block the merge",
 			fmt.Sprintf(
-				".github/workflows/%s 里有 `continue-on-error: true`，"+
-					"而且它落在跑测试的那一步上。\n"+
-					"测试失败的时候，CI 照样是绿的，合并照样能过 —— "+
-					"这一步存在，但它不拦住任何东西。", w.name),
-			"找到: continue-on-error: true",
-			"去掉它，或者让它只作用在真正可选的步骤上"))
+				".github/workflows/%s sets `continue-on-error: true`, "+
+					"and it sits on the step that runs the tests.\n"+
+					"When the tests fail, CI stays green and the merge goes through anyway — "+
+					"the step is there, but it stops nothing.", w.name),
+			"found: continue-on-error: true",
+			"Remove it, or scope it to steps that are genuinely optional"))
 	}
 
 	return out
@@ -563,17 +610,18 @@ func ciRunsOwnChecksFinding(workflows []workflow, localWorkflows []string, local
 	}
 
 	detail := fmt.Sprintf(
-		".github/workflows/ 下有 %d 个 workflow，没有一个跑测试套件。\n"+
-			"但 CI 最终跑到了这个仓库自己写的验证脚本：\n%s\n"+
-			"它们不是摆设 —— 它们盯着的东西坏掉时，CI 会变红。\n"+
-			"它们挡不住的是另一类问题：「逻辑写错了，但类型没错、格式也没错」。\n"+
-			"那一类只有测试套件能挡。\n\n"+
-			"所以这个仓的行为改动，目前仍然没有测试套件看守。",
+		workflowsWithNoTestSuite(len(workflows))+"\n"+
+			"But CI does end up running this repository's own verification scripts:\n%s\n"+
+			"They are not decoration — when the thing they watch breaks, CI turns red.\n"+
+			"What they cannot catch is a different class of problem: \"the logic is wrong, "+
+			"but the types are fine and the formatting is fine\".\n"+
+			"Only a test suite can catch that.\n\n"+
+			"So this repository's behaviour changes still have no test suite watching them.",
 		len(workflows), strings.Join(lines, "\n"))
 
-	evidence := "扫描到的 workflow: " + strings.Join(workflowNames(workflows), ", ")
-	evidence += "\nCI 里跑到了验证脚本的 workflow: " + strings.Join(dedupe(localWorkflows), ", ")
-	evidence += "\nCI 跑到的验证脚本文件:"
+	evidence := "workflows found: " + strings.Join(workflowNames(workflows), ", ")
+	evidence += "\nworkflows where CI reached a verification script: " + strings.Join(dedupe(localWorkflows), ", ")
+	evidence += "\nverification script files CI reached:"
 	for _, f := range dedupe(files) {
 		evidence += "\n  " + f
 	}
@@ -589,14 +637,14 @@ func ciRunsOwnChecksFinding(workflows []workflow, localWorkflows []string, local
 	}
 	evidence += notRunEvidence
 
-	hint := "把测试接进 CI：加一个跑测试套件的步骤，并让它失败时阻断合并"
+	hint := "Wire the tests into CI: add a step that runs the test suite, and make it block the merge when they fail"
 	if notRunDetail != "" {
-		hint += "。仓里已有的验证命令也可以接进 CI —— 现在 CI 一个都没跑它们"
+		hint += ". The verification commands the repository already declares can be wired into CI too — right now CI runs none of them"
 	}
 
 	return finding(core.KindGuardNotInstalled, core.SevWarn,
 		".github/workflows", 0,
-		"这个仓库的 CI 不跑测试套件 —— 它跑的是自己写的验证脚本",
+		"This repository's CI runs no test suite — it runs its own verification scripts instead",
 		detail, evidence,
 		hint)
 }

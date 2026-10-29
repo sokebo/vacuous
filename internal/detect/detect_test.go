@@ -807,7 +807,7 @@ jobs:
 	}
 	var found bool
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "不会阻断合并") {
+		if strings.Contains(f.Summary, "does not block the merge") {
 			found = true
 		}
 	}
@@ -839,7 +839,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "不会阻断合并") {
+		if strings.Contains(f.Summary, "does not block the merge") {
 			t.Fatalf("a non-literal continue-on-error must not be reported, got %+v", f)
 		}
 	}

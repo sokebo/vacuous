@@ -312,13 +312,13 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		res.Findings = append(res.Findings, core.Finding{
 			Kind:     core.KindNotApplicable,
 			Severity: core.SevInfo,
-			Summary:  "这是合并提交 —— 里面的改动在分支的各个提交里已经审过了",
+			Summary:  "This is a merge commit — the changes inside it were already audited in the branch's own commits",
 			Detail: fmt.Sprintf(
-				"提交 %s 有 %d 个父提交，是一次合并。\n"+
-					"它带来的改动属于分支上的那些提交，那些提交各自会被单独审计。\n"+
-					"把合并提交本身当成一次「改了代码」的改动去指责，是算错了对象。",
+				"Commit %s has %d parents, so it is a merge.\n"+
+					"The changes it brings in belong to the commits on the branch, and each of those is audited on its own.\n"+
+					"Accusing the merge commit itself of being a change to the code is blaming the wrong thing.",
 				info.Short, parents),
-			Hint: "要看这次合并带来的问题，去看分支上那几个提交",
+			Hint: "To see the problems this merge brought in, look at the commits on the branch",
 		})
 		return res, nil
 	}
@@ -334,12 +334,12 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		res.Findings = append(res.Findings, core.Finding{
 			Kind:     core.KindNotApplicable,
 			Severity: core.SevInfo,
-			Summary:  "这是仓库的第一个提交 —— 没有父提交可以对照",
+			Summary:  "This is the repository's first commit — there is no parent commit to compare it against",
 			Detail: fmt.Sprintf(
-				"提交 %s 是这个仓库的第一个提交，没有父提交。\n"+
-					"反事实审计要拿父提交当基线，所以这里不适用 —— "+
-					"这不是一个「有问题」的结论。", info.Short),
-			Hint: "第一个提交本来就无从对照，不用管这条",
+				"Commit %s is the first commit of this repository, so it has no parent.\n"+
+					"A counterfactual audit needs the parent commit as its baseline, so this does not apply — "+
+					"this is not a \"there is a problem\" conclusion.", info.Short),
+			Hint: "A first commit has nothing to be compared against — ignore this one",
 		})
 		return res, nil
 	}
@@ -400,14 +400,14 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		res.Findings = append(res.Findings, core.Finding{
 			Kind:     core.KindNoTestForFix,
 			Severity: core.SevInfo,
-			Summary:  "这个提交只加了测试，没有改代码 —— 没有可以撤掉的修复",
+			Summary:  "This commit only added tests and changed no code — there is no fix to remove",
 			Detail: fmt.Sprintf(
-				"提交 %s 改了 %d 个测试文件，没有改任何代码。\n"+
-					"「撤掉修复，测试会不会红」这个问题在这里没有答案 —— "+
-					"因为这个提交没有引入需要被看守的行为。",
+				"Commit %s changed %d test files and no code at all.\n"+
+					"The question \"if you remove the fix, does the test go red\" has no answer here — "+
+					"because this commit introduced no behavior that a test could be watching.",
 				info.Short, len(res.TestFiles)),
 			File: firstPath(res.TestFiles),
-			Hint: "想知道这些测试本身有没有效，用变异测试（mutation testing）",
+			Hint: "To find out whether those tests are any good, use mutation testing",
 		})
 		return res, nil
 	}
@@ -440,14 +440,14 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		res.Findings = append(res.Findings, core.Finding{
 			Kind:     core.KindNoTestForFix,
 			Severity: core.SevInfo,
-			Summary:  "这个改动没有改变代码的行为 —— 不需要新的测试",
+			Summary:  "This change did not alter the behavior of the code — it needs no new test",
 			Detail: fmt.Sprintf(
-				"提交 %s 改了 %d 个源文件，但改动只有注释和空白。\n"+
-					"它没有改变任何行为，所以没有测试需要跟着来。",
+				"Commit %s changed %d source files, but the changes are only comments and whitespace.\n"+
+					"It did not change any behavior, so no test needs to come with it.",
 				info.Short, len(res.SourceFiles)),
 			File:     firstPath(res.SourceFiles),
-			Evidence: "逐行比对：去掉注释和空白之后，改动前后完全一样",
-			Hint:     "如果这个提交其实改变了行为，那它需要测试",
+			Evidence: "Line-by-line comparison: once comments and whitespace are removed, the two sides are identical",
+			Hint:     "If this commit does change behavior, then it needs a test",
 		})
 		return res, nil
 	}
@@ -474,13 +474,13 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 		res.Findings = append(res.Findings, core.Finding{
 			Kind:     core.KindNotApplicable,
 			Severity: core.SevInfo,
-			Summary:  "这个提交把测试删掉了 —— 没有可以对照的测试",
+			Summary:  "This commit deleted the tests — there is no test left to compare against",
 			Detail: fmt.Sprintf(
-				"提交 %s 删掉了 %d 个测试文件，没有新增或修改任何测试。\n"+
-					"反事实审计要拿一个测试来「撤掉修复看它会不会红」—— "+
-					"这里既没有修复可撤，也没有测试可留。",
+				"Commit %s deleted %d test files and added or modified no test.\n"+
+					"A counterfactual audit needs a test to \"remove the fix and see whether it goes red\" — "+
+					"and here there is neither a fix to remove nor a test to keep.",
 				info.Short, len(res.TestFiles)),
-			Hint: "删测试这件事本身值得看一眼，但不是这个工具能回答的问题",
+			Hint: "Deleting tests is worth a look of its own, but it is not a question this tool can answer",
 		})
 		return res, nil
 	}
@@ -820,18 +820,18 @@ func foreignSourceFinding(res *Result) core.Finding {
 	return core.Finding{
 		Kind:     core.KindUnsupportedSource,
 		Severity: core.SevInfo,
-		Summary:  "这个提交改的是本工具在这个仓里跑不了的代码 —— 判不了",
+		Summary:  "This commit changes code this tool cannot run in this repository — it cannot be judged",
 		Detail: fmt.Sprintf(
-			"提交 %s 改了 %d 个文件，它们是代码，但用的是这个仓的测试运行器不会说的语言：\n"+
+			"Commit %s changed %d files. They are code, but they are written in a language this repository's test runner does not speak:\n"+
 				"  %s\n"+
-				"反事实审计要做的事是「撤掉修复，看测试会不会红」—— "+
-				"而这个仓的运行器跑不了那种代码，所以这个问题在这里没有答案。\n"+
-				"这不是「没有测试看着这个改动」：是「这个工具没看这一部分」。\n"+
-				"（工具能驱动的运行器：go test / pytest / python -m unittest / jest / vitest）",
+				"What a counterfactual audit does is \"remove the fix and see whether the test goes red\" — "+
+				"and this repository's runner cannot run that kind of code, so the question has no answer here.\n"+
+				"This is not \"no test is watching this change\": it is \"this tool did not look at this part\".\n"+
+				"(Runners this tool can drive: go test / pytest / python -m unittest / jest / vitest)",
 			res.Commit.Short, len(res.ForeignSourceFiles), strings.Join(paths, "\n  ")),
 		File: firstPath(res.ForeignSourceFiles),
-		Hint: "要判这一部分，得让这个仓有一个能驱动那种语言的测试运行器；" +
-			"在那之前，这个提交既不算被验证过，也不算有问题",
+		Hint: "To judge this part, the repository needs a test runner that can drive that language; " +
+			"until then, this commit counts neither as verified nor as problematic",
 	}
 }
 
@@ -961,7 +961,7 @@ func (a *Auditor) runCounterfactual(ctx context.Context, sha string, res *Result
 			// the fix at the source level. That is a real, reportable
 			// state: the question cannot be answered.
 			return &runOutcome{command: "", result: core.RunResult{
-				BuildErrors: []string{fmt.Sprintf("测试补丁无法应用到父提交: %v", err)},
+				BuildErrors: []string{fmt.Sprintf("test patch cannot be applied to the parent commit: %v", err)},
 			}}, nil
 		}
 	}
@@ -1138,7 +1138,7 @@ type baselineOutcome struct {
 func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target core.TestTarget, plan core.Plan, counterfactual core.RunResult) baselineOutcome {
 	wt, err := a.worktree.Create(ctx, sha)
 	if err != nil {
-		return baselineOutcome{detail: "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"}
+		return baselineOutcome{detail: "the baseline could not run (" + err.Error() + "), so it cannot be confirmed whether this red was caused by this fix"}
 	}
 	defer wt.Remove()
 
@@ -1155,7 +1155,7 @@ func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target 
 
 	basePlan, err := a.adapter.Plan(ctx, core.PlanRequest{Root: wt.Path(), Target: target})
 	if err != nil {
-		return baselineOutcome{detail: "基线建不出测试命令（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"}
+		return baselineOutcome{detail: "the baseline could not build a test command (" + err.Error() + "), so it cannot be confirmed whether this red was caused by this fix"}
 	}
 	basePlan.Dir = wt.Path()
 
@@ -1165,12 +1165,12 @@ func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target 
 	}
 	result, err := a.adapter.Run(runCtx, basePlan)
 	if err != nil {
-		return baselineOutcome{detail: "基线跑不起来（" + err.Error() + "），所以无法确认这个红灯是不是这次修复造成的"}
+		return baselineOutcome{detail: "the baseline could not run (" + err.Error() + "), so it cannot be confirmed whether this red was caused by this fix"}
 	}
 	if len(result.BuildErrors) > 0 {
-		return baselineOutcome{detail: "基线（带着修复的同一个提交）编译不过（" +
-			strings.Join(result.BuildErrors, "；") +
-			"），所以无法确认这个红灯是不是这次修复造成的"}
+		return baselineOutcome{detail: "the baseline (the same commit, with the fix in place) does not compile (" +
+			strings.Join(result.BuildErrors, "; ") +
+			"), so it cannot be confirmed whether this red was caused by this fix"}
 	}
 
 	alreadyRed := failingTestNames(result)
@@ -1189,8 +1189,8 @@ func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target 
 	}
 
 	return baselineOutcome{ran: true, detail: fmt.Sprintf(
-		"带着修复的同一个提交（%s）里，同样的测试也是红的（%d 个失败）—— "+
-			"这个红灯本来就在，不是撤掉这次修复造成的，所以这里下不了结论",
+		"In the same commit with the fix in place (%s), the same tests are red as well (%d failures) — "+
+			"this red was already there; it was not caused by removing this fix, so no conclusion can be drawn here",
 		shortSHA(sha), countFailures(result))}
 }
 
@@ -1401,11 +1401,11 @@ func checkConsistency(run *runOutcome, verdict Verdict) string {
 	switch verdict {
 	case VerdictProven:
 		if !mentionsFailure {
-			return "结论说有测试变红了，但运行器自己的输出里没有失败"
+			return "the verdict says a test went red, but the runner's own output contains no failure"
 		}
 	case VerdictVacuous:
 		if mentionsFailure {
-			return "结论说测试全部通过，但运行器自己的输出里有失败 —— 解析多半错了"
+			return "the verdict says every test passed, but the runner's own output contains a failure — the parse is probably wrong"
 		}
 	}
 	return ""
@@ -1451,7 +1451,7 @@ func reproFor(res *Result, run *runOutcome) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "# 1. 取父提交的代码 —— 反事实实验的起点\n")
+	fmt.Fprintf(&b, "# 1. Take the parent's code — the starting point of the counterfactual experiment\n")
 	fmt.Fprintf(&b, "mkdir -p /tmp/vac-verify && git archive %s^ | tar -x -C /tmp/vac-verify\n", sha)
 
 	// Put the tests back in, and nothing else. The fix stays out because
@@ -1459,7 +1459,7 @@ func reproFor(res *Result, run *runOutcome) string {
 	// created, which the parent simply does not contain.
 	tests := pathsOf(res.TestFiles)
 	if len(tests) > 0 {
-		fmt.Fprintf(&b, "\n# 2. 只把测试打进去，修复留在外面\n")
+		fmt.Fprintf(&b, "\n# 2. Apply only the tests; the fix stays out\n")
 		fmt.Fprintf(&b, "git diff --no-color --no-ext-diff --binary %s^ %s -- %s > /tmp/vac-verify-tests.patch\n",
 			sha, sha, shellPaths(tests))
 		fmt.Fprintf(&b, "cd /tmp/vac-verify && git apply --whitespace=nowarn /tmp/vac-verify-tests.patch\n")
@@ -1469,11 +1469,12 @@ func reproFor(res *Result, run *runOutcome) string {
 	// build inputs and the neighbouring directories that `replace`
 	// directives point at. A repository that needs them needs them here
 	// too - CI usually shows how.
-	fmt.Fprintf(&b, "\n# (工具还会摆进未入库的构建产物和 replace 指向的同级目录；\n")
-	fmt.Fprintf(&b, "#  你的仓库需要它们时，照 CI 的做法自己摆进来。)\n")
+	fmt.Fprintf(&b, "\n# (The tool also stages the untracked build inputs and the neighbouring directories\n")
+	fmt.Fprintf(&b, "#  that `replace` directives point at; if your repository needs them, stage them\n")
+	fmt.Fprintf(&b, "#  the way your CI does.)\n")
 
 	if run != nil && run.command != "" {
-		fmt.Fprintf(&b, "\n# 3. 跑测试，看它到底会不会红\n")
+		fmt.Fprintf(&b, "\n# 3. Run the tests and see whether they really go red\n")
 		fmt.Fprintf(&b, "cd /tmp/vac-verify && %s\n", run.command)
 	}
 	return b.String()
@@ -1520,32 +1521,32 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		// 「这个提交所在的那棵树，套件本身就是红的」因此是一个事实，
 		// 而不只是脚注。
 		severity := core.SevWarn
-		summary := "这个提交上，测试套件本身就是红的 —— 这次改动没有测试能作证"
+		summary := "The test suite is already red at this commit — nothing in this change has a test to back it up"
 		out = append(out, core.Finding{
 			Kind:     core.KindPreExistingFailure,
 			Severity: severity,
 			Summary:  summary,
 			Detail: fmt.Sprintf(
-				"撤掉修复后有 %d 个测试变红。%s\n"+
-					"所以这一次实验分不出「撤掉修复让测试变红」和「这套测试本来就是红的」—— "+
-					"这里不下结论。\n"+
-					"要判定，得先让这个仓的测试在带着修复的时候也是绿的。",
+				"Removing the fix made %d tests red. %s\n"+
+					"So this experiment cannot tell \"removing the fix made the test go red\" apart from \"this suite was already red\" — "+
+					"and so no conclusion is drawn here.\n"+
+					"To judge it, the repository's tests have to be green with the fix in place first.",
 				countFail(run), run.preExistingDetail),
 			File:     testFile,
 			Evidence: run.command,
 			Repro:    reproFor(res, run),
-			Hint: "这通常意味着两件事之一：这个仓的测试套件本来就是红的（或者有 flaky 的测试），" +
-				"或者这个提交之前的某个提交就已经弄红了一部分测试。\n" +
-				"先把套件弄绿，再回来审 —— 在套件本身有红灯的时候，" +
-				"「测试在看守修复」这句话是没有依据的",
+			Hint: "This usually means one of two things: the test suite is already red (or has flaky tests), " +
+				"or an earlier commit before this one already turned some of the tests red.\n" +
+				"Get the suite green first, then come back and audit — while the suite itself has a red light in it, " +
+				"the sentence \"the test is guarding the fix\" has nothing behind it",
 		})
 
 	case VerdictProven:
 		out = append(out, core.Finding{
 			Kind:     core.KindVacuousTest, // placeholder replaced below
 			Severity: core.SevInfo,
-			Summary:  "测试确实能抓住这个修复",
-			Detail: fmt.Sprintf("撤掉修复后 %d 个测试变红 —— 它们真的在看守这个行为。",
+			Summary:  "The test really does catch this fix",
+			Detail: fmt.Sprintf("Removing the fix made %d tests red — they really are guarding that behavior.",
 				countFail(run)),
 			File:     testFile,
 			Evidence: run.command,
@@ -1579,33 +1580,33 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		// batch were all "a behaviour changed and nothing watches it" -
 		// the same fact, said about the commit instead of the test.
 		severity := core.SevWarn
-		summary := "这次改动没有测试看着它"
+		summary := "Nothing is watching this change"
 		detail := fmt.Sprintf(
-			"提交 %s 同时改了代码和测试。把修复撤掉、只留测试后，%d 个测试全部通过。\n"+
-				"也就是说：这次改动的行为，**没有任何测试看着它**。\n"+
-				"这不等于那个测试是坏的 —— 它可能本来就不是为这个行为写的"+
-				"（重构时顺手改的、修一个飘的测试、给老代码补的用例）。\n"+
-				"要补的是「这个行为」的测试，不是「那个测试」。",
+			"Commit %s changed both code and tests. With the fix removed and only the tests kept, %d tests all passed.\n"+
+				"In other words: this change's behavior has **no test at all watching it**.\n"+
+				"That does not mean the test is bad — it may never have been written for this behavior"+
+				"(adjusted in passing during a refactor, a flaky test stabilized, a new case for old code).\n"+
+				"What needs a test is \"this behavior\", not \"that test\".",
 			res.Commit.Short, countPass(run))
 		if res.SourceChange.biggestFile <= smallChangeLines {
-			summary = "改动很小，没有测试看着它 —— 多半不是问题"
+			summary = "The change is small and nothing is watching it — most likely not a problem"
 			detail = fmt.Sprintf(
-				"提交 %s 同时改了代码和测试，但代码那边只改了 %d 行。撤掉这几行、只留测试后，%d 个测试全部通过。\n"+
-					"改动这么小的时候，「没有测试守着它」多半不是问题 —— 版本号、消息文案、改个措辞都属于这一类。\n"+
-					"如果这几行真的改的是行为，那它需要测试。",
+				"Commit %s changed both code and tests, but the code side changed only %d lines. With those lines removed and only the tests kept, %d tests all passed.\n"+
+					"With a change that small, \"nothing is watching it\" is most likely not a problem — version numbers, message text and wording tweaks all fall into this class.\n"+
+					"If those lines really do change behavior, then it needs a test.",
 				res.Commit.Short, res.SourceChange.biggestFile, countPass(run))
 		}
 		if run.deduplicated {
 			// The commit removed code that still exists elsewhere in the
-			// tree. Nothing observable changed, so there is no behaviour
+			// tree. Nothing observable changed, so there is no behavior
 			// for a test to watch - and nothing to report.
 			severity = core.SevInfo
-			summary = "这次改动只是把别处已有的代码删了一份 —— 行为没变"
+			summary = "This change only deleted a copy of code that exists elsewhere — behavior did not change"
 			detail = fmt.Sprintf(
-				"提交 %s 删掉的代码，在树的另一个地方还有一份。\n"+
-					"也就是说它没有改变任何行为 —— 所以「没有测试看着它」在这里不成立，"+
-					"没有测试需要看。\n"+
-					"（撤掉修复后 %d 个测试全部通过，但这个提交本来就没改行为。）",
+				"The code that commit %s deleted still exists in another part of the tree.\n"+
+					"That is, it did not change any behavior — so \"nothing is watching it\" does not hold here; "+
+					"there is nothing for a test to watch.\n"+
+					"(%d tests all passed after the fix was removed, but this commit never changed behavior in the first place.)",
 				res.Commit.Short, countPass(run))
 		}
 		out = append(out, core.Finding{
@@ -1616,25 +1617,25 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Repro:    reproFor(res, run),
-			Hint: "要补的是「这次改动的行为」的测试：断言具体的返回值、错误内容或状态，" +
-				"而不是实现细节或者「没有 panic」。\n" +
-				"如果那个测试本来就是为别的事写的，那就没问题 —— 这次改动需要它自己的测试。",
+			Hint: "What needs a test is the behavior this change introduced: assert on concrete return values, error messages or state, " +
+				"not on implementation details or on \"it did not panic\".\n" +
+				"If that test was written for something else, that is fine — this change needs a test of its own.",
 		})
 
 	case VerdictSkipped:
 		out = append(out, core.Finding{
 			Kind:     core.KindSkippedTest,
 			Severity: core.SevCritical,
-			Summary:  "测试没有执行 —— 它一次都没跑过，所以什么都没证明",
+			Summary:  "The tests did not run — they never executed once, so they prove nothing",
 			Detail: fmt.Sprintf(
-				"撤掉修复后跑测试，%d 个测试全部被跳过，0 个真正执行。\n"+
-					"在 bug 修复之前它们同样不会执行 —— 覆盖率数字再高也是空的。",
+				"With the fix removed, %d tests were all skipped and 0 actually ran.\n"+
+					"They would not have executed before the bug was fixed either — a coverage number that high is still empty.",
 				countSkip(run)),
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Repro:    reproFor(res, run),
-			Hint: "查跳过条件：如果它依赖一个没入库的文件，干净 clone 和 CI 里都会跳。\n" +
-				"让测试语料入库，或者让语料缺失时直接失败而不是跳过",
+			Hint: "Check the skip condition: if it depends on a file that is not under version control, it will be skipped in a clean clone and in CI too.\n" +
+				"Put the test fixtures under version control, or make a missing fixture fail the test instead of skipping it",
 		})
 
 	case VerdictCoupled:
@@ -1650,18 +1651,18 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		// reader that the test "references something the fix introduced"
 		// would be a different (and wrong) story.
 		detail := fmt.Sprintf(
-			"提交 %s 的测试改动无法单独应用到父提交上 —— 测试依赖了这次修复引入的东西。\n"+
-				"因此「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
+			"The test changes of commit %s cannot be applied to the parent commit on their own — the test depends on something this fix introduced.\n"+
+				"So the question \"if you remove the fix, does the test go red\" has no answer for this change.",
 			res.Commit.Short)
-		summary := "无法判定：测试和修复耦合在一起，拆不开"
-		hint := "这不是错误，是提示：耦合的测试很难单独证明自己。\n" +
-			"可以加一个更靠近行为的测试来覆盖同一个场景"
+		summary := "Cannot be judged: the test and the fix are coupled and cannot be separated"
+		hint := "This is not an error, it is a heads-up: a coupled test is hard to prove on its own.\n" +
+			"You can add a test that sits closer to the behavior and covers the same scenario"
 		if run != nil && run.command != "" {
 			detail = fmt.Sprintf(
-				"提交 %s 的测试补丁能打上，但撤掉修复之后整个包编译不过 —— "+
-					"测试引用了这次修复才引入的东西。\n"+
-					"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案："+
-					"测试和修复是缠在一起的。",
+				"The test patch of commit %s does apply, but with the fix removed the whole package no longer compiles — "+
+					"the test references something this fix introduced.\n"+
+					"So the question \"if you remove the fix, does the test go red\" has no answer for this change: "+
+					"the test and the fix are tangled together.",
 				res.Commit.Short)
 		}
 		if run != nil && run.revertedFile != "" {
@@ -1682,43 +1683,43 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			switch run.revertedFileCompiles {
 			case core.CompileRejectedByLint:
 				detail = fmt.Sprintf(
-					"提交 %s 的测试补丁能打上，但撤掉修复之后这个包没通过 go test 的构建 —— "+
-						"坏掉的那个文件（%s）正是这次修复改过的文件。\n"+
-						"★ 代码本身**编译得过去**：挡住它的不是编译器，"+
-						"而是 go test 在编译之外多跑的那一步 —— 它默认会跑的一组 vet 检查。\n"+
-						"也就是说，这个修复修的就是那条检查；"+
-						"没有它，这个包一次测试都跑不起来。\n"+
-						"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
+					"The test patch of commit %s does apply, but with the fix removed this package no longer passes go test's build — "+
+						"the file that broke (%s) is exactly the file this fix changed.\n"+
+						"★ The code itself **compiles fine**: what stopped it is not the compiler, "+
+						"but the extra step go test runs on top of compilation — the set of vet checks it runs by default.\n"+
+						"In other words, this fix fixes that check; "+
+						"without it, this package cannot run a single test.\n"+
+						"So the question \"if you remove the fix, does the test go red\" has no answer for this change.",
 					res.Commit.Short, run.revertedFile)
-				summary = "无法判定：撤掉修复之后这个包没通过 go test 的构建"
-				hint = "这不是错误：这个提交让 go test 过得去，这件事本身有价值。\n" +
-					"只是「撤掉修复，测试会不会红」在这里没有答案 —— " +
-					"要回答它，需要一个不依赖这次修复的测试。"
+				summary = "Cannot be judged: this package no longer passes go test's build once the fix is removed"
+				hint = "This is not an error: this commit is what makes go test get through, and that is worth something on its own.\n" +
+					"It is only that \"if you remove the fix, does the test go red\" has no answer here — " +
+					"answering it would take a test that does not depend on this fix."
 			case core.CompileFine:
 				detail = fmt.Sprintf(
-					"提交 %s 的测试补丁能打上，但撤掉修复之后这个包没通过 go test 的构建 —— "+
-						"坏掉的那个文件（%s）正是这次修复改过的文件。\n"+
-						"★ 代码本身**编译得过去**：挡住它的不是编译器，"+
-						"但也不是 go test 的 vet 检查 —— 具体是什么，这套工具没能查出来。\n"+
-						"没有它，这个包一次测试都跑不起来。\n"+
-						"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
+					"The test patch of commit %s does apply, but with the fix removed this package no longer passes go test's build — "+
+						"the file that broke (%s) is exactly the file this fix changed.\n"+
+						"★ The code itself **compiles fine**: what stopped it is not the compiler, "+
+						"and it is not go test's vet checks either — this tool could not work out exactly what it was.\n"+
+						"Without it, this package cannot run a single test.\n"+
+						"So the question \"if you remove the fix, does the test go red\" has no answer for this change.",
 					res.Commit.Short, run.revertedFile)
-				summary = "无法判定：撤掉修复之后这个包没通过 go test 的构建"
-				hint = "这不是错误：这个提交让 go test 过得去，这件事本身有价值。\n" +
-					"只是「撤掉修复，测试会不会红」在这里没有答案 —— " +
-					"要回答它，需要一个不依赖这次修复的测试。"
+				summary = "Cannot be judged: this package no longer passes go test's build once the fix is removed"
+				hint = "This is not an error: this commit is what makes go test get through, and that is worth something on its own.\n" +
+					"It is only that \"if you remove the fix, does the test go red\" has no answer here — " +
+					"answering it would take a test that does not depend on this fix."
 			default:
 				detail = fmt.Sprintf(
-					"提交 %s 的测试补丁能打上，但撤掉修复之后代码本身编译不过 —— "+
-						"坏掉的那个文件（%s）正是这次修复改过的文件。\n"+
-						"也就是说，这个修复就是让代码重新编译得过去的那个修复；"+
-						"没有它，这个包一次测试都跑不起来。\n"+
-						"所以「撤掉修复，测试会不会红」这个问题在这次改动上没有答案。",
+					"The test patch of commit %s does apply, but with the fix removed the code itself does not compile — "+
+						"the file that broke (%s) is exactly the file this fix changed.\n"+
+						"That is, this fix is the fix that made the code compile again; "+
+						"without it, this package cannot run a single test.\n"+
+						"So the question \"if you remove the fix, does the test go red\" has no answer for this change.",
 					res.Commit.Short, run.revertedFile)
-				summary = "无法判定：撤掉修复之后代码就编译不过了"
-				hint = "这不是错误：这个提交让代码重新编译得过，这件事本身有价值。\n" +
-					"只是「撤掉修复，测试会不会红」在这里没有答案 —— " +
-					"要回答它，需要一个不依赖这次编译修复的测试。"
+				summary = "Cannot be judged: the code no longer compiles once the fix is removed"
+				hint = "This is not an error: this commit is what makes the code compile again, and that is worth something on its own.\n" +
+					"It is only that \"if you remove the fix, does the test go red\" has no answer here — " +
+					"answering it would take a test that does not depend on this compile fix."
 			}
 		}
 		out = append(out, core.Finding{
@@ -1736,19 +1737,19 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		out = append(out, core.Finding{
 			Kind:     core.KindSuiteCrash,
 			Severity: core.SevWarn,
-			Summary:  "测试套件没有跑起来 —— 它一个用例都没执行，所以什么都没证明",
+			Summary:  "The test suite did not start up — it executed not a single case, so it proves nothing",
 			Detail: fmt.Sprintf(
-				"提交 %s 的测试跑起来了，但有套件在加载阶段就崩了："+
-					"import 报错、beforeAll 抛异常、或者运行器自己挂了；"+
-					"也可能是运行器根本没有产出报告 —— 比如它一个测试文件都没收集到。\n"+
-					"这些套件一次用例都没执行 —— 它们既没有看守这个修复，也不能证明它们看守了。\n"+
-					"这跟「环境缺东西」是两回事：环境问题是检出的代码缺了构建需要的东西，"+
-					"套件没跑起来是这个测试文件自己跑不起来。所以这里不下结论。",
+				"The tests of commit %s did start, but some suite crashed while it was being loaded: "+
+					"an import failed, a beforeAll threw, or the runner itself died; "+
+					"it may also be that the runner produced no report at all — for instance because it collected not a single test file.\n"+
+					"Those suites executed not a single case — they were not guarding this fix, and they cannot prove that they were.\n"+
+					"That is a different thing from \"the environment is missing something\": an environment problem is a checkout that lacks what the build needs, "+
+					"whereas a suite that did not start up is this one test file failing to start up. So no conclusion is drawn here.",
 				res.Commit.Short),
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Repro:    reproFor(res, run),
-			Hint:     "先让这个测试文件自己能跑起来（修 import、把 beforeAll 里的副作用挪走），再审这个提交",
+			Hint:     "First let this test file start up on its own (fix the import, move the side effects out of beforeAll), then audit this commit",
 		})
 
 	case VerdictEnvironment:
@@ -1757,21 +1758,21 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		// build. The other is a counterfactual that built fine and a
 		// baseline that did not - and there the missing piece is in the
 		// BASELINE's checkout, not in the experiment.
-		summary := "这个提交没法判定：检查出的代码缺东西，跑不起来"
+		summary := "This commit cannot be judged: the checked-out code is missing something and does not run"
 		detail := fmt.Sprintf(
-			"提交 %s 的测试跑不起来，但原因不是测试和修复耦合 —— "+
-				"是检查出的代码缺了构建需要的东西（通常是未入库的生成物，"+
-				"或者一个用 replace 指向本地目录的依赖在检出的环境里找不到）。\n"+
-				"这跟测试好不好无关，所以不下结论。",
+			"The tests of commit %s do not run, but the reason is not that the test and the fix are coupled — "+
+				"it is that the checked-out code lacks something the build needs (usually a generated artefact that is not under version control, "+
+				"or a dependency that uses `replace` to point at a local directory and cannot be found in this checkout).\n"+
+				"That has nothing to do with whether the test is any good, so no conclusion is drawn.",
 			res.Commit.Short)
 		if run != nil && run.baselineUnknown {
-			summary = "这个提交没法判定：基线那棵代码树没跑起来"
+			summary = "This commit cannot be judged: the baseline tree did not run"
 			detail = fmt.Sprintf(
-				"提交 %s 的反事实实验跑起来了：有 %d 个测试变红。\n"+
-					"但基线（带着修复的同一个提交）没有跑起来，所以"+
-					"「这个红灯是不是这次修复造成的」这个问题没有人回答过。\n"+
+				"The counterfactual experiment of commit %s did run: %d tests went red.\n"+
+					"But the baseline (the same commit, with the fix in place) did not run, so "+
+					"nobody has answered the question \"was this red caused by this fix\".\n"+
 					"%s\n"+
-					"注意：套件本身可能是绿的 —— 坏的是检出，不是测试。",
+					"Note: the suite itself may well be green — what is broken is the checkout, not the test.",
 				res.Commit.Short, countFail(run), run.baselineUnknownDetail)
 		}
 		out = append(out, core.Finding{
@@ -1782,24 +1783,24 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Repro:    reproFor(res, run),
-			Hint: "看证据里的编译错误：缺什么就补什么。" +
-				"本地依赖的，检查一下该目录在不在；生成物的，先构建一次再审",
+			Hint: "Read the compile errors in the evidence: whatever is missing, provide it. " +
+				"For a local dependency, check that the directory is there; for a generated artefact, build once before auditing",
 		})
 
 	case VerdictContradictory:
 		out = append(out, core.Finding{
 			Kind:     core.KindContradictory,
 			Severity: core.SevCritical,
-			Summary:  "工具自己的结论和它自己的原始输出对不上 —— 这是工具的 bug，不是你的代码的问题",
+			Summary:  "The tool's conclusion and its own raw output disagree — this is a bug in the tool, not in your code",
 			Detail: fmt.Sprintf(
-				"提交 %s 的判定过程出现了自相矛盾：%s。\n"+
-					"这种时候工具没有资格下结论，所以它不下。\n"+
-					"下面是把两边都摆出来 —— 原始输出和它的解读。",
+				"The judgement of commit %s contradicted itself: %s.\n"+
+					"In that case the tool is not entitled to a conclusion, so it does not draw one.\n"+
+					"Below are both sides — the raw output and the tool's reading of it.",
 				res.Commit.Short, res.Contradiction),
 			File:     testFile,
 			Evidence: evidenceFor(run),
 			Repro:    reproFor(res, run),
-			Hint:     "这是工具的问题。请把它当成工具的 bug 报回来，别当成代码的问题。",
+			Hint:     "This is the tool's problem. Please report it as a bug in the tool, not as a problem with the code.",
 		})
 	}
 
@@ -1813,16 +1814,16 @@ func evidenceFor(run *runOutcome) string {
 	}
 	var b strings.Builder
 	if run.command != "" {
-		b.WriteString("命令: " + run.command + "\n")
+		b.WriteString("command: " + run.command + "\n")
 	}
 	if run.script != "" {
-		b.WriteString("项目自己的测试命令: " + run.script + "\n")
+		b.WriteString("the project's own test command: " + run.script + "\n")
 	}
 	if run.failureTail != "" {
 		b.WriteString(run.failureTail)
 	} else {
 		pass, fail, skip, _ := run.result.Counts()
-		b.WriteString(fmt.Sprintf("结果: %d 通过 · %d 失败 · %d 跳过", pass, fail, skip))
+		b.WriteString(fmt.Sprintf("result: %d passed · %d failed · %d skipped", pass, fail, skip))
 	}
 	return b.String()
 }
@@ -1986,8 +1987,8 @@ func foreignScopeNote(res *Result) string {
 		paths = append(paths, f.Path)
 	}
 	return fmt.Sprintf(
-		"\n（另外这次还改了 %d 个本工具在这个仓里跑不了的代码文件：%s —— 那部分没有被判到。）",
-		len(res.ForeignSourceFiles), strings.Join(paths, "、"))
+		"\n(Also, this change touched %d code files that this tool cannot run in this repository: %s — that part was not judged.)",
+		len(res.ForeignSourceFiles), strings.Join(paths, ", "))
 }
 
 // noTestAtAllFinding reports a behaviour change in a tree that has no
@@ -2017,18 +2018,18 @@ func noTestAtAllFinding(res *Result, tracked int) core.Finding {
 	return core.Finding{
 		Kind:     core.KindNoTestForFix,
 		Severity: severity,
-		Summary:  "这个改动改了行为，但这棵树里一个测试都没有",
+		Summary:  "This change altered behavior, but this tree has not a single test in it",
 		Detail: fmt.Sprintf(
-			"提交 %s 改了 %d 个非测试文件（最大的一个改了 %d 行），没有加任何测试。\n"+
-				"而它所在的那棵树里**一个测试文件都没有** —— 整个仓还没有测试。\n"+
-				"也就是说，没有任何测试看守这个行为。%s",
+			"Commit %s changed %d non-test files (the largest of them changed %d lines) and added no test at all.\n"+
+				"And the tree it lives in has **not a single test file** — the repository has no tests yet.\n"+
+				"That is, no test is watching this behavior. %s",
 			res.Commit.Short, len(res.SourceFiles), res.SourceChange.biggestFile,
 			foreignScopeNote(res)),
 		File: firstPath(res.SourceFiles),
-		Hint: "先给这个仓建一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
+		Hint: "First give the repository a test; then use `vacuous audit` to check that it really catches this bug",
 		// The evidence is a count the reader can reproduce with one
 		// command, so the claim does not have to be taken on faith.
-		Evidence: fmt.Sprintf("父提交里有 %d 个入库文件，其中 0 个是测试文件", tracked),
+		Evidence: fmt.Sprintf("the parent commit has %d tracked files, of which 0 are test files", tracked),
 	}
 }
 
@@ -2050,15 +2051,15 @@ func noTestForFixFinding(res *Result, run *runOutcome) core.Finding {
 	return core.Finding{
 		Kind:     core.KindNoTestForFix,
 		Severity: severity,
-		Summary:  "这个改动改了行为，但仓里没有任何测试看守它",
+		Summary:  "This change altered behavior and nothing in the repository is watching it",
 		Detail: fmt.Sprintf(
-			"提交 %s 改了 %d 个非测试文件（最大的一个改了 %d 行），没有加任何测试。\n"+
-				"把这次修复撤掉之后，仓里**现有的**测试全部通过（%d 个通过、%d 个失败、%d 个跳过）——\n"+
-				"也就是说，没有任何测试看守这个行为。%s",
+			"Commit %s changed %d non-test files (the largest of them changed %d lines) and added no test at all.\n"+
+				"With this fix removed, every test **already in** the repository passed (%d passed, %d failed, %d skipped) —\n"+
+				"that is, no test is watching this behavior. %s",
 			res.Commit.Short, len(res.SourceFiles), res.SourceChange.biggestFile,
 			pass, fail, skip, foreignScopeNote(res)),
 		File: firstPath(res.SourceFiles),
-		Hint: "补一个测试；然后用 `vacuous audit` 验证它真的能抓住这个 bug",
+		Hint: "Add a test; then use `vacuous audit` to check that it really catches this bug",
 		// The evidence and the recipe are what let a reader check the
 		// claim instead of taking it on faith. The recipe rebuilds the
 		// same tree the experiment ran in - the parent, with the fix

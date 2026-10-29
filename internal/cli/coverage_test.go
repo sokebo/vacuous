@@ -297,10 +297,10 @@ func TestCheckOnARepositoryWithItsOwnHarnessDoesNotFailTheRun(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d: the repository runs its own checks.\nstdout: %s\nstderr: %s",
 			code, ExitOK, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "验证命令") {
+	if !strings.Contains(flat(stdout), "verification commands") {
 		t.Errorf("the report must say what it did not cover, got:\n%s", stdout)
 	}
-	if strings.Contains(stdout, "一个测试文件都没有") {
+	if strings.Contains(flat(stdout), "not a single test file") {
 		t.Errorf("the report must not claim the repository has no tests at all:\n%s", stdout)
 	}
 }
@@ -404,10 +404,10 @@ func TestCheckOnALibraryWithItsOwnCheckScriptDoesNotFailTheRun(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d: the repository ships its own check.\nstdout: %s\nstderr: %s",
 			code, ExitOK, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "验证命令") {
+	if !strings.Contains(flat(stdout), "verification commands") {
 		t.Errorf("the report must say what it did not cover, got:\n%s", stdout)
 	}
-	if strings.Contains(stdout, "一个测试文件都没有") {
+	if strings.Contains(flat(stdout), "not a single test file") {
 		t.Errorf("the report must not claim the repository has no tests at all:\n%s", stdout)
 	}
 }

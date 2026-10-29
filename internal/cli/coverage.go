@@ -143,25 +143,26 @@ func noRunnerFinding(root string, files []string, scope core.FileScope) core.Fin
 		return core.Finding{
 			Kind:     core.KindNoTestRunner,
 			Severity: core.SevWarn,
-			Summary:  "仓库里有测试文件，但没有能跑它们的命令",
+			Summary:  "The repository has test files, but no command that can run them",
 			Detail: fmt.Sprintf(
-				"找到 %d 个测试文件，但没有找到可用的测试运行器"+
-					"（Go 的 go.mod / Python 的 pytest 配置或 unittest 套件 / Node 的 test script）。\n"+
-					"测试文件躺在那里，却从来没有被执行过 —— 这跟没有测试是一样的。",
+				"Found %d test files, but no usable test runner "+
+					"(Go's go.mod / Python's pytest configuration or unittest suite / Node's test script).\n"+
+					"The test files are sitting there, and they have never been executed — "+
+					"which is the same as having no tests at all.",
 				tests),
-			Evidence: "找到的测试文件数: " + strconv.Itoa(tests),
-			Hint: "把测试接进一个能跑的入口：go test / pytest / " +
-				"python -m unittest / npm test，并且让它在 CI 里真的跑一遍",
+			Evidence: "test files found: " + strconv.Itoa(tests),
+			Hint: "Wire the tests into an entry point that can run them: go test / pytest / " +
+				"python -m unittest / npm test, and make sure CI really runs it",
 		}
 
 	default:
 		return core.Finding{
 			Kind:     core.KindNoTestRunner,
 			Severity: core.SevInfo,
-			Summary:  "这个仓库没有可运行的测试（但它也没有需要测试的代码）",
-			Detail: "仓库里没有源文件，也没有测试文件。" +
-				"静态检查已经跑完了，但反事实审计在这里无事可做。",
-			Hint: "如果这个仓库以后会有代码，记得先把测试跑起来",
+			Summary:  "This repository has no runnable tests (but it has no code to test either)",
+			Detail: "The repository has no source files and no test files. " +
+				"The static checks are done, but there is nothing for the counterfactual audit to do here.",
+			Hint: "If this repository gets code later, get the tests running first",
 		}
 	}
 }
@@ -188,23 +189,23 @@ func harnessFinding(harness []detect.HarnessCommand, src, tests int) core.Findin
 	}
 
 	detail := []string{
-		"仓库里有 " + strconv.Itoa(src) + " 个源文件、" + strconv.Itoa(tests) +
-			" 个工具能识别的测试文件，但找到了 " + strconv.Itoa(len(harness)) +
-			" 个这个工具跑不了的验证命令：",
+		"The repository has " + strconv.Itoa(src) + " source files and " + strconv.Itoa(tests) +
+			" test files the tool recognises, but it also has " + strconv.Itoa(len(harness)) +
+			" verification commands this tool cannot run:",
 	}
 	detail = append(detail, lines...)
 	detail = append(detail,
-		"这个工具只会驱动 "+adapters.SupportedRunnersText(" / ")+"，跑不了它们。",
-		"所以这份报告没有覆盖到这些检查 —— 不是这个仓没有检查，是我没看。",
+		"This tool can only drive "+adapters.SupportedRunnersText(" / ")+", so it cannot run those.",
+		"Which means this report does not cover those checks — it is not that the repository has no checks, it is that I did not look at them.",
 	)
 
 	return core.Finding{
 		Kind:     core.KindUnsupportedTests,
 		Severity: core.SevInfo,
-		Summary:  "这个仓有自己的验证命令，但这个工具跑不了它们",
+		Summary:  "This repository has its own verification commands, but this tool cannot run them",
 		Detail:   strings.Join(detail, "\n"),
 		Evidence: strings.Join(evidence, "\n"),
-		Hint: "想让它们也进这份报告，需要给工具加一个能驱动这条命令的适配器。" +
-			"在那之前，这条命令到底守住了什么，得你自己用反事实的办法验",
+		Hint: "To bring them into this report, the tool needs an adapter that can drive those commands. " +
+			"Until then, what those commands actually guard has to be verified by hand, with the counterfactual method",
 	}
 }

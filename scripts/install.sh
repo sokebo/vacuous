@@ -17,11 +17,24 @@ REPO="sokebo/vacuous"
 BINARY="vacuous"
 
 info() { printf '\033[0;36m==>\033[0m %s\n' "$1"; }
-warn() { printf '\033[0;33m警告:\033[0m %s\n' "$1" >&2; }
-die()  { printf '\033[0;31m错误:\033[0m %s\n' "$1" >&2; exit 1; }
+warn() { printf '\033[0;33mwarning:\033[0m %s\n' "$1" >&2; }
+die()  { printf '\033[0;31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 
 need() {
-  command -v "$1" >/dev/null 2>&1 || die "找不到 $1，请先安装它"
+  command -v "$1" >/dev/null 2>&1 || die "$1 not found — please install it first"
+}
+
+# sha256_of prints the SHA256 of a file.
+#
+# macOS ships shasum; Linux usually ships sha256sum. Either will do.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    die "neither sha256sum nor shasum found — cannot verify the download"
+  fi
 }
 
 detect_platform() {
@@ -30,14 +43,14 @@ detect_platform() {
   case "$os" in
     darwin) os="darwin" ;;
     linux)  os="linux" ;;
-    *) die "不支持的操作系统: $os" ;;
+    *) die "unsupported operating system: $os" ;;
   esac
 
   arch="$(uname -m)"
   case "$arch" in
     x86_64|amd64)  arch="x86_64" ;;
     arm64|aarch64) arch="arm64" ;;
-    *) die "不支持的架构: $arch" ;;
+    *) die "unsupported architecture: $arch" ;;
   esac
 
   printf '%s_%s' "$os" "$arch"
@@ -45,7 +58,7 @@ detect_platform() {
 
 install_via_go() {
   need go
-  info "用 go install 安装 $REPO/cmd/$BINARY ..."
+  info "Installing $REPO/cmd/$BINARY with go install ..."
   go install "github.com/$REPO/cmd/$BINARY@latest"
 
   local gobin
@@ -55,10 +68,10 @@ install_via_go() {
   fi
 
   if ! command -v "$BINARY" >/dev/null 2>&1; then
-    warn "装好了，但 $gobin 不在 PATH 里。加这一行到你的 shell 配置："
+    warn "Installed, but $gobin is not on your PATH. Add this line to your shell config:"
     warn "    export PATH=\"\$PATH:$gobin\""
   else
-    info "装好了: $(command -v "$BINARY")"
+    info "Installed: $(command -v "$BINARY")"
   fi
 }
 
@@ -66,22 +79,44 @@ install_via_release() {
   need curl
   need tar
 
-  local platform version url tmp
+  local platform version url sums_url tmp
   platform="$(detect_platform)"
   version="${VERSION:-latest}"
 
   if [ "$version" = "latest" ]; then
     url="https://github.com/$REPO/releases/latest/download/vacuous_${platform}.tar.gz"
+    sums_url="https://github.com/$REPO/releases/latest/download/vacuous-SHA256SUMS"
   else
     url="https://github.com/$REPO/releases/download/${version}/vacuous_${platform}.tar.gz"
+    sums_url="https://github.com/$REPO/releases/download/${version}/vacuous-SHA256SUMS"
   fi
 
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
 
-  info "下载 $url ..."
+  info "Downloading $url ..."
   curl -fsSL "$url" -o "$tmp/vacuous.tar.gz" \
-    || die "下载失败。检查网络，或者自己用 go install 装。"
+    || die "download failed. Check your network, or install it yourself with go install."
+
+  # Verify the checksum BEFORE unpacking anything.
+  #
+  # A tarball that does not match its published checksum was either
+  # corrupted in transit or is not what it claims to be, and installing it
+  # either way is the wrong move. The release publishes
+  # vacuous-SHA256SUMS next to the binaries; if that file cannot be
+  # fetched, the install fails rather than proceeding unverified.
+  curl -fsSL "$sums_url" -o "$tmp/SHA256SUMS" \
+    || die "could not download the release checksums. Install it yourself with go install."
+
+  local expected actual
+  expected="$(awk -v f="vacuous_${platform}.tar.gz" '$2 == f {print $1}' "$tmp/SHA256SUMS")"
+  [ -n "$expected" ] \
+    || die "the release has no checksum for vacuous_${platform}.tar.gz. Install it yourself with go install."
+
+  actual="$(sha256_of "$tmp/vacuous.tar.gz")"
+  [ "$expected" = "$actual" ] \
+    || die "checksum mismatch for vacuous_${platform}.tar.gz — refusing to install it."
+  info "Checksum verified."
 
   tar -xzf "$tmp/vacuous.tar.gz" -C "$tmp"
 
@@ -90,11 +125,11 @@ install_via_release() {
   if [ ! -w "$dest" ]; then
     dest="$HOME/.local/bin"
     mkdir -p "$dest"
-    warn "没有 /usr/local/bin 的写权限，装到 $dest"
+    warn "No write access to /usr/local/bin — installing to $dest instead"
   fi
 
   install -m 0755 "$tmp/$BINARY" "$dest/$BINARY"
-  info "装好了: $dest/$BINARY"
+  info "Installed: $dest/$BINARY"
 }
 
 main() {
@@ -108,11 +143,11 @@ main() {
         install_via_release
       fi
       ;;
-    *) die "用法: $0 [go|release|auto]" ;;
+    *) die "usage: $0 [go|release|auto]" ;;
   esac
 
   printf '\n'
-  info "试试: cd 你的项目 && $BINARY --mode check"
+  info "Try it: cd into your project && $BINARY --mode check"
 }
 
 main "$@"

@@ -50,7 +50,7 @@ func (a *Auditor) copyUntrackedBuildInputs(ctx context.Context, worktreePath str
 			// "the code is missing something", which points the reader
 			// at the wrong thing entirely.
 			failures = append(failures,
-				fmt.Sprintf("复制 %s 失败: %v", dir, err))
+				fmt.Sprintf("failed to copy %s: %v", dir, err))
 		}
 	}
 	if len(failures) > 0 {

@@ -42,7 +42,7 @@ func renderText(w io.Writer, r *core.Report) error {
 		return err
 	}
 	if r.Project != "" {
-		if err := writeLine(w, "项目: "+r.Project); err != nil {
+		if err := writeLine(w, "Project: "+r.Project); err != nil {
 			return err
 		}
 	}
@@ -70,8 +70,8 @@ func renderText(w io.Writer, r *core.Report) error {
 		}
 	}
 
-	if err := writeField(w, "统计", fmt.Sprintf(
-		"proven %d · vacuous %d · 无测试 %d · 无法判定 %d · 不适用 %d · 审不了 %d",
+	if err := writeField(w, "Summary", fmt.Sprintf(
+		"proven %d · vacuous %d · no test %d · undecidable %d · not applicable %d · could not audit %d",
 		r.Proven, r.Vacuous, r.NoTest, r.Inconclusive, r.NotApplicable, r.AuditFailed)); err != nil {
 		return err
 	}
@@ -85,13 +85,43 @@ func renderText(w io.Writer, r *core.Report) error {
 	// commit was judged, that the finding was suppressed on purpose, and
 	// that the reason is written next to the code.
 	if r.Silenced > 0 {
-		if err := writeField(w, "豁免", fmt.Sprintf(
-			"%d 个提交判出了结论，但发现被 // vacuous:ignore 注释压住 —— "+
-				"注释就写在触发它的代码旁边", r.Silenced)); err != nil {
+		if err := writeField(w, "Silenced", fmt.Sprintf(
+			"%s judged, but the finding was suppressed by a // vacuous:ignore comment — "+
+				"the comment sits right next to the code that triggered it", verbWas(r.Silenced, "commit", "commits"))); err != nil {
 			return err
 		}
 	}
-	return writeField(w, "按类别", byKindLine(r))
+	return writeField(w, "By kind", byKindLine(r))
+}
+
+// noun renders a count with the right noun form: "1 commit", "2 commits".
+//
+// Chinese does not inflect for number, so this is the kind of thing that
+// only shows up after the translation — and "found 1 problems" in the
+// headline of every report is the kind of detail that makes a tool look
+// machine-made.
+func noun(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// verbIs renders a count with the right noun and verb form:
+// "1 commit is", "2 commits are".
+func verbIs(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s is", n, one)
+	}
+	return fmt.Sprintf("%d %s are", n, many)
+}
+
+// verbWas is verbIs in the past tense: "1 commit was", "2 commits were".
+func verbWas(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s was", n, one)
+	}
+	return fmt.Sprintf("%d %s were", n, many)
 }
 
 // writeField writes a "label: value" line, wrapped to the width budget.
@@ -137,13 +167,13 @@ func headline(r *core.Report, findings []core.Finding) string {
 	if len(findings) == 0 {
 		switch {
 		case r.AuditFailed > 0:
-			return fmt.Sprintf("vacuous — 有 %d 个提交没能审成，报告不完整", r.AuditFailed)
+			return fmt.Sprintf("vacuous — %s could not be audited, the report is incomplete", noun(r.AuditFailed, "commit", "commits"))
 		case judged == 0:
-			return fmt.Sprintf("vacuous — 这一轮没有可判的提交（%d 个不适用）", r.NotApplicable)
+			return fmt.Sprintf("vacuous — nothing to judge in this run (%d not applicable)", r.NotApplicable)
 		case r.Proven > 0:
-			return fmt.Sprintf("vacuous — %d 个修复都有测试守住", r.Proven)
+			return fmt.Sprintf("vacuous — %s guarded by a test", verbIs(r.Proven, "fix", "fixes"))
 		default:
-			return "vacuous — 没有发现问题"
+			return "vacuous — no findings"
 		}
 	}
 
@@ -158,15 +188,15 @@ func headline(r *core.Report, findings []core.Finding) string {
 	}
 	// The scope of the run belongs in the first line: a reader who does
 	// not know how much was judged cannot weigh what was found.
-	scope := fmt.Sprintf("审了 %d 个提交", judged)
+	scope := fmt.Sprintf("audited %s", noun(judged, "commit", "commits"))
 	if unjudged > 0 {
-		scope += fmt.Sprintf("，%d 个不适用", r.NotApplicable)
+		scope += fmt.Sprintf(", %d not applicable", r.NotApplicable)
 	}
 	if r.AuditFailed > 0 {
-		scope += fmt.Sprintf("，%d 个没审成", r.AuditFailed)
+		scope += fmt.Sprintf(", %d could not be audited", r.AuditFailed)
 	}
-	return fmt.Sprintf("vacuous — 发现 %d 个问题（%s %d · %s %d · 没测试看着 %d；%s）",
-		len(findings), severityLabel(core.SevCritical), critical,
+	return fmt.Sprintf("vacuous — found %s (%s %d · %s %d · unwatched %d; %s)",
+		noun(len(findings), "problem", "problems"), severityLabel(core.SevCritical), critical,
 		severityLabel(core.SevHigh), high, r.Vacuous, scope)
 }
 
@@ -174,7 +204,7 @@ func headline(r *core.Report, findings []core.Finding) string {
 func writeFinding(w io.Writer, f core.Finding) error {
 	loc := f.Location()
 	if loc == "" {
-		loc = "(仓库根)"
+		loc = "(repository root)"
 	}
 	head := fmt.Sprintf("  %-10s %-*s %s", severityTag(f.Severity), kindWidth, string(f.Kind), loc)
 	if _, err := fmt.Fprintln(w, strings.TrimRight(head, " ")); err != nil {
@@ -185,7 +215,7 @@ func writeFinding(w io.Writer, f core.Finding) error {
 		return err
 	}
 	if f.Detail != "" && f.Detail != f.Summary {
-		if err := writeWrapped(w, "说明: "+f.Detail); err != nil {
+		if err := writeWrapped(w, "Detail: "+f.Detail); err != nil {
 			return err
 		}
 	}
@@ -195,7 +225,7 @@ func writeFinding(w io.Writer, f core.Finding) error {
 		}
 	}
 	if f.Hint != "" {
-		if err := writeWrapped(w, "怎么修: "+f.Hint); err != nil {
+		if err := writeWrapped(w, "How to fix: "+f.Hint); err != nil {
 			return err
 		}
 	}
@@ -229,7 +259,7 @@ func writeWrapped(w io.Writer, text string) error {
 // is something to run, not something to read. A reader who does not trust
 // the tool runs these and sees the same output the tool saw.
 func writeRepro(w io.Writer, repro string) error {
-	if err := writeWrapped(w, "怎么自己验一遍:"); err != nil {
+	if err := writeWrapped(w, "How to verify it yourself:"); err != nil {
 		return err
 	}
 	for _, line := range strings.Split(strings.TrimRight(repro, "\n"), "\n") {
@@ -249,7 +279,7 @@ func writeEvidence(w io.Writer, evidence string) error {
 	lines := strings.Split(strings.TrimRight(evidence, "\n"), "\n")
 	for i, line := range lines {
 		if i == 0 {
-			if _, err := fmt.Fprintf(w, "%s证据: %s\n", bodyIndent, line); err != nil {
+			if _, err := fmt.Fprintf(w, "%sEvidence: %s\n", bodyIndent, line); err != nil {
 				return err
 			}
 			continue
@@ -261,14 +291,14 @@ func writeEvidence(w io.Writer, evidence string) error {
 	return nil
 }
 
-// byKindLine is the "按类别" footer: how many findings of each kind.
+// byKindLine is the "By kind" footer: how many findings of each kind.
 //
 // Kinds are listed in name order, not count order: a stable order keeps the
 // footer diff-friendly across runs.
 func byKindLine(r *core.Report) string {
 	counts := r.ByKind()
 	if len(counts) == 0 {
-		return "无"
+		return "none"
 	}
 	kinds := make([]string, 0, len(counts))
 	for k := range counts {

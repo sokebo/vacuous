@@ -73,15 +73,16 @@ func uncommittedFinding(root string, findings []core.Finding) (core.Finding, boo
 	return core.Finding{
 		Kind:     core.KindUncommittedChanges,
 		Severity: core.SevWarn,
-		Summary:  "这些发现可能说的不是仓库里的代码 —— 那些改动还没提交",
+		Summary:  "These findings may not be about the code in the repository — those changes are not committed yet",
 		Detail: fmt.Sprintf(
-			"报告里有 %d 条发现指向的文件，工作树里的内容和 HEAD 不一样：\n%s"+
-				"这些改动还没提交。工具读的是工作树里的内容，所以这些发现描述的可能是"+
-				"你正在写的代码，而不是仓库里现在有的代码。\n"+
-				"这不是错误 —— 它只是说：这些发现成不成立，取决于你打算怎么用这些改动。",
+			"%d findings in the report point at files whose contents in the working tree differ from HEAD:\n%s"+
+				"These changes are not committed. The tool reads the working tree, so these findings may describe "+
+				"the code you are writing rather than the code the repository holds right now.\n"+
+				"This is not an error — it only says: whether these findings hold depends on what you "+
+				"intend to do with these changes.",
 			len(affected), list.String()),
 		Evidence: "git diff --name-only HEAD:\n" + list.String(),
-		Hint: "想让报告只描述已经提交的状态：先提交这些改动，" +
-			"或者 stash 之后再跑一次。",
+		Hint: "To make the report describe only the committed state: commit these changes first, " +
+			"or stash them and run it again.",
 	}, true
 }

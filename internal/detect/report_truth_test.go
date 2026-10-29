@@ -79,7 +79,7 @@ func TestAtLeastFive(t *testing.T) {
 			"got: %s", detail)
 	}
 	// Calling -1 "empty" is a false sentence about the audited code.
-	if strings.Contains(detail, "是空的") {
+	if strings.Contains(detail, "is empty") {
 		t.Errorf("the report must not call a value of -1 empty, got: %s", detail)
 	}
 }
@@ -135,12 +135,12 @@ func TestAtLeastFive(t *testing.T) {
 		t.Fatalf("the finding on line 10 is missing: %+v", findings)
 	}
 	// The tool cannot see the function, so it must not state the value.
-	if strings.Contains(detail, "加载失败时 n 是空的") {
+	if strings.Contains(detail, "When the load fails, n is empty") {
 		t.Errorf("the report must not state as a fact what it could not read, "+
 			"got: %s", detail)
 	}
 	// But it may say that this is the convention it is applying.
-	if !strings.Contains(detail, "会是空的") {
+	if !strings.Contains(detail, "will be empty") {
 		t.Errorf("the report must mark the value as the convention rather "+
 			"than a fact, got: %s", detail)
 	}
@@ -188,12 +188,12 @@ func TestExactlyFive(t *testing.T) {
 		t.Fatalf("the finding on line 6 is missing: %+v", findings)
 	}
 	// "n == 5" demands a value that is not 5.
-	if !strings.Contains(detail, "不等于 5") {
+	if !strings.Contains(detail, "not equal to 5") {
 		t.Errorf("the report must name what the assertion demands of the "+
-			"value (\"不等于 5\" for \"n == 5\"), got: %s", detail)
+			"value (\"not equal to 5\" for \"n == 5\"), got: %s", detail)
 	}
-	// "等于 5" is the opposite of what the assertion demands.
-	if strings.Contains(detail, "等于 5") && !strings.Contains(detail, "不等于 5") {
+	// "equal to 5" is the opposite of what the assertion demands.
+	if strings.Contains(detail, "equal to 5") && !strings.Contains(detail, "not equal to 5") {
 		t.Errorf("the report must not describe \"n == 5\" as demanding a value "+
 			"equal to 5, got: %s", detail)
 	}
@@ -234,7 +234,7 @@ func TestGuard(t *testing.T) {
 	if detail == "" {
 		t.Fatalf("the finding on line 6 is missing: %+v", findings)
 	}
-	if strings.Contains(detail, "一个空的结果") {
+	if strings.Contains(detail, "an empty result") {
 		t.Errorf("the report must not describe a value of -1 as an empty "+
 			"result, got: %s", detail)
 	}

@@ -65,13 +65,13 @@ jobs:
 	if !strings.Contains(f.Detail, "npm run verify → node scripts/verify/run-all.mjs") {
 		t.Errorf("the detail must name the check command the CI does not run:\n%s", f.Detail)
 	}
-	notRun := evidenceSection(f.Evidence, "CI 没跑的验证脚本文件:")
+	notRun := evidenceSection(f.Evidence, "verification script files CI does not run:")
 	if !containsLine(notRun, "scripts/verify/run-all.mjs") {
 		t.Errorf("the evidence must name the file behind the check command the CI does not run:\n%s", f.Evidence)
 	}
 	// The other side of the same finding must stay accurate: the CI did
 	// run the smoke script, and only that one.
-	claimed := evidenceSection(f.Evidence, "CI 跑到的验证脚本文件:")
+	claimed := evidenceSection(f.Evidence, "verification script files CI reached:")
 	if !containsLine(claimed, "scripts/smoke-test-css.mjs") {
 		t.Errorf("the evidence must still name the script the CI runs:\n%s", f.Evidence)
 	}
@@ -116,7 +116,7 @@ jobs:
 	var f core.Finding
 	found := false
 	for _, x := range findings {
-		if strings.Contains(x.Summary, "CI 不跑任何测试") {
+		if strings.Contains(x.Summary, "CI runs no tests at all") {
 			f = x
 			found = true
 		}
@@ -127,7 +127,7 @@ jobs:
 	if !strings.Contains(f.Detail, "npm run verify → node scripts/verify/run-all.mjs") {
 		t.Errorf("the detail must name the check command the CI does not run:\n%s", f.Detail)
 	}
-	notRun := evidenceSection(f.Evidence, "CI 没跑的验证脚本文件:")
+	notRun := evidenceSection(f.Evidence, "verification script files CI does not run:")
 	if !containsLine(notRun, "scripts/verify/run-all.mjs") {
 		t.Errorf("the evidence must name the file behind the check command the CI does not run:\n%s", f.Evidence)
 	}
@@ -167,10 +167,10 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	f := findOwnChecks(t, findings)
-	if strings.Contains(f.Detail, "CI 一个都没跑") {
+	if strings.Contains(f.Detail, "CI runs none of them") {
 		t.Errorf("the report claims the CI runs none of the repository's checks, but it runs them all:\n%s", f.Detail)
 	}
-	if strings.Contains(f.Evidence, "CI 没跑的验证命令") {
+	if strings.Contains(f.Evidence, "verification commands CI does not run") {
 		t.Errorf("the report lists a check command the CI does run:\n%s", f.Evidence)
 	}
 }
@@ -204,7 +204,7 @@ jobs:
 	}
 	f := findOwnChecks(t, findings)
 
-	notRun := evidenceSection(f.Evidence, "CI 没跑的验证脚本文件:")
+	notRun := evidenceSection(f.Evidence, "verification script files CI does not run:")
 	if !containsLine(notRun, "scripts/verify.mjs") {
 		t.Errorf("the root package's verify is not run by the CI and must be named:\n%s", f.Evidence)
 	}
@@ -249,7 +249,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	for _, f := range findings {
-		if strings.Contains(f.Evidence, "CI 没跑的验证命令") {
+		if strings.Contains(f.Evidence, "verification commands CI does not run") {
 			t.Errorf("a sibling repository's script is not this repository's check command: %+v", f)
 		}
 	}

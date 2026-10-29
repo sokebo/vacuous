@@ -38,7 +38,7 @@ func TestCheckOnARepoWithARunnerAndNoTestsSaysSo(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d (findings).\nstdout: %s\nstderr: %s",
 			code, ExitFindings, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "一个测试文件都没有") {
+	if !strings.Contains(flat(stdout), "not a single test file") {
 		t.Errorf("expected the missing-tests finding in the report, got:\n%s", stdout)
 	}
 	if stderr != "" {
@@ -62,7 +62,7 @@ func TestCheckOnARepoWithARunnerAndTestsStaysQuiet(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d (nothing found).\nstdout: %s\nstderr: %s",
 			code, ExitOK, stdout, stderr)
 	}
-	if strings.Contains(stdout, "一个测试文件都没有") {
+	if strings.Contains(flat(stdout), "not a single test file") {
 		t.Errorf("did not expect the missing-tests finding on a repo with tests, got:\n%s", stdout)
 	}
 }
@@ -83,7 +83,7 @@ func TestCheckOnARepoWithARunnerAndItsOwnChecksSaysItCannotDriveThem(t *testing.
 
 	code, stdout, stderr := runCLI(t, "--mode", "check", m.Dir)
 
-	if !strings.Contains(stdout, "自己的验证命令") {
+	if !strings.Contains(flat(stdout), "its own verification commands") {
 		t.Errorf("expected the own-checks finding in the report, got:\n%s", stdout)
 	}
 	// Informational only: the repository is not broken, the report is

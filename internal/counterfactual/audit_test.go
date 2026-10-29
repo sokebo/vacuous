@@ -185,8 +185,8 @@ func TestAuditDetectsVacuousTest(t *testing.T) {
 				t.Errorf("a vacuous-test finding must be a warning, got %v", f.Severity)
 			}
 			// And it must not blame the test.
-			if strings.Contains(f.Summary, "这个测试在撤掉修复后依然是绿的") ||
-				strings.Contains(f.Detail, "它从来没有看守过这个行为") {
+			if strings.Contains(f.Summary, "this test stays green after the fix is removed") ||
+				strings.Contains(f.Detail, "it never guarded this behavior") {
 				t.Errorf("the finding must not accuse the test:\n%q\n%s", f.Summary, f.Detail)
 			}
 			if f.Summary == "" {
@@ -808,15 +808,15 @@ func TestABaselineThatCouldNotRunIsNotAPreExistingRed(t *testing.T) {
 	// The report has to name the real cause: the checkout could not be
 	// built, not the suite being red.
 	for _, f := range res.Findings {
-		if strings.Contains(f.Detail, "测试套件本来就是红的") {
+		if strings.Contains(f.Detail, "the test suite is already red") {
 			t.Errorf("the report tells the reader their suite was already red, "+
 				"which nobody checked and which is false here:\n%s", f.Detail)
 		}
-		if strings.Contains(f.Hint, "测试套件本来就是红的") {
+		if strings.Contains(f.Hint, "the test suite is already red") {
 			t.Errorf("the hint tells the reader their suite was already red, "+
 				"which nobody checked and which is false here:\n%s", f.Hint)
 		}
-		if strings.Contains(f.Summary, "这个红灯本来就在") {
+		if strings.Contains(f.Summary, "this red was already there") {
 			t.Errorf("the summary claims the red was already there, which the "+
 				"tool never established:\n%s", f.Summary)
 		}
@@ -898,7 +898,7 @@ func TestAuditReportsARedSuiteAtTheCommitItself(t *testing.T) {
 		t.Errorf("severity = %v, want %v — the suite is red at the commit "+
 			"itself, and that is worth a warning", found.Severity, core.SevWarn)
 	}
-	if !strings.Contains(found.Summary, "套件本身就是红的") {
+	if !strings.Contains(found.Summary, "The test suite is already red at this commit") {
 		t.Errorf("the summary must lead with the fact, got: %q", found.Summary)
 	}
 }
@@ -940,7 +940,7 @@ func TestAuditDoesNotAccuseADeduplication(t *testing.T) {
 		t.Errorf("severity = %v, want %v — a deduplication changed nothing, "+
 			"so there is nothing to accuse", found.Severity, core.SevInfo)
 	}
-	if !strings.Contains(found.Summary, "行为没变") {
+	if !strings.Contains(found.Summary, "behavior did not change") {
 		t.Errorf("the summary must say the commit changed no behaviour, got: %q", found.Summary)
 	}
 }
@@ -977,7 +977,7 @@ func TestAuditDoesNotCallADeletedMethodADeduplication(t *testing.T) {
 	}
 
 	found := vacuousFinding(t, res)
-	if strings.Contains(found.Summary, "行为没变") {
+	if strings.Contains(found.Summary, "behavior did not change") {
 		t.Errorf("the report must not claim the commit changed no behaviour: "+
 			"no method called Helper is left in the tree. got: %q", found.Summary)
 	}

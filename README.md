@@ -1,333 +1,343 @@
 # vacuous
 
-> **如果把修复撤掉，你的测试还会是绿的吗？**
-> 如果会 —— 那这次改动**没有任何测试看守着它**。
+[![CI](https://github.com/sokebo/vacuous/actions/workflows/ci.yml/badge.svg)](https://github.com/sokebo/vacuous/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/sokebo/vacuous.svg)](https://github.com/sokebo/vacuous/releases)
+[![License](https://img.shields.io/github/license/sokebo/vacuous.svg)](./LICENSE)
+[![Go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](https://go.dev)
 
-覆盖率 100% 的测试套件可以一行断言都不写。
-`go test` 打印 `ok` 的那一刻，可能 22 个测试一次都没跑过。
+**Find the tests that pass with or without the fix they claim to guard.**
 
-`vacuous` 用**真实的 git 历史**做反事实执行来回答这个问题：
-把修复撤掉、只留测试，看测试会不会变红。
+> **If you revert the fix, will your tests still be green?**
+> If yes — nothing is watching that change.
 
-- 变红 → ✅ 这个测试真的在看守这个行为
-- 仍然全绿 → ⚠️ **这次改动没有测试看着它** —— 注意：那个测试**不一定是坏的**，
-  它可能本来就不是为这个行为写的（重构时顺手改的、修一个飘的测试）。
-  要补的是「这个行为」的测试，不是「那个测试」
-- 一次没跑 → ⚠️ 静默跳过，在干净 clone / CI 里它同样不会跑
-- 编译不过 → ⚠️ 测试和修复耦合，这个问题没有答案
+`vacuous` answers that by running your tests against a **counterfactual version of
+your repository**: take the fix away, keep the tests, and see whether anything
+turns red.
 
-**「仍然全绿」只说明这次实验没有观察到测试失败** —— 它不能证明那个测试没有价值。
-重构、测试范围不完整、新 API 导致无法编译，都会限制这个结论。报告会把
-每一条的证据和复现配方一起给出来，你不用信它，可以自己跑一遍。
+| Outcome | What it means |
+|---|---|
+| **Turns red** | The test genuinely guards that behavior. |
+| **Stays green** | **Nothing is watching this change.** |
+| **Never ran** | Silently skipped — it will not run in a clean clone either. |
+| **Won't compile** | The test and the fix are welded together. No answer. |
+
+Every finding carries the raw output that backs it and the exact commands to
+reproduce it by hand. **You never have to take the tool's word for it.**
+
+- **Languages** — Go · Python · Node (jest / vitest)
+- **Dependencies** — none; nothing outside the Go standard library enters `go.mod`
+- **Platforms** — macOS (arm64 / x86_64) · Linux (arm64 / x86_64) · Windows (x86_64)
+- **Requires** — Go 1.26+ · `git` on your machine · the audited project's own toolchain
+- **License** — Apache-2.0
 
 ---
 
-## 它和现有工具的区别
+## Contents
 
-| 工具 | 查什么 | 不查什么 |
+- [Why](#why)
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [What the output looks like](#what-the-output-looks-like)
+- [How it works](#how-it-works)
+- [What the static checks look for](#what-the-static-checks-look-for)
+- [The verdicts](#the-verdicts)
+- [Running it in CI](#running-it-in-ci)
+- [Suppressing a finding](#suppressing-a-finding)
+- [Results on real repositories](#results-on-real-repositories)
+- [Known limitations](#known-limitations)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+
+---
+
+## Why
+
+A suite can be green and prove nothing. Three ways that happens:
+
+1. **Coverage without assertions.** Every line runs, nothing is checked.
+2. **Tests that never ran.** A `t.Skip` whose condition depends on a file that
+   is not committed: green on your machine, silently absent in CI.
+3. **A guard that never fires.** The repository has `.githooks/pre-push`, but
+   git never looks in that directory.
+
+Mutation testing (Stryker, PIT, mutmut) asks whether the suite kills random
+mutants. `vacuous` asks a narrower question, and answers it from your own
+history:
+
+**Does the real fix, taken away, make the real tests red?**
+
+| Tool | What it asks | What it does not ask |
 |---|---|---|
-| `dos-kernel` | agent 声明 vs git 事实 | 不查测试是否真的能抓住 bug |
-| `zerocase` | 报告里 executed count 是不是 0 | 不查「跑了 100 个但全都没测到东西」 |
-| 变异测试（Stryker / PIT / mutmut） | 全套件对随机突变的杀伤率 | 慢、贵、逐语言适配、不用真实历史 |
-| `diff-cover` | 改动行的覆盖百分比 | 覆盖率 100% 仍可全是空断言 |
-| **`vacuous`** | **真实 fix 被撤掉后，测试会不会红** | — |
+| [dos-kernel](https://github.com/anthony-chaudhary/dos-kernel) | Do the agent's claims match git? | Whether the tests can actually catch the bug |
+| Coverage reporting (`diff-cover`, `go test -cover`) | Which changed lines are covered? | Whether the covered lines assert anything |
+| Mutation testing (Stryker / PIT / mutmut) | Kill rate of the whole suite against random mutants | — |
+| **`vacuous`** | **Does the real fix, taken away, make the real tests red?** | — |
 
-三个不同点：
+Three things that follow from asking one question:
 
-1. **不造随机突变。** 只问那一个决定性的问题，用你自己的真实 commit。
-2. **不要求逐语言适配。** 适配器只需要知道「怎么跑测试」和「哪些是测试文件」。
-3. **零第三方依赖。** 标准库之外一切都不进 `go.mod`。
+- **No random mutants.** It uses your own commits, so it is not slow and not
+  per-language.
+- **No language-specific mutation operators.** An adapter only needs to know
+  how to run the tests and which files are tests.
+- **Zero third-party dependencies.** Nothing outside the Go standard library
+  enters `go.mod`.
 
 ---
 
-## 安装
+## Install
 
-**一键（不用装 Go）：**
+**One-liner (no Go toolchain needed):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sokebo/vacuous/main/scripts/install.sh | sh
 ```
 
-**或者用 Go 装：**
+The installer downloads `vacuous_<os>_<arch>.tar.gz` and the release's
+`vacuous-SHA256SUMS`, **verifies the download against the checksum before
+unpacking anything**, and refuses a tarball that does not match.
+
+**Or with Go:**
 
 ```bash
 go install github.com/sokebo/vacuous/cmd/vacuous@latest
 ```
 
-**或者下载预编译二进制**：[Releases](https://github.com/sokebo/vacuous/releases)
-（`vacuous_<os>_<arch>.tar.gz`，含 SHA256 校验和）。
+**Or a prebuilt binary:** [Releases](https://github.com/sokebo/vacuous/releases).
 
-需要本机有 `git`，以及项目自己的测试工具链（`go` / `pytest` / `node`）。
+You need `git` on your machine, plus the target project's own toolchain
+(`go` / `pytest` / `node`).
+
+> The one-liner installer covers macOS and Linux. On Windows, download
+> `vacuous_windows_x86_64.tar.gz` from the releases page and put `vacuous.exe`
+> on your `PATH`.
 
 ---
 
-## 用法
+## Quickstart
+
+Run it on a repository you own before you run it on one you do not:
 
 ```bash
-# 全查：反事实审计 + 静态体检
-vacuous
-
-# 只查反事实（核心能力）
-vacuous --mode audit
-
-# 只查静态问题（快，不跑测试）
-vacuous --mode check
-
-# 审一个具体 commit
-vacuous --commit 2e604ea
-
-# 审最近 20 个 commit（默认）
-vacuous --mode audit
-
-# 审某个基线之后的所有 commit
-vacuous --since main
-
-# CI 用：机器可读输出
-vacuous --json
+scripts/try.sh ~/code/my-repo          # audit the last 30 commits
+scripts/try.sh ~/code/my-repo 100      # audit the last 100
 ```
 
-**默认审最近 20 个 commit**，不是「默认分支 merge-base 之后」。
-原因很实在：当分支尖端就是默认分支时，merge-base 范围是空的 ——
-工具会报「一切正常」，而它其实什么都没审。这恰恰是本工具要抓的失败模式。
-要显式范围，用 `--base` / `--since`。
+The script does three things, and the third one is the reason it exists:
 
-### 退出码
+1. **A health check** — are the dependencies installed, is the language
+   recognised, can the tree be parsed offline. Without this, a missing
+   dependency makes the tool call *every* commit "broken environment", and you
+   get no conclusion at all.
+2. **The static checks first** (`--mode check`) — seconds, and works for any
+   language.
+3. **The counterfactual audit, and a verdict on whether that verdict counts**:
 
-| 码 | 含义 |
-|---|---|
-| `0` | 没发现空洞测试 |
-| `1` | 有发现（阈值由 `--fail-on` 控制，默认 `high`） |
-| `2` | 工具自己没跑完（**失败要关闭**，不会静默放行） |
-
-### 在自己的仓上先试一遍
-
-```bash
-scripts/try.sh ~/code/my-repo          # 审最近 30 个提交
-scripts/try.sh ~/code/my-repo 100      # 审最近 100 个
-```
-
-这个脚本做三件事，其中第三件是它存在的理由：
-
-1. **体检** —— 依赖装没装、语言认不认得、能不能离线解析。
-   依赖不在的时候，工具会把每个提交都判成「环境坏」，一份结论都没有。
-2. **先跑静态体检**（`--mode check`）—— 几秒钟出结果，任何语言都有效。
-3. **再跑反事实审计，并且说清楚这次结果算不算数**：
-
-   | 输出 | 意思 | 下一步 |
+   | Output | Meaning | Next step |
    |---|---|---|
-   | `✓ 有 N 条真结论` | 这份报告可以用 | 看那 N 条 |
-   | `△ 有 N 条结论，M 条判不了` | 一部分能用，判不了的不算「没问题」 | 看那 N 条，M 条回头查环境 |
-   | `✗ 值得审的 N 条里一条结论都没有` | 判不了的多半是环境没搭好 | 回到体检那一段 |
-   | `✗ 这个窗口里没有值得审的提交` | 提交是合并 / 子模块指针 / 纯文档 | 调大 limit，或用 `--since` |
+   | `✓ N real conclusions` | This report is usable | Look at the N |
+   | `△ N conclusions, M undecidable` | Partly usable; the undecidable ones are *not* "no problem" | Look at the N, fix the environment for the M |
+   | `✗ not one conclusion out of N worth auditing` | The undecidable ones are probably a broken environment | Back to the health check |
+   | `✗ nothing worth auditing in this window` | Merges, submodule pointers, docs-only commits | Raise the limit, or use `--since` |
 
-**「0 条发现」有两种意思，而且长得一模一样。** 一种是「查过了，没问题」，
-另一种是「没查成」。这个脚本把它们分开 —— 拿着「0 条发现」去改代码，
-改的可能是根本不存在的问题。
+**"0 findings" has two meanings that look identical.** One is "I looked and
+found nothing". The other is "I could not look". This script tells them apart
+— taking a "0 findings" report to a code review can send you to fix a problem
+that does not exist.
 
 ---
 
-## 它怎么工作
+## What the output looks like
 
-对一个声称修了 bug 的 commit：
+Real output from this repository, `--mode check`:
 
-1. 在它的**父提交**建一个临时检出（不动你的工作区）
-2. 只把这个 commit 的**测试改动**打进去 —— 修复留在了外面
-3. 跑测试套件
-4. 判定
+```
+vacuous — found 1 problem (critical 0 · high 0 · unwatched 0; audited 5 commits,
+      1 not applicable)
+Project: vacuous
+--------------------------------------------------------------------
+  [    WARN] coupled              internal/cli/coverage_test.go
+      Cannot be judged: the test and the fix are coupled and cannot be separated
+      Detail: The test patch of commit 637ddbd does apply, but with the fix
+      removed the whole package no longer compiles — the test references
+      something this fix introduced.
+      So the question "if you remove the fix, does the test go red" has no
+      answer for this change: the test and the fix are tangled together.
+      Evidence: command: go test -json -count=1 ./internal/cli/... ./internal/detect/...
+      internal/detect/harness_test.go:312:12: got[0].Dir undefined (type HarnessCommand has no field or method Dir)
+      How to fix: This is not an error, it is a heads-up: a coupled test is hard
+      to prove on its own.
+      How to verify it yourself:
+      # 1. Take the parent's code — the starting point of the counterfactual experiment
+      mkdir -p /tmp/vac-verify && git archive 637ddbd^ | tar -x -C /tmp/vac-verify
+      # 2. Apply only the tests; the fix stays out
+      git diff --no-color --no-ext-diff --binary 637ddbd^ 637ddbd -- 'internal/cli/coverage_test.go' > /tmp/vac-verify-tests.patch
+      cd /tmp/vac-verify && git apply --whitespace=nowarn /tmp/vac-verify-tests.patch
+      # 3. Run the tests and see whether they really go red
+      cd /tmp/vac-verify && go test -json -count=1 ./internal/cli/... ./internal/detect/...
 
-判定方向是**不可协商**的：撤掉修复 → 期望变红。
-反过来（撤掉测试 → 期望变绿）什么也证明不了——没有测试的套件当然是绿的。
-这个工具只问前一个问题。
-
-测试运行的范围会收敛到这次改动触及的包。跑整个模块是不安全的：一个包编译不过，
-旁边 20 个包照常通过，全局计数会说「全绿」，而那个真正该被审的包**一次都没跑**。
-
-多 module 的仓库也能处理：工具会递归找出所有 `go.mod`，逐个 module 跑。
-
-### 只读保证
-
-审别人的仓库时，工具**一个字节都不写进去**。
-
-不是「基本不动」—— 是工作树、暂存区、分支指针、tag、`.git` 里的任何东西，
-全部不碰。
-
-做法是把要审的那个提交用 `git archive` 从对象库里读出来，解到临时目录里，
-而不是用 `git worktree add`（后者会在被审仓的 `.git/worktrees/` 下注册一个
-条目，跑完再删；进程被强杀就会留下一个死条目）。
-
-解包后会拿文件数和 `git ls-tree -r` 对一遍：如果仓库给某些文件标了
-`export-ignore`，归档会少几个文件 —— 那种情况下自动退回 `git worktree add`，
-保证检出是精确的。**工具永远知道自己手里的检出是不是精确的。**
-
-工具链那一头也守着同一条线：`go` 子进程跑在 `GOFLAGS=` + `GOENV=off` 下。
-`GOENV=off` 让 Go **不读**机器自己的 go 配置（`go env -w` 写的那份），于是
-`GOFLAGS=` 才真的是「哪儿都没有 GOFLAGS」—— 也就没有 `-mod=mod` 那种允许
-go 命令改写 `go.mod` / `go.sum` 的权限。被审仓库的依赖文件是**被读的**，
-不是被更新的。
-
-> 为什么不是光写 `GOFLAGS=`：Go 把**空的**环境变量当「没设」，会回落到
-> 配置文件 —— 一台配置里写着 `GOFLAGS=-mod=mod` 的机器上，隔离等于没做，
-> 而同一份审计在 CI 上却是只读的。详见 DOGFOOD 3.57。
-
-### 仓库之外的依赖
-
-很多项目构建时需要**仓库外面**的东西 —— 最常见的是 Go 的
-`replace github.com/example/shared => ../shared`：依赖一个同级目录，
-开发者的机器上有，CI 里也是 checkout 出来再 `ln -sfn` 建链。
-
-反事实 worktree 建在临时目录里，旁边没有那个目录，编译就会失败。
-工具会让语言适配器把这些「邻居」用软链摆到 worktree 旁边（`PrepareWorktree`
-这个可选能力）—— 和 CI 干的是同一件事。
-
-摆不上去的时候，工具判的是**环境问题**，不是「测试和修复耦合」。
-这两件事在含义上是相反的，混淆它们就是在把环境的错算到测试头上。
-
-### 这个方法做不到什么
-
-**修复引入了新 API 时，测试无法被单独评价。**
-
-```go
-// 修复提交里新增了
-const KindNotApplicable Kind = "not-applicable"
-
-// 测试提交里用了它
-if f.Kind != core.KindNotApplicable { ... }
+--------------------------------------------------------------------
+Summary: proven 4 · vacuous 0 · no test 0 · undecidable 1 · not applicable 1 ·
+      could not audit 0
+By kind: coupled 1
 ```
 
-把修复撤掉，测试连编译都过不了 —— 这不是「测试会变红」，而是「测试没法跑」。
-工具会判 **coupled**（无法判定），而不是假装有答案。
+Every finding ends with the commands that reproduce it by hand. The counters
+at the bottom are deliberately kept apart: `undecidable` and `could not audit`
+are **holes in the report**, not clean bills of health.
 
-这不是工具的缺陷，是反事实执行这个方法本身的边界：**有些测试和它守护的
-行为在源码层面就是缠在一起的**，任何工具都拆不开。工具能做的，是诚实地
-说「这里没有答案」，而不是给一个听起来很确定的结论。
-
-coupled 的占比因此会偏高 —— 一个频繁新增 API 的仓库，coupled 会很多。
-这不代表那里的测试不好，只代表这个方法在那里用不上。
+*(The block above is abridged: a real report prints every failing line and the
+full reproduction recipe.)*
 
 ---
 
-## 套件本来就红的时候，工具不下结论
+## How it works
 
-反事实实验问的是「**撤掉修复后有没有东西红**」。它回答不了
-「**是不是撤掉修复让它红的**」。
+For a commit that claims to fix a bug:
 
-套件本来就红着（或者有 flaky 的测试）的时候，那个红灯和这次修复一点关系都没有。
-而如果工具把它写成「测试在看守修复」，读者读完之后的下一个动作是
-**删掉一个本来没问题的测试** —— 这是本工具能犯的最贵的错。
+1. Build a throwaway checkout of its **parent commit** (your working tree is
+   never touched).
+2. Apply only that commit's **test changes** — the fix stays out.
+3. Run the test suite.
+4. Decide.
 
-所以反事实树红了的时候，工具会**再跑一遍基线**：带着同一个修复的同一个提交，
-同一个测试范围。比的是**哪些测试**，不是**几个失败**：
+The direction is **not negotiable**: remove the fix → expect red. The reverse
+(remove the test → expect green) proves nothing, because a suite without tests
+is of course green.
 
-- 基线里不红、反事实里红的那些测试 = 撤掉修复弄红的那些 = **看守**
-- 空的（反事实里的红，基线里全都有）→ 那些红灯本来就在 → 判
-  **pre-existing-failure**，不下结论
-- 基线跑不起来 → 同样不下结论（基线没回答问题，就不能拿它当依据）
+The run is **narrowed to the packages the change touches**. Running the whole
+module is unsafe: a package that fails to compile sits next to twenty that
+pass, the global count says "all green", and the package actually under
+examination **never ran**. A test that did not run must never be counted as a
+pass.
 
-比集合而不是比数量：反事实红 {A,B}、基线红 {A,C} —— 数量相同，集合不同。
-数量比较会说「没变化」把看守丢掉，集合比较说「B 是新的」。
+Multi-module repositories are handled: the tool finds every `go.mod` and runs
+each module separately.
 
-**代价**：反事实红的那些提交要多跑一遍基线，审计时间大概翻倍。
+**When the counterfactual turns red**, the tool runs the baseline again — the
+same commit, with the fix in place, over the same scope — and compares
+**which tests** failed, not **how many**. A test red in the counterfactual and
+green in the baseline is one the fix's removal broke.
 
----
-
-## 套件崩了 ≠ 环境缺东西
-
-**套件崩了**（import 报错、`beforeAll` 抛异常、运行器自己挂了）是一个**独立的判定**：
-`suite-crash`。
-
-它既不是空洞测试（测试根本没跑，不存在「通过」这回事），也不是环境问题
-（检出里什么都不缺）。混进 environment 会让读者去查环境 —— 而环境好好的，
-是套件自己崩了。
-
-报告会给出崩溃原文，并且**同时显示项目自己的测试命令**（`package.json` 里
-那个 `test` 脚本），这样读者能一眼看出工具跑的是不是项目自己跑的那条命令。
+> The read-only strategy, the experiment in full detail, and the design rules
+> are in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md). What this tool does
+> to the repository it audits is in [`SECURITY.md`](./SECURITY.md).
 
 ---
 
-## Node 仓：窄跑不绿就退回跑全量
+## What the static checks look for
 
-一次改动带来的测试文件，只能看见它自己那一片。而**真正看守这次修复的测试
-可能住在别的目录** —— 只跑窄的那一片，就会把「有测试看守」报成「没有测试
-看守」，把一个被守着的修复说成没被守着。
+`--mode check` runs static analysis and executes no tests:
 
-所以 Node 适配器在窄跑全绿时会**再跑一遍全量套件**：
+| Kind | Severity | What it means |
+|---|---|---|
+| `skipped-test` | high | A test is skipped. Especially: the skip condition depends on a **file that is not committed** — it runs on the developer's machine and never runs in a clean clone or in CI, with no symptom at all. |
+| `discards-error` | high | An error was thrown away (`cs, _ := loadCorpus(...)`) and either the assertions after it are computed on an empty set, or a **protective check** was skipped and the program continues with empty results. |
+| `guard-not-installed` | critical | The guard's files exist, but the directory git actually looks in does not contain them. The guard has never run once. |
+| `guard-not-portable` | warn | The guard is wired up but installs itself by absolute path, and breaks the moment the repository moves. |
+| `no-test-for-fix` | high | The repository has code and test files but not a single assertion. |
+| `no-test-runner` | high | The repository has no way to run its tests at all. The static checks do not need a runner — "there are no tests" is exactly the thing that most needs saying. |
+| `unsupported-tests` | info | Part of the repository's suite is written in a form this tool cannot execute, so the report does not cover it. Its job is to stop an empty report from reading as "no problems". |
+| `uncommitted-changes` | warn | The static checks read the **working tree**, so a finding anchored to a file with uncommitted changes describes code that exists on your disk and not in the repository. |
 
-- 全量出红灯 → 用全量的结果（这次修复**确实**有测试看守）
-- 全量也绿 → **保留窄跑的结果**（宽跑只用来捞漏，不能覆盖聚焦实验）
-
-**这条有个代价，说在前面**：如果这个仓的套件**本来就有**一个无关的失败测试，
-全量跑就是红的，于是每次提交都会被判成「有测试看守」—— 把「漏报空洞测试」
-换成了「误报有测试看守」。方向上和「宁可漏报不可误伤」相反。
-
-这是刻意的取舍：**漏报一个空洞测试**（没人去改那个测试）比**误伤一个空洞测试**
-（读者以为自己的测试在守着某个行为，其实没有）代价小。但要知道它存在。
-
----
-
-## 同时查这些
-
-`--mode check` 跑静态体检，不需要执行测试：
-
-- **静默跳过的测试** —— 尤其是跳过条件依赖一个**没入库**的文件：
-  它在开发者机器上跑、在干净 clone 和 CI 里永远跳过，两种环境两种结果，而且**没有任何症状**
-- **丢弃错误后继续断言** —— `cs, _ := loadCorpus(...)`，
-  错误被丢掉，后面所有断言都在空集上算，照样通过；
-  或者丢掉错误让一个**保护性检查**被跳过，程序带着空结果继续往下走
-- **守卫没装上** —— 仓里有 `.githooks/pre-push`，但 git 实际找 hook 的那个目录里
-  没有它（`core.hooksPath` 没设时是 `.git/hooks/`，设了就是它指的那个目录）；
-  守卫一次都没运行过；或者守卫用绝对路径安装，目录一搬就失效
-- **CI 不拦人** —— workflow 里没有任何测试步骤，或者有
-  `continue-on-error: true`，测试失败照样合并
-- **这个仓库一个测试都没有** —— 有代码、有测试文件，但一个断言都没有
-
-`--mode check` **不需要**测试运行器。一个没有测试的仓库恰恰是最该被提醒的仓库，
-所以「找不到运行器」不是错误，它本身就是一条发现。
-
-`--mode check` 读的是**工作树里的文件**（`--mode audit` 的两棵树都是从提交里
-建出来的，不受影响）。所以一份 check 报告可能描述的是**你还没提交的代码**。
-工具会把这件事说出来：报告里那条 `uncommitted-changes` 警告会点名哪些发现的
-文件在工作树里和 HEAD 不一样。它是警告不是高危 —— 手上有没提交的改动是常态。
+`--mode check` needs **no test runner**. Not finding one is not an error; it
+is itself a finding.
 
 ---
 
-## 在 CI 里用
+## The verdicts
 
-### GitHub Action
+| Verdict | Severity | What it means |
+|---|---|---|
+| `proven` | — | Removing the fix made a test red that was green with the fix in place. **The test guards the behavior.** |
+| `vacuous` | warn | The experiment ran, everything passed, and the runner's own output does not say otherwise. **This change has no test watching it.** |
+| `no-test-for-fix` | warn / high | A behavior changed and nothing in the tree watches it. |
+| `coupled` | warn | The test depends on the fix at compile time. **No answer.** |
+| `environment` | warn | The checkout was missing something the build needs. **No answer** — and not the test's fault. |
+| `suite-crash` | warn | A suite crashed before it could run a single case. |
+| `skipped` | critical | The test was present but did not execute. It witnessed nothing. |
+| `pre-existing-failure` | warn | The counterfactual was red and the same suite is red with the fix in place. The red says nothing about this fix. |
+| `contradictory` | critical | **The tool's own conclusion disagrees with the tool's own raw output.** The tool is broken — please report it. |
+| `not-applicable` | info | A merge, a root commit, a docs-only commit, or a test-only commit. Nothing to judge. |
+| `unsupported-source` | info | The commit changed code in a language this repository's runner cannot execute. |
+| `audit-failed` | high | The tool could not audit this commit at all. **A hole in the report.** |
+
+> The severity of a `vacuous` verdict is **warn**, so the default
+> `--fail-on high` does not fail the run on it. The counterfactual findings
+> are experiments, and an experiment that observed no failure is not the same
+> kind of evidence as a file that is not in the hooks directory. Use
+> `--fail-on warn` to make them block.
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | No findings at or above `--fail-on` |
+| `1` | Findings at or above `--fail-on` (default `high`) |
+| `2` | The tool itself could not finish — **fails closed**, never passes silently |
+
+---
+
+## Fail closed
+
+When the underlying command errors, `vacuous` **refuses to conclude**. It does
+not pass, and it does not report "no problems". A checker that fails silently
+is worse than no checker at all.
+
+Concretely: a run that could not look at one of its commits exits **2**, not 0.
+The findings are still in the report; the exit code says the audit itself did
+not finish.
+
+---
+
+## Running it in CI
+
+### As a GitHub Action
 
 ```yaml
-- uses: sokebo/vacuous@v0.1.0
+- uses: sokebo/vacuous@v0.1.6
   with:
     mode: all
     fail-on: high
 ```
 
-`action.yml` 是 composite action，它在自己的目录里构建工具，然后审**调用方**的仓库。
+`action.yml` is a composite action: it builds the tool in its own directory
+and then audits **the calling** repository.
 
-### 或者直接跑
+### Or run it directly
 
 ```yaml
 - uses: actions/checkout@v4
   with:
-    # 审计需要真实历史：浅克隆没有父提交，反事实就没有东西可跑。
+    # The audit needs real history: a shallow clone has no parent commit,
+    # and the counterfactual would silently have nothing to run.
     fetch-depth: 0
 
 - uses: actions/setup-go@v5
   with:
-      go-version: '1.26'
+    go-version: '1.26'
 
 - run: go install github.com/sokebo/vacuous/cmd/vacuous@latest
 - run: vacuous --mode all
 ```
 
+### The default window
+
+The default is **the last 20 commits**, not "everything since the merge-base
+with the default branch". That is deliberate: when the branch tip *is* the
+default branch, the merge-base range is empty — the tool would report "all
+clear" while having examined nothing, which is exactly the failure mode this
+tool exists to catch. Use `--base` / `--since` for an explicit range.
+
 ---
 
-## 误报怎么豁免
+## Suppressing a finding
 
-一个会一直误报的闸门，团队最后只会加 `--no-verify` —— 那等于没有闸门。
-所以工具留了后门：**在源码里写一行注释，说明这条是故意的。**
+A gate that cries wolf gets `--no-verify` added to it, and that is the same as
+having no gate. So the tool has an escape hatch: **write a comment in the
+source saying the finding is deliberate.**
 
 ```go
-items, _ := load() // vacuous:ignore 这一行是有意的
+items, _ := load() // vacuous:ignore this line is intentional
 ```
 
 ```go
@@ -336,71 +346,95 @@ items, _ := load()
 ```
 
 ```go
-items, _ := load() // vacuous:ignore[no-test-for-fix]   // 只豁免这一类
+items, _ := load() // vacuous:ignore[no-test-for-fix]   // this category only
 ```
 
-规则：
+- The comment goes on **the line the tool reported**, or on the line above it.
+- `vacuous:ignore` suppresses every category on that line.
+- `vacuous:ignore no-test-for-fix` suppresses that category only.
+- `vacuous:ignore no-test-for-fix,skipped-test` suppresses both.
 
-- 注释写在**工具报出来的那一行**上，或者它的**上一行**。
-- 工具只报了**文件名、没报行号**的时候（audit 模式下的 `no-test-for-fix`
-  就是这样），文件里任何一行**独立注释行**上的标记都算数。
-- 写 `vacuous:ignore` = 豁免这一行的所有类别。
-- 写 `vacuous:ignore no-test-for-fix` = 只豁免这一类。
-- 写 `vacuous:ignore no-test-for-fix,skipped-test` = 豁免这两类。
-- 后面跟的是理由而不是类别名（比如「因为这是纯重构」）= 豁免所有类别。
-
-**审计读的是被审提交自己的版本。** 想豁免一笔历史提交，就在那一笔里写下
-理由 —— 今天在工作树里补一句，管不到它。反过来也一样：审计不会因为工作树
-里后来加了注释，就把一笔当时确实有问题的提交放过去。
-
-豁免的理由就写在代码旁边 —— 下一个人想不通「为什么闸门放过了这条」的时候，
-他会先看代码。
+**The audit reads the audited commit's own version.** To suppress a historical
+commit, write the reason in that commit. The reason lives next to the code, so
+the next person who wonders "why did the gate let this through?" will look at
+the code first.
 
 ---
 
-## 退出码约定
+## Results on real repositories
 
-`vacuous` **失败要关闭**：底层命令出错 = 拒绝下结论，不是「通过」。
-一个会静默放行的检查器比没有检查器更糟。
+The full record — every run, every finding, and the **89 bugs dogfooding found
+in the tool itself** — is in [`docs/dogfood/`](./docs/dogfood/), with the
+repository names and paths sanitized.
+
+Static checks across six real repositories:
+
+| Repository | Result | Findings |
+|---|---|---|
+| A Go service repo | 4 (3 high) | 3 × `discards-error`, 1 × `skipped-test` |
+| A Go library repo | 1 (1 critical) | 1 × `guard-not-installed` |
+| A Go research repo, 7 modules | 7 (2 high) | 6 × `skipped-test`, 1 × `unsupported-tests` |
+| A documentation repo | 1 (0 high) | 1 × `skipped-test` |
+| A Node frontend repo | 2 (0 high) | 1 × `guard-not-installed`, 1 × `unsupported-tests` |
+| A Node theme package | 1 (0 high) | 1 × `unsupported-tests` |
+
+**All six have findings.** That is not a coincidence — it is the true state of
+this kind of code.
+
+The counterfactual audit on the Go service repo (latest 20 commits):
+
+```
+Summary: proven 3 · vacuous 0 · no test 3 · undecidable 11 · not applicable 3
+By kind: coupled 7 · no-test-for-fix 5 · unsupported-source 4
+```
+
+These numbers are a **sliding-window snapshot**: the window is "the latest 20
+commits", so one commit slides in and one slides out as the repository moves.
+The verdict *rules* are what hold in the long run, not these few counts.
+
+Beyond that: the Python adapter completed a full counterfactual execution on
+a real repository; the Node path was validated on two public repositories,
+where **5 genuine bugs were found and fixed**; and two cross-repository Go
+repos that depend on a shared sibling library were audited together.
 
 ---
 
-## 真实仓库上的表现
+## Known limitations
 
-在 9 个真实仓库上跑（详见 [`docs/DOGFOOD.md`](./docs/DOGFOOD.md)，那里的仓库名
-和路径已脱敏）：
+- **Go**: thoroughly validated. Multi-module, cross-repository shared
+  dependencies and local `replace` all work; a full counterfactual execution
+  was run against a 50,000-commit public repository.
+- **Python**: validated. Both `pytest` and `python -m unittest` have completed
+  full counterfactual executions on real repositories.
+- **Node / jest / vitest**: validated on two real public repositories, but
+  **younger than the Go path** — the "fall back to a full run" rule has not
+  been stressed on a large enough real repository. Treat it as "validated, but
+  not as thickly as Go".
+- **When a fix introduces a new API**, the test does not compile without it →
+  verdict `coupled`, and no answer.
+- **The unit of judgement is the commit, not the behavior.** A commit that
+  changes two independent behaviors gets one verdict.
+- **It needs real history.** A shallow clone has no parent commit.
 
-| 仓库 | 结果 |
+The full list, with the reasoning behind each edge, is in
+[`docs/BOUNDARIES.md`](./docs/BOUNDARIES.md).
+
+---
+
+## Documentation
+
+| Document | What it is |
 |---|---|
-| 一个 Go 服务仓 | 3 个（高危 2）：2 个丢弃错误、1 个跳过 |
-| 一个 Go 库仓 | 1 个（严重 1）：守卫存在但从未装上 |
-| 一个 Go 私有研究仓（7 个 module） | 6 个（高危 2）：2 个跳过依赖未入库语料 |
-| 一个文档仓 | 2 个（高危 1）：零测试 + CI 不跑测试 |
-| 一个 Node 前端仓 | 1 个（高危 1）：24 个源文件，零测试 |
-| 一个 Node 主题包仓 | 1 个（高危 1）：3 个源文件，零测试 |
-| 两个跨仓协作的 Go 仓 | 一个 0 条发现，一个 1 条合法跳过 |
-
-**9 个仓库，8 个有发现。** 唯一干净的那个，是它的 CI 确实在跑 `go test` ——
-这正是工具应该有的行为：不制造噪音。
-
-那份文档还记录了 dogfood 揪出的**工具自身的 29 个 bug** —— 包括一个会把
-「编译失败」当成「测试仍然绿」的严重问题，和一个把源码文件塞给 pytest
-导致「结论对、证据假」的问题。每个 bug 都配了负对照测试。
-
-### 已知边界
-
-- **Go**：已充分验证。多 module、跨仓共享依赖、本地 `replace` 都跑通了；
-  也在一个 5 万提交的公开仓（hashicorp/terraform）上跑过完整的反事实执行。
-- **Python**：已验证。pytest 和 `python -m unittest` 两种形态都在真实仓上跑通了
-  完整的反事实执行。
-- **Node / jest / vitest**：在两个真实公开仓上验过（一个 jest、一个 vitest），
-  找到并修掉 5 个真 bug。但**它比 Go 路径年轻** —— 窄跑不绿就退回全量那条
-  逻辑的副作用还没有在足够大的真实仓上压过，请当作「验证过但没那么厚」对待。
-- **修复引入新 API 时**，测试离开修复就编译不过 → 判 coupled（见上一节）。
+| [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How the tool is put together, and the contracts it holds to |
+| [`docs/BOUNDARIES.md`](./docs/BOUNDARIES.md) | What the method cannot do, and what every finding kind means |
+| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 89 bugs dogfooding found in the tool itself |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md) | How to build, test, and contribute — and the six rules the design holds to |
+| [`SECURITY.md`](./SECURITY.md) | What this tool does to your repository, and how to audit a repository you do not trust |
+| [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) | The behavior expected from everyone taking part |
 
 ---
 
-## 开发
+## Contributing
 
 ```bash
 git clone https://github.com/sokebo/vacuous
@@ -409,9 +443,12 @@ go build ./...
 go test ./...
 ```
 
-技术规范见 [`docs/SPEC.md`](./docs/SPEC.md)，
-真实运行记录见 [`docs/DOGFOOD.md`](./docs/DOGFOOD.md)。
+Read [`CONTRIBUTING.md`](./CONTRIBUTING.md) first — it carries the six rules
+the design holds to, and they are not negotiable in review. Adding a language
+is covered there too.
+
+---
 
 ## License
 
-Apache-2.0
+[Apache-2.0](./LICENSE)

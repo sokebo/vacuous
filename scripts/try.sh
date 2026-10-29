@@ -1,20 +1,27 @@
 #!/bin/bash
-# 内测用的一条命令：在你自己的仓上跑一遍，并且告诉你**这次结果算不算数**。
+# One command to try the tool on your own repository, and to tell you
+# **whether this run's result counts**.
 #
-# 用法: scripts/try.sh <仓目录> [审多少个提交]
+# Usage: scripts/try.sh <repository directory> [how many commits to audit]
 #
-# 为什么要有这个脚本
-# ------------------
-# 这个工具最容易被误用的方式，是把「它没查成」当成「它查过了没问题」。
-# 两者在报告里长得不一样，但在一句「跑完了，0 条发现」里一模一样。
+# Why this script exists
+# ----------------------
+# The easiest way to misuse this tool is to read "it could not check" as
+# "it checked and found nothing". The two are shaped differently in the
+# report, and they look identical in a single sentence — "it ran, 0 findings".
 #
-# 所以这个脚本做三件事：
-#   1. 先体检（preflight）：依赖装没装、语言认不认得、能不能离线构建；
-#   2. 先跑静态体检（--mode check）：几秒钟出结果，任何语言都有效；
-#   3. 再跑反事实审计（--mode audit），并且**把结论分成三类**说清楚：
-#        有结论 / 没查成 / 没东西可查。
+# So this script does three things:
+#   1. A preflight: are the dependencies installed, is the language
+#      recognised, can the tree be built offline;
+#   2. The static checks first (--mode check): seconds, and valid for any
+#      language;
+#   3. The counterfactual audit (--mode audit), and it splits the outcome
+#      into three classes: real conclusions / could not check / nothing to
+#      check.
 #
-# 三类对应的下一步是完全不同的，不分开就会拿着「0 条发现」去改代码。
+# The three classes lead to completely different next steps. Not splitting
+# them is how people end up changing code over a "0 findings" report that
+# meant "no conclusion".
 set -uo pipefail
 
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,20 +29,20 @@ TARGET=${1:-}
 LIMIT=${2:-30}
 
 usage() {
-	echo "用法: scripts/try.sh <仓目录> [审多少个提交（默认 30）]"
+	echo "Usage: scripts/try.sh <repository directory> [how many commits to audit (default 30)]"
 	echo
-	echo "例:"
+	echo "Examples:"
 	echo "  scripts/try.sh ~/code/my-go-repo"
 	echo "  scripts/try.sh ~/code/my-repo 100"
 	exit 2
 }
 
 [ -n "$TARGET" ] || usage
-[ -d "$TARGET" ] || { echo "目录不存在: $TARGET"; exit 2; }
+[ -d "$TARGET" ] || { echo "Directory does not exist: $TARGET"; exit 2; }
 TARGET=$(cd "$TARGET" && pwd) || exit 2
-[ -d "$TARGET/.git" ] || { echo "不是一个 git 仓: $TARGET"; exit 2; }
+[ -d "$TARGET/.git" ] || { echo "Not a git repository: $TARGET"; exit 2; }
 
-# ── 找二进制 ──────────────────────────────────────────────────────────
+# ── find the binary ─────────────────────────────────────────────────────
 BIN=${VACUOUS:-}
 if [ -z "$BIN" ]; then
 	if [ -x "$REPO_ROOT/vacuous" ]; then
@@ -43,9 +50,9 @@ if [ -z "$BIN" ]; then
 	elif command -v vacuous >/dev/null 2>&1; then
 		BIN=$(command -v vacuous)
 	else
-		echo "… 没找到二进制，正在构建（零第三方依赖，离线即可）"
+		echo "… no binary found, building one (zero third-party dependencies, works offline)"
 		( cd "$REPO_ROOT" && GOPROXY=off go build -o "$REPO_ROOT/vacuous" ./cmd/vacuous ) || {
-			echo "构建失败"; exit 1; }
+			echo "Build failed"; exit 1; }
 		BIN="$REPO_ROOT/vacuous"
 	fi
 fi
@@ -53,15 +60,15 @@ fi
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/vacuous-try-XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 
-echo "仓   : $TARGET"
-echo "工具 : $BIN"
-echo "提交 : $(git -C "$TARGET" rev-list --count HEAD 2>/dev/null || echo '?') 个"
+echo "Repo     : $TARGET"
+echo "Tool     : $BIN"
+echo "Commits  : $(git -C "$TARGET" rev-list --count HEAD 2>/dev/null || echo '?')"
 echo
 
-# ── 1. 体检：这个仓能不能被审 ─────────────────────────────────────────
-echo "── 体检 ──────────────────────────────────────────────"
+# ── 1. Preflight: can this repository be audited at all? ────────────────
+echo "── Preflight ───────────────────────────────────────────"
 
-# 限时跑一条命令，macOS 没有 timeout(1)。
+# Run a command with a time limit — macOS has no timeout(1).
 run_limited() {
 	local secs=$1; shift
 	"$@" >/dev/null 2>&1 &
@@ -90,85 +97,87 @@ fi
 
 case "$LANG_KIND" in
 go)
-	echo "语言 : Go"
-	# 依赖在不在模块缓存里 —— 不在的话每个提交都会落成「环境坏」。
+	echo "Language : Go"
+	# Are the dependencies in the module cache? If they are not, every commit
+	# lands in "broken environment".
 	if ( cd "$TARGET" && run_limited 120 env GOFLAGS=-mod=mod GOPROXY=off go list ./... >/dev/null 2>&1 ); then
-		echo "依赖 : ✓ 离线可解析"
+		echo "Deps     : ✓ resolvable offline"
 	elif ( cd "$TARGET" && run_limited 120 env GOFLAGS=-mod=mod go list ./... >/dev/null 2>&1 ); then
-		echo "依赖 : △ 离线不行，联网可以"
-		echo "       审旧提交时要预热缓存：go mod download all"
+		echo "Deps     : △ not offline, but fine with network"
+		echo "           warm the cache before auditing old commits: go mod download all"
 	else
-		echo "依赖 : ✗ 解析不过 —— 先跑 go mod download all（联网）"
+		echo "Deps     : ✗ cannot resolve — run go mod download all first (needs network)"
 	fi
-	echo "       多模块仓的依赖在每个模块目录下各要一遍"
+	echo "           in a multi-module repository, do this once per module directory"
 	;;
 node)
-	echo "语言 : Node/TypeScript"
+	echo "Language : Node/TypeScript"
 	if [ -d "$TARGET/node_modules" ]; then
-		echo "依赖 : ✓ node_modules 在"
+		echo "Deps     : ✓ node_modules is present"
 	else
-		echo "依赖 : ✗ 没有 node_modules —— 先 npm ci（否则套件跑不起来）"
+		echo "Deps     : ✗ no node_modules — run npm ci first (otherwise the suite cannot start)"
 	fi
 	;;
 python)
-	echo "语言 : Python"
+	echo "Language : Python"
 	if python3 -c "import pytest" >/dev/null 2>&1; then
-		echo "依赖 : ✓ pytest 在"
+		echo "Deps     : ✓ pytest is present"
 	elif python3 -c "import unittest" >/dev/null 2>&1; then
-		echo "依赖 : ✓ 只有标准库 unittest"
+		echo "Deps     : ✓ only the standard library's unittest"
 	else
-		echo "依赖 : ? 没找到 pytest / unittest"
+		echo "Deps     : ? neither pytest nor unittest found"
 	fi
 	;;
 *)
-	echo "语言 : 没认出来"
-	echo "       这个工具能驱动的是：go test / pytest / python -m unittest / jest / vitest"
-	echo "       别的语言只能跑静态体检"
+	echo "Language : not recognised"
+	echo "          This tool can drive: go test / pytest / python -m unittest / jest / vitest"
+	echo "          Other languages can only run the static checks"
 	;;
 esac
 
-# ── 2. 静态体检 ──────────────────────────────────────────────────────
+# ── 2. Static checks ────────────────────────────────────────────────────
 echo
-echo "── 静态体检（--mode check）────────────────────────────────"
+echo "── Static checks (--mode check) ───────────────────────────"
 ( cd "$TARGET" && "$BIN" --mode check --json ) >"$OUT/check.json" 2>"$OUT/check.err"
 check_exit=$?
 
-# 退出码有三种含义，别混：
-#   0 = 跑完了，没有达到门槛的发现
-#   1 = 跑完了，有发现（门禁会红 —— 这是**结论**，不是失败）
-#   2 = 工具自己没跑完（报告里有洞）
+# The exit code has three meanings — do not conflate them:
+#   0 = it ran, and found nothing at or above the threshold
+#   1 = it ran, and found something (the gate turns red — this is a
+#       *conclusion*, not a failure)
+#   2 = the tool itself could not finish (there is a hole in the report)
 if [ -s "$OUT/check.json" ] && [ $check_exit -ne 2 ]; then
 	python3 - "$OUT/check.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 s = d.get("summary", {})
 kinds = s.get("by_kind", {})
-print("发现 :", ", ".join(f"{k}={v}" for k, v in sorted(kinds.items())) or "无")
-print("最高 :", s.get("max_severity", "-"))
+print("Findings:", ", ".join(f"{k}={v}" for k, v in sorted(kinds.items())) or "none")
+print("Highest :", s.get("max_severity", "-"))
 for f in d.get("findings", [])[:6]:
     print(f"  [{f.get('severity')}] {f.get('kind')}  {f.get('summary','')[:60]}")
     if f.get("file"):
         print(f"      {f.get('file')}:{f.get('line')}")
 PY
 	if [ $check_exit -eq 1 ]; then
-		echo "（退出码 1 = 有发现达到门槛。静态体检这一步是**结论**，不是失败。）"
+		echo "(Exit code 1 = findings at or above the threshold. The static checks are a *conclusion*, not a failure.)"
 	fi
 else
-	echo "静态体检没跑成（退出码 ${check_exit}）"
+	echo "The static checks could not run (exit code ${check_exit})"
 	head -3 "$OUT/check.err" | sed 's/^/  /'
 fi
 
-# ── 3. 反事实审计 ────────────────────────────────────────────────────
+# ── 3. Counterfactual audit ────────────────────────────────────────────
 echo
-echo "── 反事实审计（--mode audit --limit ${LIMIT}）─────────────────────"
+echo "── Counterfactual audit (--mode audit --limit ${LIMIT}) ─────────"
 ( cd "$TARGET" && "$BIN" --mode audit --limit "$LIMIT" --json ) >"$OUT/audit.json" 2>"$OUT/audit.err"
 audit_exit=$?
 
 if [ ! -s "$OUT/audit.json" ]; then
-	echo "审计没跑成（退出码 ${audit_exit}）"
+	echo "The audit could not run (exit code ${audit_exit})"
 	head -3 "$OUT/audit.err" | sed 's/^/  /'
 	echo
-	echo "结论: 这次什么都没查到 —— 不是「没问题」，是「没查成」。"
+	echo "Verdict: nothing was checked — that is not \"no problems\", it is \"could not check\"."
 	exit $audit_exit
 fi
 
@@ -177,15 +186,18 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 s = d.get("summary", {})
 
-# 口径必须和工具自己的一样 —— internal/report/text.go 的 headline 里是：
+# The arithmetic must match the tool's own — see headline() in
+# internal/report/text.go:
 #
 #   judged   = proven + vacuous + no_test + inconclusive
 #   unjudged = not_applicable + audit_failed
 #
-# 少算一个键，脚本就会报出跟报告对不上的数：报告里有 2 个
-# 「这个改动改了行为，但仓里没有任何测试看守它」，脚本却说「没有测试
-# 看着 0 条」。这个脚本存在的理由就是不让人把「没查成」当成「没问题」，
-# 它自己先得跟报告对得上。
+# Miss one key and this script prints a number that does not match the
+# report: the report has 2 findings of "this change altered behaviour and
+# nothing in the repository is watching it", and the script says "no test
+# watching: 0". The reason this script exists is that nobody should be able
+# to read "could not check" as "no problems" — and the first requirement for
+# that is that the script agrees with the report.
 proven = s.get("proven", 0)
 vac = s.get("vacuous", 0)
 notest = s.get("no_test", 0)
@@ -198,36 +210,37 @@ unjudged = na + afail
 total = judged + unjudged
 real = proven + vac + notest
 
-print(f"审到提交 : {total}")
-print(f"有结论   : {real}   （{proven} 条「有测试看守」+ {vac} 条「测试形同虚设」+ {notest} 条「没有测试看着」）")
-print(f"判不了   : {incon}")
-print(f"不适用   : {na}")
-print(f"审不成   : {afail}")
+print(f"Commits reached   : {total}")
+print(f"Real conclusions  : {real}   ({proven} guarded, {vac} vacuous, {notest} unwatched)")
+print(f"Undecidable       : {incon}")
+print(f"Not applicable    : {na}")
+print(f"Could not audit   : {afail}")
 print()
-print("判定分布 :", ", ".join(f"{k}={v}" for k, v in sorted(s.get("by_kind", {}).items())) or "无")
+print("Verdicts:", ", ".join(f"{k}={v}" for k, v in sorted(s.get("by_kind", {}).items())) or "none")
 
 print()
-print("── 这次结果算不算数 ──────────────────────────────────")
-# 分支要按「有多少结论」排，不能按「有没有结论」排：
-# 一次运行里可以既有结论、又有判不了的提交。后者不该被前者的 ✓ 盖住 ——
-# 判不了的提交不是「没问题」。
+print("── Does this run's result count? ───────────────────────")
+# The branches are ordered by "how many conclusions there are", not by
+# "whether there are any": a single run can hold both conclusions and
+# undecidable commits, and the latter must not be hidden behind the former's
+# ✓ — an undecidable commit is not "no problems".
 if afail:
-    print(f"⚠ 报告里有 {afail} 个洞（工具没能审成）。")
-    print("  这些不是「没问题」，是「没查成」—— 报告里写了缺什么、该跑什么命令。")
+    print(f"⚠ The report has {afail} holes (the tool could not audit them).")
+    print("  These are not \"no problems\", they are \"could not check\" — the report says what is missing and which command to run.")
 if real > 0:
     if incon > 0 or afail > 0:
-        print(f"△ 有 {real} 条结论，{incon} 条判不了。判不了的那些不算「没问题」。")
+        print(f"△ {real} conclusions, {incon} undecidable. The undecidable ones do not count as \"no problems\".")
     else:
-        print(f"✓ 有 {real} 条真结论。这次的数字可以用。")
+        print(f"✓ {real} real conclusions. The numbers in this run are usable.")
 elif judged > 0:
-    print(f"✗ 值得审的 {judged} 条里一条结论都没有（{incon} 条判不了）。")
-    print("  这通常是环境没搭好，不是代码没问题 —— 回头看上面体检那一段。")
+    print(f"✗ Not one conclusion out of {judged} worth auditing ({incon} undecidable).")
+    print("  This usually means the environment was not set up, not that the code is fine — look at the preflight above.")
 elif afail > 0:
-    print("✗ 一个提交都没审成 —— 报告里全是洞。")
-    print("  先把环境搭好（上面体检那一段），再跑一次。")
+    print("✗ Not a single commit could be audited — the report is all holes.")
+    print("  Set the environment up (the preflight above) and run it again.")
 else:
-    print("✗ 这个窗口里没有值得审的提交（合并 / 子模块指针 / 纯文档 / 只加测试）。")
-    print("  把 limit 调大，或者用 --since 指定一个更早的起点。")
+    print("✗ Nothing worth auditing in this window (merges / submodule pointers / docs only / tests only).")
+    print("  Raise the limit, or use --since to start from an earlier point.")
 for f in d.get("findings", []):
     if f.get("severity") in ("high", "critical"):
         print()

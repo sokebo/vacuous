@@ -48,7 +48,7 @@ func monoRepo(t *testing.T, rootScripts, coreScripts string) string {
 func findOwnChecks(t *testing.T, findings []core.Finding) core.Finding {
 	t.Helper()
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "自己写的验证脚本") {
+		if strings.Contains(f.Summary, "its own verification scripts") {
 			return f
 		}
 	}
@@ -63,10 +63,10 @@ func findOwnChecks(t *testing.T, findings []core.Finding) core.Finding {
 func assertNotUnguarded(t *testing.T, findings []core.Finding) {
 	t.Helper()
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "CI 不跑任何测试") {
+		if strings.Contains(f.Summary, "CI runs no tests at all") {
 			t.Fatalf("a CI that runs a check must not be reported as unguarded: %+v", f)
 		}
-		if strings.Contains(f.Detail, "代码坏了，CI 照样是绿的") {
+		if strings.Contains(f.Detail, "break the code and CI stays green") {
 			t.Fatalf("the finding claims the CI stays green when the code breaks: %+v", f)
 		}
 	}
@@ -137,7 +137,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	f := findOwnChecks(t, findings)
-	claimed := evidenceSection(f.Evidence, "CI 跑到的验证脚本文件:")
+	claimed := evidenceSection(f.Evidence, "verification script files CI reached:")
 	if !containsLine(claimed, "packages/core/scripts/verify.mjs") {
 		t.Errorf("the evidence must name the script the CI runs:\n%s", f.Evidence)
 	}
@@ -174,7 +174,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	f := findOwnChecks(t, findings)
-	claimed := evidenceSection(f.Evidence, "CI 跑到的验证脚本文件:")
+	claimed := evidenceSection(f.Evidence, "verification script files CI reached:")
 	if !containsLine(claimed, "packages/core/scripts/verify.mjs") {
 		t.Errorf("the evidence must name the script the CI runs:\n%s", f.Evidence)
 	}
@@ -311,7 +311,7 @@ jobs:
 		t.Fatalf("GuardLiveness: %v", err)
 	}
 	f := findOwnChecks(t, findings)
-	claimed := evidenceSection(f.Evidence, "CI 跑到的验证脚本文件:")
+	claimed := evidenceSection(f.Evidence, "verification script files CI reached:")
 	if !containsLine(claimed, "scripts/verify.mjs") {
 		t.Errorf("the evidence must name the script the CI runs:\n%s", f.Evidence)
 	}

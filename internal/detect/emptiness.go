@@ -346,20 +346,22 @@ func wantsSpelling(op string, limit emptinessLimit) (inline, quoted string) {
 		// the test. So "s != \"\"" demands an empty string, and
 		// "s == \"abc\"" demands anything but "abc".
 		if op == "==" {
-			q := fmt.Sprintf("不等于 %q", limit.str)
-			return q, q
+			q := fmt.Sprintf("not equal to %q", limit.str)
+			return "not be equal to " + q, q
 		}
-		return "是空的", "空的"
+		return "be empty", "empty"
 	case limitNilable:
 		// The branch fires when the comparison holds: "p != nil" demands
 		// nil, because the test fails when p is not nil.
-		return "是 nil", "nil"
+		return "be nil", "nil"
 	}
-	quoted = "空的"
+	quoted = "empty"
+	inline = "be empty"
 	switch op {
 	case "!=":
 		if limit.num != 0 {
-			quoted = fmt.Sprintf("不等于 %s", limit.text)
+			quoted = fmt.Sprintf("not equal to %s", limit.text)
+			inline = "not be equal to " + limit.text
 		}
 	case "==":
 		// The branch runs when the comparison HOLDS, and the branch fails
@@ -376,22 +378,23 @@ func wantsSpelling(op string, limit emptinessLimit) (inline, quoted string) {
 		// shape is kept anyway so that the two spellings of the same
 		// question answer the same way.
 		if limit.num != 0 {
-			quoted = fmt.Sprintf("不等于 %s", limit.text)
+			quoted = fmt.Sprintf("not equal to %s", limit.text)
+			inline = "not be equal to " + limit.text
 		}
 	case ">":
-		quoted = fmt.Sprintf("不超过 %s", limit.text)
+		quoted = fmt.Sprintf("at most %s", limit.text)
+		inline = "be at most " + limit.text
 	case ">=":
-		quoted = fmt.Sprintf("少于 %s", limit.text)
+		quoted = fmt.Sprintf("less than %s", limit.text)
+		inline = "be less than " + limit.text
 	case "<":
-		quoted = fmt.Sprintf("至少是 %s", limit.text)
+		quoted = fmt.Sprintf("at least %s", limit.text)
+		inline = "be at least " + limit.text
 	case "<=":
-		quoted = fmt.Sprintf("大于 %s", limit.text)
+		quoted = fmt.Sprintf("greater than %s", limit.text)
+		inline = "be greater than " + limit.text
 	}
-	// "是空的" reads as a sentence; "是等于 5" does not.
-	if quoted == "空的" {
-		return "是空的", quoted
-	}
-	return quoted, quoted
+	return inline, quoted
 }
 
 // emptinessTarget says which side of a comparison holds the value whose
