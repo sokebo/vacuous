@@ -27,7 +27,7 @@ import (
 func TestHarnessCommandsFindsTheVerifyScript(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "package.json", `{
-  "name": "epsilon",
+  "name": "webapp",
   "scripts": {
     "verify": "node scripts/verify/run-all.mjs"
   }

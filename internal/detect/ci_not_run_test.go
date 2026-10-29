@@ -34,7 +34,7 @@ import (
 func TestCINotRunningADeclaredCheckCommandIsReported(t *testing.T) {
 	dir := newRepo(t)
 	write(t, dir, "package.json", `{
-  "name": "epsilon",
+  "name": "webapp",
   "scripts": {
     "build": "npm run smoke:css && vite build",
     "smoke:css": "node scripts/smoke-test-css.mjs",
@@ -89,7 +89,7 @@ jobs:
 func TestCIDeclaredCheckCommandIsReportedWhenTheCIRunsNoneOfThem(t *testing.T) {
 	dir := newRepo(t)
 	write(t, dir, "package.json", `{
-  "name": "epsilon",
+  "name": "webapp",
   "scripts": {
     "build": "vite build",
     "verify": "node scripts/verify/run-all.mjs"
@@ -142,7 +142,7 @@ jobs:
 func TestCINotReportingACheckCommandTheCIRuns(t *testing.T) {
 	dir := newRepo(t)
 	write(t, dir, "package.json", `{
-  "name": "epsilon",
+  "name": "webapp",
   "scripts": {
     "build": "npm run verify && vite build",
     "verify": "node scripts/verify/run-all.mjs"

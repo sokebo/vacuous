@@ -281,7 +281,7 @@ func TestNoRunnerFindingStillReportsARepositoryWhoseCheckIsARunner(t *testing.T)
 func TestCheckOnARepositoryWithItsOwnHarnessDoesNotFailTheRun(t *testing.T) {
 	m := testfixtures.NewRepo(t)
 	m.Write(t, "package.json", `{
-  "name": "epsilon",
+  "name": "webapp",
   "scripts": {
     "verify": "node scripts/verify/run-all.mjs"
   }

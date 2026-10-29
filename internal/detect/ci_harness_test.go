@@ -30,7 +30,7 @@ import (
 func TestCIRunningOwnCheckScriptIsNotReportedAsUnguarded(t *testing.T) {
 	dir := newRepo(t)
 	write(t, dir, "package.json", `{
-  "name": "epsilon",
+  "name": "webapp",
   "scripts": {
     "build": "npm run smoke:css && vite build",
     "smoke:css": "node scripts/smoke-test-css.mjs"
@@ -83,7 +83,7 @@ jobs:
 func TestCINamingOwnCheckScriptDirectly(t *testing.T) {
 	dir := newRepo(t)
 	write(t, dir, "package.json", `{
-  "name": "epsilon",
+  "name": "webapp",
   "scripts": {
     "smoke": "node scripts/smoke-test-css.mjs"
   }
@@ -223,7 +223,7 @@ jobs:
 func TestCIChainOfTwoLevels(t *testing.T) {
 	dir := newRepo(t)
 	write(t, dir, "package.json", `{
-  "name": "epsilon",
+  "name": "webapp",
   "scripts": {
     "build": "npm run ci:check",
     "ci:check": "npm run smoke:css",
@@ -261,7 +261,7 @@ jobs:
 func TestCIWithoutAnyLocalCheckIsStillReported(t *testing.T) {
 	dir := newRepo(t)
 	write(t, dir, "package.json", `{
-  "name": "epsilon",
+  "name": "webapp",
   "scripts": {
     "build": "vite build"
   }
