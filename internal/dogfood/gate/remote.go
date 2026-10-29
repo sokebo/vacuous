@@ -81,7 +81,7 @@ func CheckRemote(localDir string) RemoteResult {
 
 	branch := strings.TrimSpace(gitOutputOrEmpty(localDir, "symbolic-ref", "--quiet", "--short", "HEAD"))
 	if branch == "" {
-		res.Detail = "HEAD 不是一个分支（游离的检出），没有可追的远端"
+		res.Detail = "HEAD is not a branch (detached checkout), so there is no upstream remote to compare against"
 		return res
 	}
 	res.Branch = branch
@@ -91,7 +91,7 @@ func CheckRemote(localDir string) RemoteResult {
 		"--format=%(upstream:remotename) %(upstream:remoteref)", "refs/heads/"+branch))
 	fields := strings.Fields(upstream)
 	if len(fields) == 0 || fields[0] == "" || fields[0] == "." {
-		res.Detail = fmt.Sprintf("分支 %s 没有配上游 —— 判不出它跟远端是什么关系", branch)
+		res.Detail = fmt.Sprintf("branch %s has no upstream configured — cannot tell how it relates to the remote", branch)
 		return res
 	}
 	remote := fields[0]
@@ -100,12 +100,12 @@ func CheckRemote(localDir string) RemoteResult {
 
 	out, err := gitOutput(localDir, "ls-remote", "--heads", remote, "refs/heads/"+remoteBranch)
 	if err != nil {
-		res.Detail = fmt.Sprintf("读不到远端 %s: %v", remote, err)
+		res.Detail = fmt.Sprintf("cannot read remote %s: %v", remote, err)
 		return res
 	}
 	sha, ok := exactRef(out, "refs/heads/"+remoteBranch)
 	if !ok {
-		res.Detail = fmt.Sprintf("远端 %s 上没有 refs/heads/%s —— 判不出本地跟它是什么关系", remote, remoteBranch)
+		res.Detail = fmt.Sprintf("remote %s has no refs/heads/%s — cannot tell how the local checkout relates to it", remote, remoteBranch)
 		return res
 	}
 	res.RemoteSHA = sha
@@ -113,26 +113,27 @@ func CheckRemote(localDir string) RemoteResult {
 	// 远端尖端的提交本地根本没有 → 本地肯定落后。
 	if !hasCommit(localDir, sha) {
 		res.Status = RemoteChanged
-		res.Detail = fmt.Sprintf("远端 %s 的尖端 %s 本地没有 —— 本地落后了", remoteBranch, short(sha))
+		res.Detail = fmt.Sprintf("the tip of remote branch %s (%s) is not present locally — the local checkout is behind", remoteBranch, short(sha))
 		return res
 	}
 
 	// 远端尖端是不是本地 HEAD 的祖先？
 	ancestor, err := isAncestor(localDir, sha, "HEAD")
 	if err != nil {
-		res.Detail = fmt.Sprintf("比不了远端和本地: %v", err)
+		res.Detail = fmt.Sprintf("cannot compare the remote with the local checkout: %v", err)
 		return res
 	}
 	if !ancestor {
 		res.Status = RemoteChanged
 		res.Behind = countCommits(localDir, "HEAD.."+sha)
-		res.Detail = fmt.Sprintf("本地 HEAD 不包含远端 %s 的尖端 %s —— 本地落后 %d 个提交",
+		res.Detail = fmt.Sprintf("the local HEAD does not contain the tip of remote branch %s (%s) — the local checkout is "+
+			"behind by %d commits",
 			remoteBranch, short(sha), res.Behind)
 		return res
 	}
 
 	res.Status = RemoteSame
-	res.Detail = fmt.Sprintf("本地 %s 已经包含远端 %s 的尖端 %s", branch, remoteBranch, short(sha))
+	res.Detail = fmt.Sprintf("the local %s already contains the tip of remote branch %s (%s)", branch, remoteBranch, short(sha))
 	return res
 }
 

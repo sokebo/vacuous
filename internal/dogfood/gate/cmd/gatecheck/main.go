@@ -19,7 +19,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sokebo/vacuous/internal/gate"
+	"github.com/sokebo/vacuous/internal/dogfood/gate"
 )
 
 type stringList []string
@@ -38,18 +38,18 @@ func main() {
 
 	cmd := os.Args[1]
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
-	repo := fs.String("repo", ".", "仓库目录")
+	repo := fs.String("repo", ".", "repository directory")
 	var targets stringList
-	yes := fs.Bool("yes", false, "确认写入状态（record 用）")
-	force := fs.Bool("force", false, "明确允许丢掉正在盯的被审仓（record 用）")
+	yes := fs.Bool("yes", false, "confirm writing the state (used by record)")
+	force := fs.Bool("force", false, "explicitly allow dropping the reviewed repositories currently being watched (used by record)")
 
 	switch cmd {
 	case "check":
-		fs.Var(&targets, "target", "额外要盯的仓库（可重复）")
+		fs.Var(&targets, "target", "additional repository to watch (repeatable)")
 	case "record":
-		fs.Var(&targets, "target", "被审仓库路径（可重复）")
+		fs.Var(&targets, "target", "path of a reviewed repository (repeatable)")
 	case "remote":
-		fs.Var(&targets, "target", "要问远端的仓库（可重复；不给就用记录里的名单）")
+		fs.Var(&targets, "target", "repository whose remote to ask (repeatable; without it, the recorded list is used)")
 	default:
 		usage()
 		os.Exit(2)
@@ -79,7 +79,7 @@ func main() {
 func runRemote(repo string, extraTargets stringList) int {
 	dir, err := filepath.Abs(repo)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "路径 %s 解析失败: %v\n", repo, err)
+		fmt.Fprintf(os.Stderr, "failed to resolve path %s: %v\n", repo, err)
 		return 2
 	}
 
@@ -87,8 +87,8 @@ func runRemote(repo string, extraTargets stringList) int {
 	if len(targets) == 0 {
 		st, err := gate.LoadState(dir)
 		if err != nil {
-			fmt.Printf("UNKNOWN:\n  - [remote] 读不出被审仓名单: %v\n", err)
-			fmt.Println("  判不出来不等于没变化，按「有变化」处理。")
+			fmt.Printf("UNKNOWN:\n  - [remote] cannot read the list of reviewed repositories: %v\n", err)
+			fmt.Println("  cannot tell is not the same as no change — it is treated as a change.")
 			return 2
 		}
 		// 这份状态是**有意**只盯代码的 —— 名单是空的，但那是说清楚的。
@@ -98,7 +98,7 @@ func runRemote(repo string, extraTargets stringList) int {
 		// 完整的六仓 dogfood —— 而这个仓本来就一个都不盯。
 		// 那正是 3.18 那个自毁基线的病：信号跟现实脱钩了。
 		if st.CodeOnly {
-			fmt.Println("NO CHANGE: 这份状态有意只盯代码，没有要问的被审仓")
+			fmt.Println("NO CHANGE: this state deliberately watches only the code, so there are no reviewed repositories to ask about")
 			return 0
 		}
 		for _, t := range st.Targets {
@@ -107,8 +107,8 @@ func runRemote(repo string, extraTargets stringList) int {
 	}
 	if len(targets) == 0 {
 		fmt.Println("UNKNOWN:")
-		fmt.Println("  - [remote] 没有被审仓名单可问")
-		fmt.Println("  判不出来不等于没变化，按「有变化」处理。")
+		fmt.Println("  - [remote] there is no list of reviewed repositories to ask about")
+		fmt.Println("  cannot tell is not the same as no change — it is treated as a change.")
 		return 2
 	}
 
@@ -119,7 +119,7 @@ func runRemote(repo string, extraTargets stringList) int {
 			results = append(results, gate.RemoteResult{
 				Repo:   t,
 				Status: gate.RemoteUnknown,
-				Detail: fmt.Sprintf("路径 %s 解析失败: %v", t, err),
+				Detail: fmt.Sprintf("failed to resolve path %s: %v", t, err),
 			})
 			continue
 		}
@@ -137,7 +137,7 @@ func runRemote(repo string, extraTargets stringList) int {
 	}
 
 	if len(changed) == 0 && len(unknown) == 0 {
-		fmt.Printf("NO CHANGE: %d 个仓的远端都没往前走\n", len(results))
+		fmt.Printf("NO CHANGE: the remote of all %d repositories has not moved forward\n", len(results))
 		return 0
 	}
 	if len(changed) > 0 {
@@ -151,7 +151,7 @@ func runRemote(repo string, extraTargets stringList) int {
 		for _, r := range unknown {
 			fmt.Printf("  - [remote] %s: %s\n", filepath.Base(r.Repo), r.Detail)
 		}
-		fmt.Println("  判不出来不等于没变化，按「有变化」处理。")
+		fmt.Println("  cannot tell is not the same as no change — it is treated as a change.")
 	}
 	return gate.RemoteExitCode(results)
 }
@@ -159,15 +159,15 @@ func runRemote(repo string, extraTargets stringList) int {
 func runCheck(repo string, extraTargets stringList) int {
 	dir, err := filepath.Abs(repo)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "路径 %s 解析失败: %v\n", repo, err)
+		fmt.Fprintf(os.Stderr, "failed to resolve path %s: %v\n", repo, err)
 		return 2
 	}
 
 	st, err := gate.LoadState(dir)
 	if err != nil {
 		// 判不出来就说判不出来。返回一份空状态在这里等于报「没变化」。
-		fmt.Printf("CHANGED: 状态读不出来 —— %v\n", err)
-		fmt.Println("  判不出来不等于没变化，按「有变化」处理。")
+		fmt.Printf("CHANGED: the state cannot be read — %v\n", err)
+		fmt.Println("  cannot tell is not the same as no change — it is treated as a change.")
 		return 2
 	}
 
@@ -178,15 +178,15 @@ func runCheck(repo string, extraTargets stringList) int {
 		for _, t := range extraTargets {
 			abs, err := filepath.Abs(t)
 			if err != nil {
-				changes = append(changes, gate.Change{Kind: "unknown", Detail: fmt.Sprintf("路径 %s 解析失败: %v", t, err)})
+				changes = append(changes, gate.Change{Kind: "unknown", Detail: fmt.Sprintf("failed to resolve path %s: %v", t, err)})
 				continue
 			}
 			head, err := gate.Head(abs)
 			if err != nil {
-				changes = append(changes, gate.Change{Kind: "unknown", Detail: fmt.Sprintf("额外目标 %s 读不到 HEAD: %v", abs, err)})
+				changes = append(changes, gate.Change{Kind: "unknown", Detail: fmt.Sprintf("cannot read the HEAD of the extra target %s: %v", abs, err)})
 				continue
 			}
-			changes = append(changes, gate.Change{Kind: "unknown", Detail: fmt.Sprintf("额外目标 %s 当前 HEAD %s（不在记录里，没有基线）", abs, head[:7])})
+			changes = append(changes, gate.Change{Kind: "unknown", Detail: fmt.Sprintf("extra target %s is currently at HEAD %s (not in the record, so there is no baseline)", abs, head[:7])})
 		}
 	}
 
@@ -205,7 +205,7 @@ func runCheck(repo string, extraTargets stringList) int {
 func runRecord(repo string, targets stringList, yes bool, force bool) int {
 	dir, err := filepath.Abs(repo)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "路径 %s 解析失败: %v\n", repo, err)
+		fmt.Fprintf(os.Stderr, "failed to resolve path %s: %v\n", repo, err)
 		return 2
 	}
 
@@ -214,51 +214,51 @@ func runRecord(repo string, targets stringList, yes bool, force bool) int {
 	// 「没变化」—— 这种失明没有任何症状，只能在这里挡住。
 	old, loadErr := gate.LoadState(dir)
 	if loadErr != nil {
-		fmt.Printf("（读不出上次的状态，按第一次记录处理：%v）\n", loadErr)
+		fmt.Printf("(the previous state cannot be read, treating this as the first recording: %v)\n", loadErr)
 		old = gate.State{}
 	}
 	dropped, err := gate.ValidateRecordTargets(old.Targets, targets, force)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "拒绝记录：%v\n", err)
+		fmt.Fprintf(os.Stderr, "refusing to record: %v\n", err)
 		return 2
 	}
 	if len(dropped) > 0 {
-		fmt.Printf("警告：不再盯这些被审仓了 —— %v\n", dropped)
+		fmt.Printf("warn: no longer watching these reviewed repositories — %v\n", dropped)
 	}
 
 	st, err := gate.CurrentState(dir, targets)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "采集状态失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to collect the state: %v\n", err)
 		return 2
 	}
 
 	if !yes {
-		fmt.Println("将要记录的状态（加 --yes 才真的写）：")
+		fmt.Println("state about to be recorded (add --yes to actually write it):")
 		fmt.Printf("  commit      %s\n", st.Commit)
 		fmt.Printf("  fingerprint %s\n", st.Fingerprint)
 		for _, t := range st.Targets {
 			fmt.Printf("  target      %s  %s  %s  %s\n", t.Head[:7], t.Path, workingState(t), guardState(t))
 		}
 		if old, err := gate.LoadState(dir); err == nil {
-			fmt.Println("相对上次记录的变化：")
+			fmt.Println("changes relative to the last recording:")
 			changes := gate.Check(dir, old)
 			if len(changes) == 0 {
-				fmt.Println("  （没有变化）")
+				fmt.Println("  (no changes)")
 			}
 			for _, c := range changes {
 				fmt.Printf("  - [%s] %s\n", c.Kind, c.Detail)
 			}
 		} else {
-			fmt.Println("（这是第一次记录，没有上次的基线）")
+			fmt.Println("(this is the first recording, so there is no previous baseline)")
 		}
 		return 3
 	}
 
 	if err := gate.SaveState(dir, st); err != nil {
-		fmt.Fprintf(os.Stderr, "写状态失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to write the state: %v\n", err)
 		return 2
 	}
-	fmt.Println("状态已记录：")
+	fmt.Println("state recorded:")
 	fmt.Printf("  commit      %s\n", st.Commit)
 	fmt.Printf("  fingerprint %s\n", st.Fingerprint)
 	for _, t := range st.Targets {
@@ -273,9 +273,9 @@ func runRecord(repo string, targets stringList, yes bool, force bool) int {
 // 那个指纹就是「和上次记录时不一样」的判据 —— 记下来了，下次对不上就重跑。
 func workingState(t gate.Target) string {
 	if t.Working == "" {
-		return "工作树=干净"
+		return "working tree=clean"
 	}
-	return fmt.Sprintf("工作树=%s", t.Working[:7])
+	return fmt.Sprintf("working tree=%s", t.Working[:7])
 }
 
 // guardState 把守卫安装状态写成一行人能看懂的话。
@@ -285,23 +285,25 @@ func workingState(t gate.Target) string {
 // 所以它必须被记下来、被盯着。
 func guardState(t gate.Target) string {
 	if t.Guards == "" {
-		return "守卫状态=未记录"
+		return "guard state=not recorded"
 	}
-	return fmt.Sprintf("守卫状态=%s", t.Guards[:7])
+	return fmt.Sprintf("guard state=%s", t.Guards[:7])
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `用法:
-  gatecheck check [-repo DIR]              判断有没有需要重跑的东西
-  gatecheck remote [-repo DIR]            问被审仓的远端：你往前走了吗
-  gatecheck record -yes -target DIR ...    记录此刻的状态（核验完成之后）
+	fmt.Fprint(os.Stderr, `Usage:
+  gatecheck check [-repo DIR]             decide whether anything needs to run again
+  gatecheck remote [-repo DIR]            ask a reviewed repository's remote: have you moved on?
+  gatecheck record -yes -target DIR ...   record the state as it is now (run after a verification)
 
-退出码: check 0=没变 1=变了 2=判不出来; remote 同左; record 0=记好了 2=拒绝 3=没确认
+Exit codes: check 0=no change 1=changed 2=cannot tell; remote the same; record 0=recorded 2=refused 3=not confirmed
 
-check 量的是本地：HEAD 和工作树。远端往前走而本地没 fetch 时，它看不见 ——
-那时候要问 remote。remote 读不通时退出码是 2，不是 0。
+check measures the local side: HEAD and the working tree. When the remote moves ahead
+while the local clone has not fetched, it cannot see that — ask remote for it. When
+remote cannot be read, the exit code is 2, not 0.
 
-record 不会悄悄丢掉正在盯的被审仓：不带 -target、或比上次少几个，都会被拒绝。
-确实要放弃盯某个仓，加 --force。
+record will not quietly drop the reviewed repositories you are watching: recording without
+-target, or with fewer of them than last time, is refused. If you really do want to give
+up watching a repository, add --force.
 `)
 }

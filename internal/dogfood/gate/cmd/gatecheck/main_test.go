@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sokebo/vacuous/internal/gate"
+	"github.com/sokebo/vacuous/internal/dogfood/gate"
 	"github.com/sokebo/vacuous/internal/testfixtures"
 )
 
@@ -56,7 +56,7 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	cmd.Env = append(os.Environ(), testfixtures.PinnedCommitEnv()...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("git %s 失败: %v\n%s", strings.Join(args, " "), err, out)
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -83,7 +83,7 @@ func TestRunCheckFailsClosedOnABlindStateFile(t *testing.T) {
 	target := seedRepo(t)
 
 	if rc := runRecord(dir, []string{target}, true, false); rc != 0 {
-		t.Fatalf("记录状态失败，退出码 %d", rc)
+		t.Fatalf("recording the state failed, exit code %d", rc)
 	}
 
 	// 把名单抹掉，不留「有意只盯代码」的标记 —— 旧版本写出来的那种文件。
@@ -97,7 +97,7 @@ func TestRunCheckFailsClosedOnABlindStateFile(t *testing.T) {
 	}
 
 	if rc := runCheck(dir, nil); rc != 2 {
-		t.Errorf("看不懂的状态应该是 2（判不出来），实际 %d —— 这等于把「没核验过」说成「没问题」", rc)
+		t.Errorf("an unreadable state should be 2 (cannot tell), got %d — that turns \"never verified\" into \"all good\"", rc)
 	}
 }
 
@@ -112,11 +112,11 @@ func TestRunCheckIsQuietForADeliberateCodeOnlyState(t *testing.T) {
 
 	// --force 且不带 -target = 明确要求「只盯代码」。
 	if rc := runRecord(dir, nil, true, true); rc != 0 {
-		t.Fatalf("有意只盯代码的记录应该成功，实际退出码 %d", rc)
+		t.Fatalf("a deliberate code-only recording should succeed, exit code %d", rc)
 	}
 
 	if rc := runCheck(dir, nil); rc != 0 {
-		t.Errorf("有意只盯代码、且什么都没变时应该是 0，实际 %d —— 闸门会每一轮都空跑一遍", rc)
+		t.Errorf("a deliberate code-only state with nothing changed should be 0, got %d — otherwise the gate runs the whole cycle for nothing every round", rc)
 	}
 }
 
@@ -129,11 +129,11 @@ func TestRunRemoteIsQuietForADeliberateCodeOnlyState(t *testing.T) {
 	dir := seedRepo(t)
 
 	if rc := runRecord(dir, nil, true, true); rc != 0 {
-		t.Fatalf("有意只盯代码的记录应该成功，实际退出码 %d", rc)
+		t.Fatalf("a deliberate code-only recording should succeed, exit code %d", rc)
 	}
 
 	if rc := runRemote(dir, nil); rc != 0 {
-		t.Errorf("有意只盯代码时 remote 应该是 0（没有要问的仓），实际 %d", rc)
+		t.Errorf("for a deliberate code-only state remote should be 0 (there is no repository to ask about), got %d", rc)
 	}
 }
 
@@ -145,11 +145,11 @@ func TestRunRecordRefusesToWriteAStateWithoutTargets(t *testing.T) {
 	dir := seedRepo(t)
 
 	if rc := runRecord(dir, nil, true, false); rc == 0 {
-		t.Error("不带 -target 的 record 必须被拒绝")
+		t.Error("a record without -target must be refused")
 	}
 
 	if _, err := gate.LoadState(dir); err == nil {
-		t.Error("被拒绝的 record 不能留下状态文件 —— 留下就等于闸门从此瞎了")
+		t.Error("a refused record must not leave a state file behind — leaving one means the gate is blind from then on")
 	}
 }
 
@@ -160,31 +160,31 @@ func TestRunRecordRefusesToDropAWatchedTarget(t *testing.T) {
 	other := seedRepo(t)
 
 	if rc := runRecord(dir, []string{target, other}, true, false); rc != 0 {
-		t.Fatalf("正常记录应该成功，实际退出码 %d", rc)
+		t.Fatalf("a normal recording should succeed, exit code %d", rc)
 	}
 
 	// 少写一个：必须拒绝，且状态保持原样。
 	if rc := runRecord(dir, []string{target}, true, false); rc == 0 {
-		t.Error("丢掉一个正在盯的被审仓必须被拒绝")
+		t.Error("dropping a reviewed repository that is being watched must be refused")
 	}
 	st, err := gate.LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	if len(st.Targets) != 2 {
-		t.Errorf("被拒绝的记录不能改动名单，现在有 %d 个被审仓", len(st.Targets))
+		t.Errorf("a refused recording must not change the list, it still has %d reviewed repositories", len(st.Targets))
 	}
 
 	// 显式放弃：允许，但名单真的会变短。
 	if rc := runRecord(dir, []string{target}, true, true); rc != 0 {
-		t.Errorf("显式 --force 应该放行，实际退出码 %d", rc)
+		t.Errorf("an explicit --force should be allowed, exit code %d", rc)
 	}
 	st, err = gate.LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	if len(st.Targets) != 1 {
-		t.Errorf("force 之后名单应该只剩 1 个被审仓，实际 %d", len(st.Targets))
+		t.Errorf("after --force the list should hold exactly 1 reviewed repository, got %d", len(st.Targets))
 	}
 }
 
@@ -197,10 +197,10 @@ func TestRunCheckReportsUncommittedChange(t *testing.T) {
 	target := seedRepo(t)
 
 	if rc := runRecord(dir, []string{target}, true, false); rc != 0 {
-		t.Fatalf("记录状态失败，退出码 %d", rc)
+		t.Fatalf("recording the state failed, exit code %d", rc)
 	}
 	if rc := runCheck(dir, nil); rc != 0 {
-		t.Fatalf("工作树干净时应该是 0，实际 %d", rc)
+		t.Fatalf("with a clean working tree it should be 0, got %d", rc)
 	}
 
 	// 改了但没提交。
@@ -208,7 +208,7 @@ func TestRunCheckReportsUncommittedChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rc := runCheck(dir, nil); rc != 1 {
-		t.Errorf("改了没提交应该是 1（变了），实际 %d —— 这等于把「没核验过」说成「没问题」", rc)
+		t.Errorf("an uncommitted change should be 1 (changed), got %d — that turns \"never verified\" into \"all good\"", rc)
 	}
 }
 
@@ -218,10 +218,10 @@ func TestRunCheckExitCodes(t *testing.T) {
 	target := seedRepo(t)
 
 	if rc := runRecord(dir, []string{target}, true, false); rc != 0 {
-		t.Fatalf("记录状态失败，退出码 %d", rc)
+		t.Fatalf("recording the state failed, exit code %d", rc)
 	}
 	if rc := runCheck(dir, nil); rc != 0 {
-		t.Errorf("什么都没变应该是 0，实际 %d", rc)
+		t.Errorf("with nothing changed it should be 0, got %d", rc)
 	}
 
 	// 被审仓往前走了一步 → 变了 → 1
@@ -231,7 +231,7 @@ func TestRunCheckExitCodes(t *testing.T) {
 	runGit(t, target, "add", "-A")
 	runGit(t, target, "commit", "-q", "-m", "往前走一步")
 	if rc := runCheck(dir, nil); rc != 1 {
-		t.Errorf("被审仓动了应该是 1，实际 %d", rc)
+		t.Errorf("a moved reviewed repository should be 1, got %d", rc)
 	}
 
 	// 工具代码变了 → 1
@@ -241,7 +241,7 @@ func TestRunCheckExitCodes(t *testing.T) {
 	runGit(t, dir, "add", "-A")
 	runGit(t, dir, "commit", "-q", "-m", "改代码")
 	if rc := runCheck(dir, nil); rc != 1 {
-		t.Errorf("代码变了应该是 1，实际 %d", rc)
+		t.Errorf("when the code changes it should be 1, got %d", rc)
 	}
 
 	// 被审仓读不到了 → 判不出来 → 2（不是 1）
@@ -249,7 +249,7 @@ func TestRunCheckExitCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rc := runCheck(dir, nil); rc != 2 {
-		t.Errorf("判不出来应该是 2，实际 %d", rc)
+		t.Errorf("when it cannot tell it should be 2, got %d", rc)
 	}
 }
 
@@ -267,7 +267,7 @@ func cloneOf(t *testing.T, remote string) string {
 	dir := t.TempDir()
 	cmd := exec.Command("git", "clone", "-q", remote, dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("克隆失败: %v\n%s", err, out)
+		t.Fatalf("clone failed: %v\n%s", err, out)
 	}
 	return dir
 }
@@ -280,7 +280,7 @@ func TestRunRemoteReportsLocalCloneBehind(t *testing.T) {
 	runGit(t, remote, "commit", "-q", "--allow-empty", "-m", "远端往前走")
 
 	if rc := runRemote(t.TempDir(), stringList{local}); rc != 1 {
-		t.Errorf("本地落后了应该是 1（变了），实际 %d", rc)
+		t.Errorf("a local checkout that is behind should be 1 (changed), got %d", rc)
 	}
 }
 
@@ -291,7 +291,7 @@ func TestRunRemoteCannotTellWhenRemoteIsUnreachable(t *testing.T) {
 	runGit(t, local, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "nowhere"))
 
 	if rc := runRemote(t.TempDir(), stringList{local}); rc != 2 {
-		t.Errorf("远端读不通应该是 2（判不出来），实际 %d —— 这等于把「没核验过」说成「没问题」", rc)
+		t.Errorf("an unreachable remote should be 2 (cannot tell), got %d — that turns \"never verified\" into \"all good\"", rc)
 	}
 }
 
@@ -301,7 +301,7 @@ func TestRunRemoteIsQuietWhenRemoteHasNotMoved(t *testing.T) {
 	local := cloneOf(t, remote)
 
 	if rc := runRemote(t.TempDir(), stringList{local}); rc != 0 {
-		t.Errorf("远端没动应该是 0，实际 %d", rc)
+		t.Errorf("when the remote has not moved it should be 0, got %d", rc)
 	}
 }
 
@@ -312,11 +312,11 @@ func TestRunRemoteUsesTheRecordedTargets(t *testing.T) {
 	local := cloneOf(t, remote)
 
 	if rc := runRecord(dir, []string{local}, true, false); rc != 0 {
-		t.Fatalf("记录状态失败，退出码 %d", rc)
+		t.Fatalf("recording the state failed, exit code %d", rc)
 	}
 	runGit(t, remote, "commit", "-q", "--allow-empty", "-m", "远端往前走")
 
 	if rc := runRemote(dir, nil); rc != 1 {
-		t.Errorf("记录里的仓远端前进了应该是 1，实际 %d —— 名单没被用上", rc)
+		t.Errorf("a recorded repository whose remote moved forward should be 1, got %d — the recorded list was not used", rc)
 	}
 }

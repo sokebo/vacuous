@@ -58,7 +58,7 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	cmd.Env = append(os.Environ(), testfixtures.PinnedCommitEnv()...)
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("git %s 失败: %v", strings.Join(args, " "), err)
+		t.Fatalf("git %s failed: %v", strings.Join(args, " "), err)
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -95,7 +95,7 @@ func TestFingerprintIgnoresDocsButNotCode(t *testing.T) {
 
 	before, err := Fingerprint(dir)
 	if err != nil {
-		t.Fatalf("指纹算不出来: %v", err)
+		t.Fatalf("cannot compute the fingerprint: %v", err)
 	}
 
 	writeFile(t, dir, "docs/notes.md", "# 说明\n\n补一段。\n")
@@ -104,10 +104,10 @@ func TestFingerprintIgnoresDocsButNotCode(t *testing.T) {
 
 	afterDocs, err := Fingerprint(dir)
 	if err != nil {
-		t.Fatalf("指纹算不出来: %v", err)
+		t.Fatalf("cannot compute the fingerprint: %v", err)
 	}
 	if afterDocs != before {
-		t.Errorf("改文档不该改指纹：%s → %s", before, afterDocs)
+		t.Errorf("changing docs must not change the fingerprint: %s → %s", before, afterDocs)
 	}
 
 	writeFile(t, dir, "main.go", "package main\n\nfunc main() { println(1) }\n")
@@ -115,10 +115,10 @@ func TestFingerprintIgnoresDocsButNotCode(t *testing.T) {
 
 	afterCode, err := Fingerprint(dir)
 	if err != nil {
-		t.Fatalf("指纹算不出来: %v", err)
+		t.Fatalf("cannot compute the fingerprint: %v", err)
 	}
 	if afterCode == afterDocs {
-		t.Error("改代码必须改指纹")
+		t.Error("changing the code must change the fingerprint")
 	}
 }
 
@@ -127,7 +127,7 @@ func TestFingerprintIgnoresUntrackedFiles(t *testing.T) {
 
 	before, err := Fingerprint(dir)
 	if err != nil {
-		t.Fatalf("指纹算不出来: %v", err)
+		t.Fatalf("cannot compute the fingerprint: %v", err)
 	}
 
 	// 未跟踪的文件（编译产物、临时文件）不该影响「有没有新东西」。
@@ -136,10 +136,10 @@ func TestFingerprintIgnoresUntrackedFiles(t *testing.T) {
 
 	after, err := Fingerprint(dir)
 	if err != nil {
-		t.Fatalf("指纹算不出来: %v", err)
+		t.Fatalf("cannot compute the fingerprint: %v", err)
 	}
 	if after != before {
-		t.Errorf("未跟踪的文件不该改指纹：%s → %s", before, after)
+		t.Errorf("untracked files must not change the fingerprint: %s → %s", before, after)
 	}
 }
 
@@ -154,10 +154,10 @@ func TestCheckIsQuietAfterDocsOnlyCommit(t *testing.T) {
 
 	st, err := CurrentState(dir, nil)
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 这一步就是上一轮真实发生的事：核验完，顺手改了一句文档，然后提交。
@@ -166,10 +166,10 @@ func TestCheckIsQuietAfterDocsOnlyCommit(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	if changes := Check(dir, loaded); len(changes) != 0 {
-		t.Errorf("只改文档不该触发重跑，却报了: %+v", changes)
+		t.Errorf("changing only docs must not trigger a rerun, but it reported: %+v", changes)
 	}
 }
 
@@ -178,10 +178,10 @@ func TestCheckReportsCodeChange(t *testing.T) {
 
 	st, err := CurrentState(dir, nil)
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	writeFile(t, dir, "main.go", "package main\n\nfunc main() { println(2) }\n")
@@ -189,14 +189,14 @@ func TestCheckReportsCodeChange(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) != 1 {
-		t.Fatalf("改代码应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+		t.Fatalf("changing the code should report 1 change, but it reported %d: %+v", len(changes), changes)
 	}
 	if changes[0].Kind != "code" {
-		t.Errorf("应该是 code，实际是 %q", changes[0].Kind)
+		t.Errorf("expected code, got %q", changes[0].Kind)
 	}
 }
 
@@ -206,10 +206,10 @@ func TestCheckReportsTargetMove(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	writeFile(t, target, "main.go", "package main\n\nfunc main() { println(3) }\n")
@@ -217,14 +217,14 @@ func TestCheckReportsTargetMove(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) != 1 {
-		t.Fatalf("被审仓库动了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+		t.Fatalf("a moved reviewed repository should report 1 change, but it reported %d: %+v", len(changes), changes)
 	}
 	if changes[0].Kind != "target" {
-		t.Errorf("应该是 target，实际是 %q", changes[0].Kind)
+		t.Errorf("expected target, got %q", changes[0].Kind)
 	}
 }
 
@@ -242,10 +242,10 @@ func TestCheckReportsTargetWorkingTreeChange(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 改了，没提交。HEAD 一点没动。
@@ -253,17 +253,17 @@ func TestCheckReportsTargetWorkingTreeChange(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) != 1 {
-		t.Fatalf("被审仓库工作树变了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+		t.Fatalf("a changed working tree in the reviewed repository should report 1 change, but it reported %d: %+v", len(changes), changes)
 	}
 	if changes[0].Kind != "target-dirty" {
-		t.Errorf("应该是 target-dirty，实际是 %q", changes[0].Kind)
+		t.Errorf("expected target-dirty, got %q", changes[0].Kind)
 	}
 	if !strings.Contains(changes[0].Detail, target) {
-		t.Errorf("报错里要点名是哪个仓: %q", changes[0].Detail)
+		t.Errorf("the report must name the repository: %q", changes[0].Detail)
 	}
 }
 
@@ -279,10 +279,10 @@ func TestCheckReportsTargetWorkingTreeContentChange(t *testing.T) {
 	writeFile(t, target, "main.go", "package main\n\nfunc main() { println(1) }\n")
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 脏的还是同一个文件，但内容换了。
@@ -290,20 +290,20 @@ func TestCheckReportsTargetWorkingTreeContentChange(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) != 1 {
-		t.Fatalf("脏文件内容变了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+		t.Fatalf("changed content in a dirty file should report 1 change, but it reported %d: %+v", len(changes), changes)
 	}
 	if changes[0].Kind != "target-dirty" {
-		t.Errorf("应该是 target-dirty，实际是 %q", changes[0].Kind)
+		t.Errorf("expected target-dirty, got %q", changes[0].Kind)
 	}
 }
 
 // TestCheckIsQuietWhenTargetWorkingTreeIsUnchanged 守的是「宁可漏报不可误伤」。
 //
-// 被审仓不是我们一个人的 —— 别人正在改 beta、epsilon，工作树长期是脏的。
+// 被审仓不是我们一个人的 —— 别人正在改这些仓，工作树长期是脏的。
 // 「脏」是常态，「和上次记录时不一样」才是要重跑的理由。
 //
 // 这一条要是搞错了，后果比漏报严重得多：闸门每轮都喊「有变化」，
@@ -317,18 +317,18 @@ func TestCheckIsQuietWhenTargetWorkingTreeIsUnchanged(t *testing.T) {
 	writeFile(t, target, "main.go", "package main\n\nfunc main() { println(7) }\n")
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	if changes := Check(dir, loaded); len(changes) != 0 {
-		t.Errorf("工作树和基线一样不该触发重跑，却报了: %+v", changes)
+		t.Errorf("a working tree identical to the baseline must not trigger a rerun, but it reported: %+v", changes)
 	}
 }
 
@@ -358,10 +358,10 @@ func TestCheckReportsTargetGuardInstallChange(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 照着报告里的指引把守卫装上。HEAD 没动，工作树也没动。
@@ -369,17 +369,17 @@ func TestCheckReportsTargetGuardInstallChange(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) != 1 {
-		t.Fatalf("守卫装上了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+		t.Fatalf("installing the guard should report 1 change, but it reported %d: %+v", len(changes), changes)
 	}
 	if changes[0].Kind != "target-guards" {
-		t.Errorf("应该是 target-guards，实际是 %q", changes[0].Kind)
+		t.Errorf("expected target-guards, got %q", changes[0].Kind)
 	}
 	if !strings.Contains(changes[0].Detail, target) {
-		t.Errorf("报错里要点名是哪个仓: %q", changes[0].Detail)
+		t.Errorf("the report must name the repository: %q", changes[0].Detail)
 	}
 }
 
@@ -401,18 +401,18 @@ func TestCheckIsQuietWhenTargetGuardStateIsUnchanged(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	if changes := Check(dir, loaded); len(changes) != 0 {
-		t.Errorf("守卫状态和基线一样不该触发重跑，却报了: %+v", changes)
+		t.Errorf("a guard state identical to the baseline must not trigger a rerun, but it reported: %+v", changes)
 	}
 }
 
@@ -434,10 +434,10 @@ func TestCheckIsQuietWhenTheHooksDirOnlyHasFilesGitDoesNotRun(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	hooksDir := filepath.Join(target, ".git", "hooks")
@@ -446,10 +446,10 @@ func TestCheckIsQuietWhenTheHooksDirOnlyHasFilesGitDoesNotRun(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	if changes := Check(dir, loaded); len(changes) != 0 {
-		t.Errorf("git 不会跑的文件不该触发重跑，却报了: %+v", changes)
+		t.Errorf("files git does not run must not trigger a rerun, but it reported: %+v", changes)
 	}
 }
 
@@ -479,10 +479,10 @@ func TestCheckNoticesTheInstalledHookLosingItsExecutableBit(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 去掉可执行位 —— git 不会跑它了。HEAD 没动，被跟踪的工作树也没动。
@@ -492,14 +492,14 @@ func TestCheckNoticesTheInstalledHookLosingItsExecutableBit(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) != 1 {
-		t.Fatalf("装好的守卫不能执行了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+		t.Fatalf("an installed guard that is no longer executable should report 1 change, but it reported %d: %+v", len(changes), changes)
 	}
 	if changes[0].Kind != "target-guards" {
-		t.Errorf("应该是 target-guards，实际是 %q", changes[0].Kind)
+		t.Errorf("expected target-guards, got %q", changes[0].Kind)
 	}
 }
 
@@ -525,10 +525,10 @@ func TestCheckNoticesTheInstalledHookContentChanging(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 内容换了，可执行位还在。
@@ -536,14 +536,14 @@ func TestCheckNoticesTheInstalledHookContentChanging(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) != 1 {
-		t.Fatalf("装好的守卫内容变了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+		t.Fatalf("changed content in an installed guard should report 1 change, but it reported %d: %+v", len(changes), changes)
 	}
 	if changes[0].Kind != "target-guards" {
-		t.Errorf("应该是 target-guards，实际是 %q", changes[0].Kind)
+		t.Errorf("expected target-guards, got %q", changes[0].Kind)
 	}
 }
 
@@ -565,28 +565,28 @@ func TestCheckTreatsAMissingGuardStateAsChanged(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 把状态文件改回旧版本的形状：每个被审仓都没有「守卫状态」这一项。
 	path, err := StateFile(dir)
 	if err != nil {
-		t.Fatalf("定位状态文件失败: %v", err)
+		t.Fatalf("failed to locate the state file: %v", err)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("读状态文件失败: %v", err)
+		t.Fatalf("failed to read the state file: %v", err)
 	}
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("解析状态文件失败: %v", err)
+		t.Fatalf("failed to parse the state file: %v", err)
 	}
 	targets, _ := doc["targets"].([]any)
 	if len(targets) == 0 {
-		t.Fatal("状态文件里没有 targets")
+		t.Fatal("the state file holds no targets")
 	}
 	for _, tv := range targets {
 		tm, _ := tv.(map[string]any)
@@ -594,15 +594,15 @@ func TestCheckTreatsAMissingGuardStateAsChanged(t *testing.T) {
 	}
 	trimmed, err := json.Marshal(doc)
 	if err != nil {
-		t.Fatalf("序列化状态文件失败: %v", err)
+		t.Fatalf("failed to serialize the state file: %v", err)
 	}
 	if err := os.WriteFile(path, trimmed, 0o644); err != nil {
-		t.Fatalf("写状态文件失败: %v", err)
+		t.Fatalf("failed to write the state file: %v", err)
 	}
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	found := false
@@ -612,7 +612,7 @@ func TestCheckTreatsAMissingGuardStateAsChanged(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("没记过守卫状态不能当成「没变」，却没报变化: %+v", changes)
+		t.Errorf("a guard state that was never recorded must not count as \"no change\", but no change was reported: %+v", changes)
 	}
 }
 
@@ -627,10 +627,10 @@ func TestCheckIsQuietWhenTargetHasOnlyUntrackedScratch(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	writeFile(t, target, ".mavis/session.json", "{\"会话\":1}\n")
@@ -638,10 +638,10 @@ func TestCheckIsQuietWhenTargetHasOnlyUntrackedScratch(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	if changes := Check(dir, loaded); len(changes) != 0 {
-		t.Errorf("只有未跟踪的草稿不该触发重跑，却报了: %+v", changes)
+		t.Errorf("only untracked scratch files must not trigger a rerun, but it reported: %+v", changes)
 	}
 }
 
@@ -653,10 +653,10 @@ func TestCheckFailsClosedWhenTargetIsGone(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	if err := os.RemoveAll(target); err != nil {
@@ -665,14 +665,14 @@ func TestCheckFailsClosedWhenTargetIsGone(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) == 0 {
-		t.Fatal("被审仓库没了却报「没变化」—— 这是把判不出来说成没问题")
+		t.Fatal("the reviewed repository is gone, yet it reported \"no change\" — that turns \"cannot tell\" into \"all good\"")
 	}
 	if changes[0].Kind != "unknown" {
-		t.Errorf("应该是 unknown，实际是 %q", changes[0].Kind)
+		t.Errorf("expected unknown, got %q", changes[0].Kind)
 	}
 }
 
@@ -690,10 +690,10 @@ func TestLoadStateRefusesABlindStateFile(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{seedRepo(t)})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 把名单抹掉，**并且**不留下「有意只盯代码」的标记 ——
@@ -708,7 +708,7 @@ func TestLoadStateRefusesABlindStateFile(t *testing.T) {
 	}
 
 	if _, err := LoadState(dir); err == nil {
-		t.Error("一份没有名单、也没说清意图的状态必须被拒绝 —— 闸门会对着它报「没变化」，而它其实一个仓都没看")
+		t.Error("a state with no target list and no stated intent must be refused — the gate would report \"no change\" for it while watching not a single repository")
 	}
 }
 
@@ -721,10 +721,10 @@ func TestCheckFailsClosedWhenTheStateIsBlind(t *testing.T) {
 
 	changes := Check(dir, State{Commit: "x", Fingerprint: "y"})
 	if len(changes) == 0 {
-		t.Fatal("看不懂的状态落到 Check 手里，报「什么都没变」就是假的")
+		t.Fatal("an unreadable state handed to Check reporting \"nothing changed\" would be a lie")
 	}
 	if changes[0].Kind != "unknown" {
-		t.Errorf("应该是 unknown，实际是 %q", changes[0].Kind)
+		t.Errorf("expected unknown, got %q", changes[0].Kind)
 	}
 }
 
@@ -739,22 +739,22 @@ func TestCurrentStateRecordsCodeOnlyWhenThereAreNoTargets(t *testing.T) {
 
 	st, err := CurrentState(dir, nil)
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if !st.CodeOnly {
-		t.Error("一个被审仓都不记时，必须把「有意只盯代码」记进状态")
+		t.Error("when not a single reviewed repository is recorded, \"code only\" must be written into the state")
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 写出去再读回来，标记得还在 —— 不然这道校验就是空的。
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("有意只盯代码的状态不该被拒绝: %v", err)
+		t.Fatalf("a deliberate code-only state must not be refused: %v", err)
 	}
 	if !loaded.CodeOnly {
-		t.Error("code_only 标记在存盘之后丢了")
+		t.Error("the code_only marker was lost after being written to disk")
 	}
 }
 
@@ -765,10 +765,10 @@ func TestCurrentStateIsNotCodeOnlyWhenThereAreTargets(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{seedRepo(t)})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if st.CodeOnly {
-		t.Error("有被审仓时不许标「只盯代码」")
+		t.Error("a state that has reviewed repositories must not be marked \"code only\"")
 	}
 }
 
@@ -784,18 +784,18 @@ func TestCheckIsQuietForADeliberateCodeOnlyState(t *testing.T) {
 
 	st, err := CurrentState(dir, nil)
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	if changes := Check(dir, loaded); len(changes) != 0 {
-		t.Errorf("有意只盯代码、且什么都没动时必须安静，却报了: %+v", changes)
+		t.Errorf("a deliberate code-only state with nothing changed must be quiet, but it reported: %+v", changes)
 	}
 }
 
@@ -808,15 +808,15 @@ func TestLoadStateRefusesAStateThatSaysBothThings(t *testing.T) {
 
 	st, err := CurrentState(dir, []string{seedRepo(t)})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	st.CodeOnly = true
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	if _, err := LoadState(dir); err == nil {
-		t.Error("既有名单又标着「只盯代码」的状态必须被拒绝 —— 闸门不知道该听哪一句")
+		t.Error("a state that has both a target list and a \"code only\" marker must be refused — the gate does not know which one to believe")
 	}
 }
 
@@ -829,14 +829,14 @@ func TestValidateRecordTargetsRefusesEmptyList(t *testing.T) {
 	old := []Target{{Path: "/tmp/watch-a", Head: "aaaaaaa"}}
 
 	if _, err := ValidateRecordTargets(old, nil, false); err == nil {
-		t.Error("一个被审仓都不记必须被拒绝 —— 状态里没有名单，闸门从此不再看任何被审仓库")
+		t.Error("recording not a single reviewed repository must be refused — with no list in the state, the gate stops watching every reviewed repository")
 	}
 	if _, err := ValidateRecordTargets(old, []string{}, false); err == nil {
-		t.Error("空的 -target 列表必须被拒绝")
+		t.Error("an empty -target list must be refused")
 	}
 	// 显式放弃是允许的，但必须是有意为之。
 	if _, err := ValidateRecordTargets(old, nil, true); err != nil {
-		t.Errorf("显式 --force 应该放行: %v", err)
+		t.Errorf("an explicit --force should be allowed: %v", err)
 	}
 }
 
@@ -849,16 +849,16 @@ func TestValidateRecordTargetsRefusesSilentDrop(t *testing.T) {
 
 	dropped, err := ValidateRecordTargets(old, []string{"/tmp/watch-a"}, false)
 	if err == nil {
-		t.Fatalf("少写一个被审仓必须被拒绝 —— 它会悄悄从名单里消失：dropped=%v", dropped)
+		t.Fatalf("dropping one reviewed repository must be refused — it would quietly vanish from the list: dropped=%v", dropped)
 	}
 	if !strings.Contains(err.Error(), "/tmp/watch-b") {
-		t.Errorf("报错里要点名丢掉的是哪个仓: %v", err)
+		t.Errorf("the report must name the repository that was dropped: %v", err)
 	}
 	if len(dropped) != 1 || dropped[0] != "/tmp/watch-b" {
-		t.Errorf("dropped 应该是 [/tmp/watch-b]，实际 %v", dropped)
+		t.Errorf("dropped should be [/tmp/watch-b], got %v", dropped)
 	}
 	if _, err := ValidateRecordTargets(old, []string{"/tmp/watch-a"}, true); err != nil {
-		t.Errorf("显式 --force 应该放行: %v", err)
+		t.Errorf("an explicit --force should be allowed: %v", err)
 	}
 }
 
@@ -868,14 +868,14 @@ func TestValidateRecordTargetsAllowsSameOrMore(t *testing.T) {
 	old := []Target{{Path: "/tmp/watch-a", Head: "aaaaaaa"}}
 
 	if _, err := ValidateRecordTargets(old, []string{"/tmp/watch-a"}, false); err != nil {
-		t.Errorf("同样的名单必须放行: %v", err)
+		t.Errorf("the same target list must be allowed: %v", err)
 	}
 	if _, err := ValidateRecordTargets(old, []string{"/tmp/watch-a", "/tmp/watch-b"}, false); err != nil {
-		t.Errorf("多盯一个仓必须放行: %v", err)
+		t.Errorf("watching one more repository must be allowed: %v", err)
 	}
 	// 第一次记录（没有旧状态）不受「丢仓」规则影响。
 	if _, err := ValidateRecordTargets(nil, []string{"/tmp/watch-a"}, false); err != nil {
-		t.Errorf("第一次记录必须放行: %v", err)
+		t.Errorf("the first recording must be allowed: %v", err)
 	}
 }
 
@@ -888,16 +888,16 @@ func TestExitCodeDistinguishesUnknownFromChange(t *testing.T) {
 		changes []Change
 		want    int
 	}{
-		{"什么都没变", nil, 0},
-		{"代码变了", []Change{{Kind: "code"}}, 1},
-		{"工作树脏了", []Change{{Kind: "dirty"}}, 1},
-		{"被审仓动了", []Change{{Kind: "target"}}, 1},
-		{"判不出来", []Change{{Kind: "unknown"}}, 2},
-		{"又变了又判不出来", []Change{{Kind: "code"}, {Kind: "unknown"}}, 2},
+		{"nothing changed", nil, 0},
+		{"the code changed", []Change{{Kind: "code"}}, 1},
+		{"the working tree is dirty", []Change{{Kind: "dirty"}}, 1},
+		{"a reviewed repository moved", []Change{{Kind: "target"}}, 1},
+		{"cannot tell", []Change{{Kind: "unknown"}}, 2},
+		{"both changed and cannot tell", []Change{{Kind: "code"}, {Kind: "unknown"}}, 2},
 	}
 	for _, tc := range cases {
 		if got := ExitCode(tc.changes); got != tc.want {
-			t.Errorf("%s：退出码应该是 %d，实际 %d", tc.name, tc.want, got)
+			t.Errorf("%s: the exit code should be %d, got %d", tc.name, tc.want, got)
 		}
 	}
 }
@@ -913,10 +913,10 @@ func TestCheckReportsUncommittedCodeChange(t *testing.T) {
 
 	st, err := CurrentState(dir, nil)
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 改了，但是没提交。
@@ -924,17 +924,17 @@ func TestCheckReportsUncommittedCodeChange(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) != 1 {
-		t.Fatalf("改了没提交应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+		t.Fatalf("an uncommitted change should report 1 change, but it reported %d: %+v", len(changes), changes)
 	}
 	if changes[0].Kind != "dirty" {
-		t.Errorf("应该是 dirty，实际是 %q", changes[0].Kind)
+		t.Errorf("expected dirty, got %q", changes[0].Kind)
 	}
 	if !strings.Contains(changes[0].Detail, "main.go") {
-		t.Errorf("报错里要点名是哪个文件: %q", changes[0].Detail)
+		t.Errorf("the report must name the file: %q", changes[0].Detail)
 	}
 }
 
@@ -947,24 +947,24 @@ func TestCheckReportsUntrackedSourceFile(t *testing.T) {
 
 	st, err := CurrentState(dir, nil)
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	writeFile(t, dir, "extra.go", "package main\n")
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) != 1 {
-		t.Fatalf("多了一个没被跟踪的文件应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+		t.Fatalf("an extra untracked file should report 1 change, but it reported %d: %+v", len(changes), changes)
 	}
 	if changes[0].Kind != "dirty" {
-		t.Errorf("应该是 dirty，实际是 %q", changes[0].Kind)
+		t.Errorf("expected dirty, got %q", changes[0].Kind)
 	}
 }
 
@@ -976,10 +976,10 @@ func TestCheckIsQuietWhenOnlyDocsAreDirty(t *testing.T) {
 
 	st, err := CurrentState(dir, nil)
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 文档：改了没提交，根目录和 docs/ 下各来一个。
@@ -988,10 +988,10 @@ func TestCheckIsQuietWhenOnlyDocsAreDirty(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	if changes := Check(dir, loaded); len(changes) != 0 {
-		t.Errorf("只有文档是脏的不该触发重跑，却报了: %+v", changes)
+		t.Errorf("only docs being dirty must not trigger a rerun, but it reported: %+v", changes)
 	}
 }
 
@@ -1009,10 +1009,10 @@ func TestCheckIsQuietWhenUntrackedFileIsIgnored(t *testing.T) {
 
 	st, err := CurrentState(dir, nil)
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	writeFile(t, dir, "vacuous", "编译出来的二进制")
@@ -1020,10 +1020,10 @@ func TestCheckIsQuietWhenUntrackedFileIsIgnored(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	if changes := Check(dir, loaded); len(changes) != 0 {
-		t.Errorf("被忽略的文件不该触发重跑，却报了: %+v", changes)
+		t.Errorf("ignored files must not trigger a rerun, but it reported: %+v", changes)
 	}
 }
 
@@ -1031,7 +1031,7 @@ func TestLoadStateFailsWhenMissingOrCorrupt(t *testing.T) {
 	dir := seedRepo(t)
 
 	if _, err := LoadState(dir); err == nil {
-		t.Error("状态文件不存在时必须报错，不能返回一份空状态")
+		t.Error("a missing state file must be an error, not an empty state")
 	}
 
 	path, err := StateFile(dir)
@@ -1042,7 +1042,7 @@ func TestLoadStateFailsWhenMissingOrCorrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := LoadState(dir); err == nil {
-		t.Error("状态文件损坏时必须报错")
+		t.Error("a corrupt state file must be an error")
 	}
 }
 
@@ -1056,22 +1056,22 @@ func TestSaveStateDoesNotDirtyTheRepository(t *testing.T) {
 
 	st, err := CurrentState(dir, nil)
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	if out := runGit(t, dir, "status", "--porcelain"); out != "" {
-		t.Errorf("写状态把工作树弄脏了:\n%s", out)
+		t.Errorf("writing the state dirtied the working tree:\n%s", out)
 	}
 	headBefore := runGit(t, dir, "rev-parse", "HEAD")
 	// 再记一次，确认不是「第一次恰好干净」。
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 	if headAfter := runGit(t, dir, "rev-parse", "HEAD"); headAfter != headBefore {
-		t.Errorf("写状态动了 HEAD：%s → %s", headBefore, headAfter)
+		t.Errorf("writing the state moved HEAD: %s → %s", headBefore, headAfter)
 	}
 }
 
@@ -1091,10 +1091,10 @@ func TestCheckReportsTargetWorkingTreeModeChange(t *testing.T) {
 	writeFile(t, target, "main.go", "package main\n\nfunc main() { println(1) }\n")
 	st, err := CurrentState(dir, []string{target})
 	if err != nil {
-		t.Fatalf("采集状态失败: %v", err)
+		t.Fatalf("failed to collect the state: %v", err)
 	}
 	if err := SaveState(dir, st); err != nil {
-		t.Fatalf("写状态失败: %v", err)
+		t.Fatalf("failed to write the state: %v", err)
 	}
 
 	// 内容一个字没动，只改权限。
@@ -1104,14 +1104,14 @@ func TestCheckReportsTargetWorkingTreeModeChange(t *testing.T) {
 
 	loaded, err := LoadState(dir)
 	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
+		t.Fatalf("failed to read the state: %v", err)
 	}
 	changes := Check(dir, loaded)
 	if len(changes) != 1 {
-		t.Fatalf("权限位变了应该报 1 条，却报了 %d 条: %+v", len(changes), changes)
+		t.Fatalf("a changed permission bit should report 1 change, but it reported %d: %+v", len(changes), changes)
 	}
 	if changes[0].Kind != "target-dirty" {
-		t.Errorf("应该是 target-dirty，实际是 %q", changes[0].Kind)
+		t.Errorf("expected target-dirty, got %q", changes[0].Kind)
 	}
 }
 
@@ -1124,13 +1124,13 @@ func TestWorkingFingerprintIsQuietWhenNothingChanged(t *testing.T) {
 
 	first, err := WorkingFingerprint(target)
 	if err != nil {
-		t.Fatalf("算指纹失败: %v", err)
+		t.Fatalf("failed to compute the fingerprint: %v", err)
 	}
 	second, err := WorkingFingerprint(target)
 	if err != nil {
-		t.Fatalf("算指纹失败: %v", err)
+		t.Fatalf("failed to compute the fingerprint: %v", err)
 	}
 	if first != second {
-		t.Errorf("什么都没动，指纹却变了:\n%s\n%s", first, second)
+		t.Errorf("nothing changed, yet the fingerprint changed:\n%s\n%s", first, second)
 	}
 }

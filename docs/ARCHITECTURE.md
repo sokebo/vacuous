@@ -62,12 +62,27 @@ explained in the README; their package is described in §4.
 | `internal/counterfactual` | The experiment engine and the verdict vocabulary |
 | `internal/detect` | Static checks |
 | `internal/report` | Text and JSON rendering |
-| `internal/gate` | Internal scheduling helper for the project's own verification runs |
+| `internal/dogfood/gate` | **Not part of the product.** The change-detection gate for this project's own verification runs. It is a separate binary and is never linked into `cmd/vacuous` |
 | `internal/scripts`, `internal/testfixtures` | Test support |
 
 `internal/core` imports nothing from the rest of the tree. It is the only
 place where the three families of analysis meet, so it stays boring on
 purpose.
+
+### `internal/dogfood` — not product code
+
+`internal/dogfood/gate` answers one question: **has anything changed that
+means the verification run has to happen again?** It fingerprints this
+repository's HEAD (excluding documents), records the state of the audited
+repositories (HEAD, worktree, hook installation), and compares the two.
+
+It lives under `internal/` rather than beside the product packages because it
+is **the author's own verification pipeline, not something an external user
+runs**. It is not linked into the released binary, and nothing under
+`internal/` can be imported from outside this module.
+
+The companion acceptance scripts live outside the repository entirely — they
+audit private repositories, so their inputs and their results are private too.
 
 ---
 

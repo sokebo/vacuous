@@ -106,13 +106,13 @@ const stateFileName = "vacuous-gate.state"
 func StateFile(repoDir string) (string, error) {
 	dir, err := gitOutput(repoDir, "rev-parse", "--absolute-git-dir")
 	if err != nil {
-		return "", fmt.Errorf("定位 git 目录失败: %w", err)
+		return "", fmt.Errorf("failed to locate the git directory: %w", err)
 	}
 	// git 的输出带换行，不削掉的话拼出来的路径里会夹一个换行符，
 	// 写文件的时候会报「目录不存在」—— 一个看起来毫不相干的错。
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
-		return "", fmt.Errorf("git 目录路径是空的")
+		return "", fmt.Errorf("the git directory path is empty")
 	}
 	return filepath.Join(dir, stateFileName), nil
 }
@@ -127,7 +127,7 @@ func StateFile(repoDir string) (string, error) {
 func Fingerprint(repoDir string) (string, error) {
 	out, err := gitOutput(repoDir, "ls-tree", "-r", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("读取 HEAD 的文件清单失败: %w", err)
+		return "", fmt.Errorf("failed to read the file listing of HEAD: %w", err)
 	}
 	var kept strings.Builder
 	keptCount := 0
@@ -148,7 +148,7 @@ func Fingerprint(repoDir string) (string, error) {
 		keptCount++
 	}
 	if keptCount == 0 {
-		return "", fmt.Errorf("HEAD 上没有任何参与指纹的文件，指纹算不出来")
+		return "", fmt.Errorf("HEAD holds no files that take part in the fingerprint, so the fingerprint cannot be computed")
 	}
 	sum := sha256.Sum256([]byte(kept.String()))
 	return hex.EncodeToString(sum[:]), nil
@@ -174,7 +174,7 @@ func isDoc(path string) bool {
 // 症状和「一切正常」完全一样：都是 NO CHANGE、退出码 0。
 //
 // 文档照旧不算：改文档不改变工具跑出来的结果，拿它当触发条件就是让闸门空转
-// （见 DOGFOOD.md 3.18）。被 .gitignore 忽略的文件也不算：编译产物和临时
+// （见 docs/dogfood/ 3.18）。被 .gitignore 忽略的文件也不算：编译产物和临时
 // 文件不是「改动」。
 //
 // 注意这里量的是**工具自己的**工作树。被审仓库的工作树另有一只眼睛
@@ -189,12 +189,12 @@ func isDoc(path string) bool {
 // 另外：被审仓的工作树早就不再只由工具的报告负责了。check 模式读的是
 // **工作树里的文件**，所以一份 check 报告可能描述的是还没提交的代码；
 // audit 模式的两棵树（反事实和基线）都是用 git archive 从提交里建出来的，
-// 所以审计的结论跟工作树无关。见 docs/DOGFOOD.md 3.58 与 3.62。
+// 所以审计的结论跟工作树无关。见 docs/dogfood/ 3.58 与 3.62。
 func DirtyPaths(repoDir string) ([]string, error) {
 	// 用 -z：路径不会被 git 加引号，解析不会踩到转义。
 	out, err := gitOutput(repoDir, "status", "--porcelain", "-z")
 	if err != nil {
-		return nil, fmt.Errorf("读工作树状态失败: %w", err)
+		return nil, fmt.Errorf("failed to read the working tree status: %w", err)
 	}
 	entries := strings.Split(out, "\x00")
 	var paths []string
@@ -222,7 +222,7 @@ func DirtyPaths(repoDir string) ([]string, error) {
 func Head(dir string) (string, error) {
 	out, err := gitOutput(dir, "rev-parse", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("读取 %s 的 HEAD 失败: %w", dir, err)
+		return "", fmt.Errorf("failed to read the HEAD of %s: %w", dir, err)
 	}
 	return strings.TrimSpace(out), nil
 }
@@ -245,14 +245,14 @@ func Head(dir string) (string, error) {
 //	   不在 check 的分析范围里：它们在磁盘上，却不是这个仓的一部分。
 //	   把它们算进来，闸门就会天天响。
 //	② 比的是「和上次记录时不一样」，不是「现在是脏的」。
-//	   被审仓不是我们一个人的 —— 别人正在改 beta、epsilon，工作树长期是脏的。
+//	   被审仓不是我们一个人的 —— 别人正在改这些仓，工作树长期是脏的。
 //	   「脏」是常态，「和上次不一样」才是要重跑的理由。
 //	③ 文档照样算。工具自己的仓排除文档，是因为我们自己每轮都提交文档；
 //	   被审仓的文档不在那个豁免范围里。
 func WorkingFingerprint(dir string) (string, error) {
 	out, err := gitOutput(dir, "diff", "--name-only", "-z", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("读取 %s 的工作树状态失败: %w", dir, err)
+		return "", fmt.Errorf("failed to read the working tree status of %s: %w", dir, err)
 	}
 	var paths []string
 	for _, p := range strings.Split(out, "\x00") {
@@ -336,7 +336,7 @@ func workingContentHash(dir, rel string) string {
 func GuardState(dir string) (string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return "", fmt.Errorf("路径 %s 解析失败: %w", dir, err)
+		return "", fmt.Errorf("failed to resolve path %s: %w", dir, err)
 	}
 	root, err := repoRoot(abs)
 	if err != nil {
@@ -368,7 +368,7 @@ func GuardState(dir string) (string, error) {
 	entries, err := os.ReadDir(hooksDir)
 	if err != nil {
 		// 目录不存在 —— git 会静默忽略它。这本身就是结论的一部分
-		// （检查器会报「core.hooksPath 指向的目录不存在」），所以它是
+		// （检查器会报「core.hooksPath points at a directory that does not exist — there is no guard」），所以它是
 		// 指纹的一部分，不是「读不出来」。
 		h.Write([]byte("(missing)"))
 		return hex.EncodeToString(h.Sum(nil)), nil
@@ -460,7 +460,7 @@ func gitConfigValue(dir, key string) (string, bool, error) {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", false, fmt.Errorf("读 git 配置 %s 失败: %s", key, msg)
+		return "", false, fmt.Errorf("failed to read git config %s: %s", key, msg)
 	}
 	value := strings.TrimSpace(string(out))
 	if value == "" {
@@ -492,14 +492,14 @@ func LoadState(repoDir string) (State, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return State{}, fmt.Errorf("读取状态文件失败: %w", err)
+		return State{}, fmt.Errorf("failed to read the state file: %w", err)
 	}
 	var st State
 	if err := json.Unmarshal(data, &st); err != nil {
-		return State{}, fmt.Errorf("状态文件解析失败: %w", err)
+		return State{}, fmt.Errorf("failed to parse the state file: %w", err)
 	}
 	if st.Fingerprint == "" {
-		return State{}, fmt.Errorf("状态文件里没有指纹")
+		return State{}, fmt.Errorf("the state file holds no fingerprint")
 	}
 	if err := validateScope(st); err != nil {
 		return State{}, err
@@ -526,14 +526,16 @@ func LoadState(repoDir string) (State, error) {
 func validateScope(st State) error {
 	if len(st.Targets) == 0 && !st.CodeOnly {
 		return fmt.Errorf(
-			"状态文件里没有被审仓的名单，也没有标明「有意只盯代码」—— 闸门分不出这是有意还是出了岔子，" +
-				"而猜错的后果是它对所有被审仓静默失明（报的还是「没变化」）" +
-				"（重新 record 一次，把被审仓名单写回去）")
+			"the state file has neither a list of reviewed repositories nor a \"code only\" marker — " +
+				"the gate cannot tell whether that was deliberate or something went wrong, and guessing " +
+				"wrong means it goes silently blind to every reviewed repository (it would still report " +
+				"\"no change\"); record once more to write the reviewed repository list back")
 	}
 	if len(st.Targets) > 0 && st.CodeOnly {
 		return fmt.Errorf(
-			"状态文件里既有被审仓名单，又标着「只盯代码」—— 这两句话说不到一块去，" +
-				"闸门不知道该听哪一句（重新 record 一次）")
+			"the state file has both a list of reviewed repositories and a \"code only\" marker — " +
+				"the two statements do not agree, and the gate does not know which one to believe " +
+				"(record once more)")
 	}
 	return nil
 }
@@ -576,19 +578,19 @@ func CurrentState(repoDir string, targets []string) (State, error) {
 	for _, t := range targets {
 		abs, err := filepath.Abs(t)
 		if err != nil {
-			return State{}, fmt.Errorf("路径 %s 解析失败: %w", t, err)
+			return State{}, fmt.Errorf("failed to resolve path %s: %w", t, err)
 		}
 		head, err := Head(abs)
 		if err != nil {
-			return State{}, fmt.Errorf("被审仓库 %s 读不到 HEAD: %w", abs, err)
+			return State{}, fmt.Errorf("cannot read the HEAD of the reviewed repository %s: %w", abs, err)
 		}
 		wf, err := WorkingFingerprint(abs)
 		if err != nil {
-			return State{}, fmt.Errorf("被审仓库 %s 读工作树状态失败: %w", abs, err)
+			return State{}, fmt.Errorf("failed to read the working tree status of the reviewed repository %s: %w", abs, err)
 		}
 		gs, err := GuardState(abs)
 		if err != nil {
-			return State{}, fmt.Errorf("被审仓库 %s 读守卫安装状态失败: %w", abs, err)
+			return State{}, fmt.Errorf("failed to read the guard install state of the reviewed repository %s: %w", abs, err)
 		}
 		st.Targets = append(st.Targets, Target{Path: abs, Head: head, Working: wf, Guards: gs})
 	}
@@ -619,7 +621,7 @@ func ValidateRecordTargets(old []Target, newPaths []string, force bool) ([]strin
 	for _, p := range newPaths {
 		a, err := filepath.Abs(p)
 		if err != nil {
-			return nil, fmt.Errorf("路径 %s 解析失败: %w", p, err)
+			return nil, fmt.Errorf("failed to resolve path %s: %w", p, err)
 		}
 		abs = append(abs, a)
 	}
@@ -641,13 +643,17 @@ func ValidateRecordTargets(old []Target, newPaths []string, force bool) ([]strin
 			return dropped, nil
 		}
 		return dropped, fmt.Errorf(
-			"不能一个被审仓都不记：状态里没有仓库名单，闸门就再也看不见任何被审仓库的动静（确实只想盯代码，就加 --force）")
+			"cannot record zero reviewed repositories: with no repository list in the state, the gate " +
+				"would never see any movement in any reviewed repository (if you really only want to " +
+				"watch the code, add --force)")
 	}
 
 	if len(dropped) > 0 && !force {
 		return dropped, fmt.Errorf(
-			"这次记录会丢掉 %d 个正在盯的被审仓：%s —— 不写进去的话，闸门会悄悄不再盯它们（确实要放弃盯，就加 --force）",
-			len(dropped), strings.Join(dropped, "、"))
+			"this recording would drop %d of the reviewed repositories currently being watched: %s — "+
+				"leaving them out means the gate would quietly stop watching them (if you really do "+
+				"want to give up watching them, add --force)",
+			len(dropped), strings.Join(dropped, ", "))
 	}
 
 	return dropped, nil
@@ -700,7 +706,7 @@ func Check(repoDir string, st State) []Change {
 	} else if fp != st.Fingerprint {
 		changes = append(changes, Change{
 			Kind:   "code",
-			Detail: fmt.Sprintf("工具代码变了（指纹 %s → %s）", short(st.Fingerprint), short(fp)),
+			Detail: fmt.Sprintf("the tool's code changed (fingerprint %s → %s)", short(st.Fingerprint), short(fp)),
 		})
 	}
 
@@ -709,24 +715,24 @@ func Check(repoDir string, st State) []Change {
 	dirty, err := DirtyPaths(repoDir)
 	if err != nil {
 		// 读不出来就是读不出来，不许当成「没变化」。
-		changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("读工作树状态失败: %v", err)})
+		changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("failed to read the working tree status: %v", err)})
 	} else if len(dirty) > 0 {
 		changes = append(changes, Change{
 			Kind:   "dirty",
-			Detail: fmt.Sprintf("工具代码有未提交的改动（%d 个文件）：%s", len(dirty), strings.Join(dirty, "、")),
+			Detail: fmt.Sprintf("the tool's code has uncommitted changes (%d files): %s", len(dirty), strings.Join(dirty, ", ")),
 		})
 	}
 
 	for _, t := range st.Targets {
 		head, err := Head(t.Path)
 		if err != nil {
-			changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("被审仓库 %s 读不到 HEAD: %v", t.Path, err)})
+			changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("cannot read the HEAD of the reviewed repository %s: %v", t.Path, err)})
 			continue
 		}
 		if head != t.Head {
 			changes = append(changes, Change{
 				Kind:   "target",
-				Detail: fmt.Sprintf("被审仓库 %s 的 HEAD 变了（%s → %s）", t.Path, short(t.Head), short(head)),
+				Detail: fmt.Sprintf("the HEAD of the reviewed repository %s changed (%s → %s)", t.Path, short(t.Head), short(head)),
 			})
 			continue
 		}
@@ -738,13 +744,14 @@ func Check(repoDir string, st State) []Change {
 		// 核验时的工作树，而不是现在这个。
 		wf, err := WorkingFingerprint(t.Path)
 		if err != nil {
-			changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("被审仓库 %s 读工作树状态失败: %v", t.Path, err)})
+			changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("failed to read the working tree status of the reviewed repository %s: %v", t.Path, err)})
 			continue
 		}
 		if wf != t.Working {
 			changes = append(changes, Change{
-				Kind:   "target-dirty",
-				Detail: fmt.Sprintf("被审仓库 %s 的工作树变了（未提交的内容和上次记录时不一样）", t.Path),
+				Kind: "target-dirty",
+				Detail: fmt.Sprintf("the working tree of the reviewed repository %s changed (the uncommitted content differs "+
+					"from what was recorded last time)", t.Path),
 			})
 		}
 		// 守卫装没装，也得盯着。
@@ -758,13 +765,14 @@ func Check(repoDir string, st State) []Change {
 		// 恰恰是有人把报告里的问题**修好了**的那一次。
 		gs, err := GuardState(t.Path)
 		if err != nil {
-			changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("被审仓库 %s 读守卫安装状态失败: %v", t.Path, err)})
+			changes = append(changes, Change{Kind: "unknown", Detail: fmt.Sprintf("failed to read the guard install state of the reviewed repository %s: %v", t.Path, err)})
 			continue
 		}
 		if gs != t.Guards {
 			changes = append(changes, Change{
-				Kind:   "target-guards",
-				Detail: fmt.Sprintf("被审仓库 %s 的守卫安装状态变了（git 配置或 hooks 目录和上次记录时不一样：%s → %s）", t.Path, short(t.Guards), short(gs)),
+				Kind: "target-guards",
+				Detail: fmt.Sprintf("the guard install state of the reviewed repository %s changed (the git config or the hooks "+
+					"directory differs from what was recorded last time: %s → %s)", t.Path, short(t.Guards), short(gs)),
 			})
 		}
 	}

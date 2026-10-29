@@ -30,6 +30,15 @@ commit titles. Translating them would rewrite the evidence the entry exists to
 preserve. Everything the tool itself says — every finding, every report, every
 message — is in English.
 
+**Some paths in these volumes are old, on purpose too.** The entries describe
+what was true when the bug was found, so they quote the paths the code had
+then: `scripts/gate.sh` and `internal/gate`. Both moved. The gate now lives at
+[`internal/dogfood/gate/`](../../internal/dogfood/README.md) — it is this
+project's own verification pipeline, not part of the product — and the
+acceptance scripts moved out of the repository entirely. The "Baseline"
+chapter in volume 01 carries the current paths, because that chapter is
+instructions rather than history.
+
 | Volume | Contents |
 |---|---|
 | [`01-baseline.md`](./01-baseline.md) | The environment, the desensitization policy, the baseline gate criteria, and the two baseline verification chapters (static checks, counterfactual audit) |
