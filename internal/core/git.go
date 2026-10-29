@@ -73,6 +73,15 @@ type Repo interface {
 	// experiment. The result must be applicable with `git apply`.
 	Patch(ctx context.Context, sha string, paths []string) (string, error)
 
+	// PatchRange returns the unified diff between two revisions, restricted
+	// to the given paths.
+	//
+	// It exists for the same reason DiffFiles does: the counterfactual of a
+	// change window is built from the window's own range, and the diff of a
+	// single commit against its first parent is the wrong shape for it.
+	// An empty path list means NO files, as in Patch.
+	PatchRange(ctx context.Context, base, head string, paths []string) (string, error)
+
 	// FileAt returns the contents of a path at a revision. It returns an
 	// empty string and a nil error when the path does not exist there.
 	FileAt(ctx context.Context, rev, path string) (string, error)

@@ -297,6 +297,13 @@ By kind: coupled 7 · no-test-for-fix 5 · unsupported-source 4
 > Incidentally: of the 35 commits before the fix, the 15 extra ones were all old
 > 2026-07 commits (docs, initialization scaffolding); the report named them,
 > but **nobody wanted them audited** — which is exactly why the "window" exists.
+>
+> ★ **These numbers were produced before 3.90.** The unit of judgement was the
+> commit then; it is the **change window** now, so a run over the same history
+> produces one verdict for the range instead of one per commit, and this row
+> does not reproduce. "scope + not applicable = window size" was a rule about
+> the **commit** count; the scope line now reads "audited N windows of M
+> commits", and M is the number of commits the windows covered.
 
 ### Individual Verdicts for Key Commits
 

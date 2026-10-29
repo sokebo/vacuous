@@ -87,7 +87,7 @@ func renderText(w io.Writer, r *core.Report) error {
 	if r.Silenced > 0 {
 		if err := writeField(w, "Silenced", fmt.Sprintf(
 			"%s judged, but the finding was suppressed by a // vacuous:ignore comment — "+
-				"the comment sits right next to the code that triggered it", verbWas(r.Silenced, "commit", "commits"))); err != nil {
+				"the comment sits right next to the code that triggered it", verbWas(r.Silenced, "window", "windows"))); err != nil {
 			return err
 		}
 	}
@@ -162,12 +162,11 @@ func headline(r *core.Report, findings []core.Finding) string {
 	// and a headline that says "no vacuous tests found" about it is
 	// exactly the confusion this tool exists to catch - in itself.
 	judged := r.Proven + r.Vacuous + r.NoTest + r.Inconclusive
-	unjudged := r.NotApplicable + r.AuditFailed
 
 	if len(findings) == 0 {
 		switch {
 		case r.AuditFailed > 0:
-			return fmt.Sprintf("vacuous — %s could not be audited, the report is incomplete", noun(r.AuditFailed, "commit", "commits"))
+			return fmt.Sprintf("vacuous — %s could not be audited, the report is incomplete", noun(r.AuditFailed, "window", "windows"))
 		case judged == 0:
 			return fmt.Sprintf("vacuous — nothing to judge in this run (%d not applicable)", r.NotApplicable)
 		case r.Proven > 0:
@@ -188,16 +187,50 @@ func headline(r *core.Report, findings []core.Finding) string {
 	}
 	// The scope of the run belongs in the first line: a reader who does
 	// not know how much was judged cannot weigh what was found.
-	scope := fmt.Sprintf("audited %s", noun(judged, "commit", "commits"))
-	if unjudged > 0 {
-		scope += fmt.Sprintf(", %d not applicable", r.NotApplicable)
+	scope := scopeLine(r)
+	// What was NOT judged goes in brackets after it. It is part of the
+	// same number - the windows that were examined - so it cannot be a
+	// second "audited N" that the reader has to add up.
+	var skipped []string
+	if r.NotApplicable > 0 {
+		skipped = append(skipped, fmt.Sprintf("%d not applicable", r.NotApplicable))
 	}
 	if r.AuditFailed > 0 {
-		scope += fmt.Sprintf(", %d could not be audited", r.AuditFailed)
+		skipped = append(skipped, fmt.Sprintf("%d could not be audited", r.AuditFailed))
+	}
+	if len(skipped) > 0 {
+		scope += " (" + strings.Join(skipped, ", ") + ")"
 	}
 	return fmt.Sprintf("vacuous — found %s (%s %d · %s %d · unwatched %d; %s)",
 		noun(len(findings), "problem", "problems"), severityLabel(core.SevCritical), critical,
 		severityLabel(core.SevHigh), high, r.Vacuous, scope)
+}
+
+// scopeLine says how much ground the run covered.
+//
+// The unit of judgement is the change window, so the counters count
+// windows. How many commits those windows cover is a second number, and it
+// is the one that says how much history was examined: "one window of twenty
+// commits" and "twenty windows of one commit each" are very different runs,
+// and a tally that showed only the first would hide the second.
+//
+// A report assembled without the window counters - by a library caller, or
+// by a test - falls back to counting each judged unit as one commit, which
+// is what the tool did before windows existed.
+func scopeLine(r *core.Report) string {
+	windows, commits := r.AuditedWindows, r.AuditedCommits
+	if windows == 0 {
+		windows = r.Proven + r.Vacuous + r.NoTest + r.Inconclusive
+		commits = windows
+	}
+	switch {
+	case windows == 1 && commits <= 1:
+		return "audited 1 commit"
+	case windows == 1:
+		return fmt.Sprintf("audited 1 window of %s", noun(commits, "commit", "commits"))
+	default:
+		return fmt.Sprintf("audited %s of %s", noun(windows, "window", "windows"), noun(commits, "commit", "commits"))
+	}
 }
 
 // writeFinding writes one finding: the header line, then the prose.

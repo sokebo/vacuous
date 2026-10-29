@@ -39,6 +39,14 @@ acceptance scripts moved out of the repository entirely. The "Baseline"
 chapter in volume 01 carries the current paths, because that chapter is
 instructions rather than history.
 
+**The verdict counts in these volumes are records, not expectations.** They
+were produced when the unit of judgement was the commit. The unit is the
+**change window** now (bug 3.90), so a run over the same history produces one
+verdict for the range instead of one per commit, and the numbers do not
+reproduce. That is the point of the change, not a drift in the evidence: the
+recorded numbers are what the tool said at the time, and the per-commit rows
+in the tables below are the record of that run.
+
 | Volume | Contents |
 |---|---|
 | [`01-baseline.md`](./01-baseline.md) | The environment, the desensitization policy, the baseline gate criteria, and the two baseline verification chapters (static checks, counterfactual audit) |
@@ -50,6 +58,7 @@ instructions rather than history.
 | [`07-bugs-3.60-3.70.md`](./07-bugs-3.60-3.70.md) | Tool bugs 3.60 – 3.70 |
 | [`08-bugs-3.71-3.77.md`](./08-bugs-3.71-3.77.md) | Tool bugs 3.71 – 3.77 |
 | [`09-bugs-3.78-3.87.md`](./09-bugs-3.78-3.87.md) | Tool bugs 3.78 – 3.87 |
+| [`10-bugs-3.90.md`](./10-bugs-3.90.md) | Tool bug 3.90 — the unit of judgement, from the commit to the change window |
 
 ---
 
@@ -184,6 +193,7 @@ themselves.
 | 3.87 | The repository declares verification commands and CI runs none of them — while both facts were in hand and the difference was never taken | CI detection |
 | **3.88** | The fix was still in the counterfactual tree — an empty path list was taken for "all files" *(originally numbered 3.44)* | Counterfactual mechanics |
 | **3.89** | A commit that could not be audited exited with code 0 *(originally numbered 3.45)* | Exit codes |
+| **3.90** | The unit of judgement was the commit — a fix and its test in two commits got two verdicts | Verdict |
 
 ---
 

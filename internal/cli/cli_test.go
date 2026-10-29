@@ -306,14 +306,17 @@ func Add(a, b int) int {
 // TestASilencedCommitIsStillCountedInTheScope is the regression guard for
 // the commit that vanished.
 //
-// The scope line - "audited N commits" - is the one number that tells a reader
-// how much was examined. A commit whose finding was silenced was examined
-// all the same; dropping it from that count made the line describe a
-// smaller run than the one that happened, and the difference was invisible:
-// nothing in the report said a commit had been dropped.
+// The scope line - "audited N windows of M commits" - is the one number
+// that tells a reader how much was examined. A change whose finding was
+// silenced was examined all the same; dropping it from that count made the
+// line describe a smaller run than the one that happened, and the
+// difference was invisible: nothing in the report said a commit had been
+// dropped.
 //
 // The fixture has two behaviour changes. One is reported, one is silenced.
-// Both were examined, so the scope has to say two.
+// Both were examined, so the scope has to count both windows - the one
+// that carries them and the one that has no baseline to be compared
+// against.
 func TestASilencedCommitIsStillCountedInTheScope(t *testing.T) {
 	repo := auditFixture(t)
 	repo.Write(t, "a.go", `package auditsup
@@ -337,8 +340,8 @@ func Add(a, b int) int {
 	if stderr != "" {
 		t.Fatalf("unexpected stderr: %s", stderr)
 	}
-	if !strings.Contains(flat(stdout), "audited 2 commits") {
-		t.Errorf("both commits were examined, silenced or not:\n%s", stdout)
+	if !strings.Contains(flat(stdout), "audited 2 windows of 3 commits") {
+		t.Errorf("both windows were examined, silenced or not:\n%s", stdout)
 	}
 	if !strings.Contains(flat(stdout), "Silenced: 1") {
 		t.Errorf("the silence needs its own line, or the tally cannot be read:\n%s", stdout)

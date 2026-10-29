@@ -88,11 +88,16 @@ func (a *repoAdapter) Commits(ctx context.Context, scope core.ChangeScope) ([]co
 }
 
 // DiffFiles lists the files changed between base and head.
+//
+// The base is honoured. It used to be ignored - the adapter called
+// CommitFiles(head), which diffs the head against its own first parent.
+// For a single commit that is the same thing, which is why it went unnoticed;
+// for a range it silently narrowed the question to one commit.
 func (a *repoAdapter) DiffFiles(ctx context.Context, base, head string) ([]core.FileChange, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return a.repo.CommitFiles(head)
+	return a.repo.DiffFiles(base, head)
 }
 
 // Patch returns the unified diff a commit introduces, restricted to paths.
@@ -101,6 +106,14 @@ func (a *repoAdapter) Patch(ctx context.Context, sha string, paths []string) (st
 		return "", err
 	}
 	return a.repo.Patch(sha, paths)
+}
+
+// PatchRange returns the unified diff between two revisions, restricted to paths.
+func (a *repoAdapter) PatchRange(ctx context.Context, base, head string, paths []string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return a.repo.PatchRange(base, head, paths)
 }
 
 // FileAt returns the contents of a path at a revision.

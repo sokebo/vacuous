@@ -53,6 +53,16 @@ type jsonSummary struct {
 	// is here so that a consumer can tell "no finding was produced" from
 	// "a finding was produced and then suppressed on purpose".
 	Silenced int `json:"silenced"`
+	// AuditedCommits is how many commits the audited change windows
+	// covered.
+	//
+	// The counters above count change windows, because the window is the
+	// unit of judgement. This number says how much ground those windows
+	// covered, so a consumer can tell "one window of twenty commits" from
+	// "twenty windows of one commit each".
+	AuditedCommits int `json:"audited_commits"`
+	// AuditedWindows is how many change windows the run judged.
+	AuditedWindows int `json:"audited_windows"`
 }
 
 // jsonFinding is one finding, flattened for consumption.
@@ -108,15 +118,17 @@ func buildJSON(r *core.Report) jsonReport {
 		Project:  r.Project,
 		RepoRoot: r.RepoRoot,
 		Summary: jsonSummary{
-			Proven:        r.Proven,
-			Vacuous:       r.Vacuous,
-			Inconclusive:  r.Inconclusive,
-			NoTest:        r.NoTest,
-			NotApplicable: r.NotApplicable,
-			ByKind:        byKind,
-			MaxSeverity:   r.MaxSeverity().String(),
-			AuditFailed:   r.AuditFailed,
-			Silenced:      r.Silenced,
+			Proven:         r.Proven,
+			Vacuous:        r.Vacuous,
+			Inconclusive:   r.Inconclusive,
+			NoTest:         r.NoTest,
+			NotApplicable:  r.NotApplicable,
+			ByKind:         byKind,
+			MaxSeverity:    r.MaxSeverity().String(),
+			AuditFailed:    r.AuditFailed,
+			Silenced:       r.Silenced,
+			AuditedCommits: r.AuditedCommits,
+			AuditedWindows: r.AuditedWindows,
 		},
 		Findings: make([]jsonFinding, 0, len(findings)),
 	}

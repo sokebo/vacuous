@@ -71,7 +71,7 @@ type Options struct {
 	Commit string
 	// Since limits the audit to commits after this revision.
 	Since string
-	// Limit caps how many commits are audited.
+	// Limit caps how many commits back the audited change window reaches.
 	Limit int
 	// JSON renders machine-readable output.
 	JSON bool
@@ -79,7 +79,7 @@ type Options struct {
 	FailOn string
 	// Timeout bounds a single test run.
 	Timeout time.Duration
-	// Concurrency is how many commits are audited at the same time.
+	// Concurrency is how many change windows are audited at the same time.
 	//
 	// Zero means the package default. One turns the parallel path off
 	// entirely, which is what you want when the test suite is not safe to
@@ -172,12 +172,12 @@ func parse(args []string, stderr io.Writer) (*Options, error) {
 	// fs.IntVar writes its default into the variable the moment it is
 	// registered, so a literal 0 would silently overwrite the 20 set
 	// above - and 0 means "no limit", i.e. audit the entire history.
-	fs.IntVar(&opts.Limit, "limit", opts.Limit, "maximum number of commits to audit (0 = no limit)")
+	fs.IntVar(&opts.Limit, "limit", opts.Limit, "how many commits back the audited change window reaches (0 = no limit)")
 	fs.BoolVar(&opts.JSON, "json", false, "emit JSON instead of text")
 	fs.StringVar(&opts.FailOn, "fail-on", opts.FailOn, "lowest severity that fails the run: info|warn|high|critical")
 	fs.DurationVar(&opts.Timeout, "timeout", opts.Timeout, "timeout for a single test run")
 	fs.IntVar(&opts.Concurrency, "concurrency", opts.Concurrency,
-		"how many commits to audit at the same time (1 = one at a time)")
+		"how many change windows to audit at the same time (1 = one at a time)")
 	fs.BoolVar(&opts.Verbose, "v", false, "verbose output")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -346,7 +346,8 @@ func noRunnerMessage(root string, scope core.FileScope) string {
 		root, adapters.SupportedRunnersText(", "))
 }
 
-// runAudit performs the counterfactual audit over the selected commits.
+// runAudit performs the counterfactual audit over the change window the
+// options select.
 func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.Adapter, rep *core.Report) error {
 	// The auditor creates disposable worktrees; this guarantees they are
 	// removed even if a commit blows up half way through the run.
@@ -361,29 +362,10 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 		return err
 	}
 
-	var shas []string
-	if opts.Commit != "" {
-		shas = []string{opts.Commit}
-	} else {
-		base, err := resolveBase(ctx, opts, repo)
-		if err != nil {
-			return err
-		}
-		commits, err := repo.CommitsSince(base, opts.Limit)
-		if err != nil {
-			return err
-		}
-		for _, c := range commits {
-			shas = append(shas, c.SHA)
-		}
-	}
-
-	// The commits are audited side by side, each in a checkout of its own.
-	//
-	// One at a time is minutes per commit on a large repository, and a
-	// window of twenty commits is an afternoon. The verdicts do not change:
-	// every commit is judged by the same auditor, on the same evidence, in
-	// the same direction. Only the wall clock does.
+	// The budget and the parallelism live in the same place they always
+	// did. A window is judged under a deadline of its own, exactly as a
+	// commit was, and a run that judges more than one window still keeps
+	// them side by side rather than one after the other.
 	parallel, err := counterfactual.NewParallel(counterfactual.ParallelOptions{
 		Auditor:     auditor,
 		Concurrency: opts.Concurrency,
@@ -392,19 +374,25 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 	if err != nil {
 		return err
 	}
-	results, auditErr := parallel.AuditCommits(ctx, shas)
 
-	for i, sha := range shas {
+	// --commit names one commit, and one commit is judged the way it was
+	// always judged: on its own, against its own parent. The window is
+	// for ranges, and a range the user did not ask for is not the answer
+	// to the question they did ask.
+	if opts.Commit != "" {
+		results, auditErr := parallel.AuditCommits(ctx, []string{opts.Commit})
 		var res *counterfactual.Result
-		if i < len(results) {
-			res = results[i]
+		if len(results) > 0 {
+			res = results[0]
 		}
+		rep.AuditedWindows++
+		rep.AuditedCommits++
 		if res == nil {
 			// One bad commit must not sink the whole run. Record it and
 			// keep going; the report will show it was not judged.
 			detail := "This commit produced no result"
 			if auditErr != nil {
-				if one := counterfactual.FailureFor(auditErr, sha); one != nil {
+				if one := counterfactual.FailureFor(auditErr, opts.Commit); one != nil {
 					detail = one.Error()
 				}
 			}
@@ -421,62 +409,183 @@ func runAudit(ctx context.Context, opts *Options, repo *git.Repo, adapter core.A
 				Summary:  "This commit could not be audited — there is a hole in the report",
 				Detail:   detail,
 			})
-			continue
+			return nil
 		}
-		// The comment that silences a finding has to be the one this
-		// commit carries. A note added to the working tree today says
-		// nothing about what the commit contained when it was made, and
-		// letting it silence that commit would hide a finding that was
-		// real then.
-		sup := newSuppressorAt(repo, sha)
-		silenced := false
-		for _, f := range res.Findings {
-			if f.Kind == "proven-test" {
-				continue
-			}
-			if !sup.allows(f) {
-				silenced = true
-				continue
-			}
-			rep.Add(f)
-		}
-		// A silenced finding is not a finding: it does not go into the
-		// list, and it does not fail the run. The reason it was silenced
-		// is not lost - it is written next to the code that earned it,
-		// which is where the next person will look.
-		//
-		// What the comment does NOT do is un-judge the commit. The
-		// experiment ran, it produced a verdict, and the verdict is a fact
-		// about the commit. Dropping the verdict along with the finding is
-		// what made a silenced commit disappear from the report: the scope
-		// line said "审了 14 个提交", and with the five not-applicable
-		// ones that accounts for nineteen of the twenty commits examined -
-		// the twentieth was simply not there, and nothing said so.
-		//
-		// The count of silenced commits is kept apart from the verdict
-		// counters, because it is not a verdict - it says "the finding is
-		// not shown", not "there was nothing to judge". It is a subset of
-		// the judged commits, not a seventh bucket.
-		if silenced {
-			rep.Silenced++
-		}
-		switch res.Verdict {
-		case counterfactual.VerdictProven:
-			rep.Proven++
-		case counterfactual.VerdictVacuous:
-			rep.Vacuous++
-		case counterfactual.VerdictNoTest:
-			rep.NoTest++
-		case counterfactual.VerdictNotApplicable:
-			// Nothing to judge - but the commit was looked at, and the
-			// count says so. A report that judged nothing must not look
-			// like a report that found nothing.
-			rep.NotApplicable++
-		default:
-			rep.Inconclusive++
+		record(repo, res, opts.Commit, rep)
+		return nil
+	}
+
+	win, err := resolveWindows(ctx, opts, repo)
+	if err != nil {
+		return err
+	}
+	for _, w := range win {
+		if err := auditWindow(ctx, parallel, repo, w, rep); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// auditWindow judges one change window and folds the result into the
+// report.
+func auditWindow(ctx context.Context, parallel *counterfactual.ParallelAuditor, repo *git.Repo, win changeWindow, rep *core.Report) error {
+	res, auditErr := parallel.AuditWindow(ctx, win.Base, win.Head, win.Commits)
+
+	rep.AuditedWindows++
+	rep.AuditedCommits += len(win.Commits)
+
+	if res == nil {
+		detail := "This change window produced no result"
+		if auditErr != nil {
+			detail = auditErr.Error()
+		}
+		// The tool could not look at this window. That is not a statement
+		// about the code - it is a hole in the report, and a hole has to
+		// be counted separately.
+		rep.AuditFailed++
+		rep.Add(core.Finding{
+			Kind:     core.KindAuditFailed,
+			Severity: core.SevHigh,
+			Summary:  "This change window could not be audited — there is a hole in the report",
+			Detail:   detail,
+		})
+		return nil
+	}
+
+	record(repo, res, win.Head, rep)
+	return nil
+}
+
+// record folds one judgement into the report.
+//
+// The comment that silences a finding has to be the one the judged change
+// carries. A note added to the working tree today says nothing about what
+// the change contained when it was made, and letting it silence it would
+// hide a finding that was real then.
+//
+// A silenced finding is not a finding: it does not go into the list, and it
+// does not fail the run. The reason it was silenced is not lost - it is
+// written next to the code that earned it, which is where the next person
+// will look.
+//
+// What the comment does NOT do is un-judge the change. The experiment ran,
+// it produced a verdict, and the verdict is a fact about the change.
+// Dropping the verdict along with the finding is what made a silenced
+// change disappear from the report.
+//
+// The count of silenced judgements is kept apart from the verdict counters,
+// because it is not a verdict - it says "the finding is not shown", not
+// "there was nothing to judge". It is a subset of the judged changes, not
+// a seventh bucket.
+func record(repo *git.Repo, res *counterfactual.Result, rev string, rep *core.Report) {
+	sup := newSuppressorAt(repo, rev)
+	silenced := false
+	for _, f := range res.Findings {
+		if f.Kind == "proven-test" {
+			continue
+		}
+		if !sup.allows(f) {
+			silenced = true
+			continue
+		}
+		rep.Add(f)
+	}
+	if silenced {
+		rep.Silenced++
+	}
+	switch res.Verdict {
+	case counterfactual.VerdictProven:
+		rep.Proven++
+	case counterfactual.VerdictVacuous:
+		rep.Vacuous++
+	case counterfactual.VerdictNoTest:
+		rep.NoTest++
+	case counterfactual.VerdictNotApplicable:
+		// Nothing to judge - but the change was looked at, and the
+		// count says so. A report that judged nothing must not look
+		// like a report that found nothing.
+		rep.NotApplicable++
+	default:
+		rep.Inconclusive++
+	}
+}
+
+// changeWindow is the range of commits the audit judges as one unit.
+//
+// The unit of judgement used to be the commit. It is the window now,
+// because a change is rarely made in one commit: a fix lands in one commit
+// and its test in the next. Judging the two apart is what made the tool
+// accuse the fix of having no test watching it while the test sat in the
+// very next commit - and the advice it gave ("add a test") was wrong,
+// because the test was already there.
+type changeWindow struct {
+	// Base is the revision the window starts from.
+	Base string
+	// Head is the revision the window ends at.
+	Head string
+	// Commits are the commits the window covers, newest first.
+	Commits []core.CommitInfo
+}
+
+// resolveWindows decides which change windows the audit judges.
+//
+// Usually there is exactly one: the commits the options select, judged
+// together as a single change.
+//
+// The window's base is the parent of its oldest commit, so the window
+// covers exactly the commits that were selected - no more, no less. A merge
+// inside the window brings its branch's changes with it, which is correct:
+// the merge commit is part of the window, and what it brought in is part of
+// the change.
+//
+// One split is unavoidable. A window needs a tree to compare against, and
+// the repository's first commit has none - there is nothing before it. So
+// when the selection reaches the first commit, that commit is judged on its
+// own, where the honest answer is "nothing to compare it against", and the
+// rest of the selection forms the window that can actually be judged.
+func resolveWindows(ctx context.Context, opts *Options, repo *git.Repo) ([]changeWindow, error) {
+	base, err := resolveBase(ctx, opts, repo)
+	if err != nil {
+		return nil, err
+	}
+	selected, err := repo.CommitsSince(base, opts.Limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(selected) == 0 {
+		// The selection is empty. There is nothing to judge, and the
+		// report says so rather than looking like a clean run.
+		return nil, nil
+	}
+
+	oldest := selected[len(selected)-1]
+	windowBase, err := repo.BaseOf(oldest.SHA)
+	if err != nil {
+		return nil, err
+	}
+	head := selected[0].SHA
+
+	var windows []changeWindow
+	if windowBase == git.EmptyTree {
+		windows = append(windows, changeWindow{
+			Base:    windowBase,
+			Head:    oldest.SHA,
+			Commits: []core.CommitInfo{oldest},
+		})
+		windowBase = oldest.SHA
+	}
+
+	// The window's own commit list is the true range, not the selection
+	// that produced it. They are the same commits on a linear history,
+	// and on a history with merges the range is the honest answer: it is
+	// what the window's diff actually covers.
+	commits, err := repo.CommitsInRange(windowBase, head)
+	if err != nil {
+		return nil, err
+	}
+	windows = append(windows, changeWindow{Base: windowBase, Head: head, Commits: commits})
+	return windows, nil
 }
 
 // resolveBase determines the revision the audit starts from.
