@@ -29,8 +29,8 @@ external repositories' commit SHAs have all been replaced with placeholders.
 | Repo G | Go · an admin repo that collaborates across repositories |
 | Repo H | Go · a relay repo that collaborates across repositories |
 | Repo I | Python · a harness repo |
-| Repo J | Node · a mascot theme repo |
-| Repo K | Node · a mascot repo |
+| Repo J | Node · a theme package repository |
+| Repo K | Node · a standalone asset package |
 | Repo L | Go · another repository in the same family |
 | Repo M | Go · a meta repository that mounts 7 submodules |
 | Shared Lib S | a **sibling-directory** library that Repo G / H both depend on |

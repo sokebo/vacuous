@@ -38,7 +38,7 @@ And the 3 vacuous tests on the public repository were checked one by one:
 
 **Rule 3 can only be a heuristic, and it is deliberately conservative**: a deleted function with the same name but in a different package is a different thing that happens to share a name, so this check would rather miss (one finding fewer) than wound (swallow a real gap). To judge it exactly, you need type-level information like "the deleted function had no call site to begin with" — static analysis can provide that, the tool cannot today.
 
-**Verification on real data**: terraform's `<sha>` went from "severity: this test is vacuous" to "info: this change only deleted a copy of code that already existed elsewhere — the behavior did not change".
+**Verification on real data**: hashicorp/terraform's `<sha>` went from "severity: this test is vacuous" to "info: this change only deleted a copy of code that already existed elsewhere — the behavior did not change".
 
 **Negative control**: Turn the deduplication detection off → `TestAuditDoesNotAccuseADeduplication` turns red; change the severity back to high → `TestAuditDetectsVacuousTest` turns red.
 
@@ -82,11 +82,11 @@ The truth is: this commit deleted `func (s *Store) Helper()`, and **no** method 
 
 **Two corrections that come with it, in 3.52** (3.52 was written in the previous round; those two sentences were wrong at the time):
 
-1. **3.52 said terraform's `<sha>` was "deleting duplicate code that already existed elsewhere"** — that is wrong. That commit deleted **two methods**: `func (m *Meta) defaultFlagSet(n string) *flag.FlagSet` and `func (m *Meta) extendedFlagSet(n string) *flag.FlagSet`. The live version in the `arguments` package is **a different function**: it has no receiver, its parameter is called `name` instead of `n`, `ioutil.Discard` became `io.Discard`, and it **does not set Meta's fields** (`m.input` / `m.targetFlags` / `m.compactWarnings` / `m.stateLock`). That is a **rewrite**, not a copy.
+1. **3.52 said hashicorp/terraform's `<sha>` was "deleting duplicate code that already existed elsewhere"** — that is wrong. That commit deleted **two methods**: `func (m *Meta) defaultFlagSet(n string) *flag.FlagSet` and `func (m *Meta) extendedFlagSet(n string) *flag.FlagSet`. The live version in the `arguments` package is **a different function**: it has no receiver, its parameter is called `name` instead of `n`, `ioutil.Discard` became `io.Discard`, and it **does not set Meta's fields** (`m.input` / `m.targetFlags` / `m.compactWarnings` / `m.stateLock`). That is a **rewrite**, not a copy.
    The conclusion (this commit did not change behavior) **happens to be right** — the commit message says those two methods are "as they are unused". But the **reason** the tool gave is false: it matched them up because `"func"` matched some arbitrary method in the tree, which has nothing to do with the two deleted methods.
 2. **3.52 said "a deleted function with the same name but in a different package is a different thing with the same name, so this check would rather miss"** — the code **never compares package names**. `funcExistsOutside` only looks at the function name, plus "this file is not one of the files the patch touched". That guarantee is written in the documentation, not in the code.
 
-**What terraform's `<sha>` becomes after the fix**: the deduplication verdict **no longer fires** (`extendedFlagSet` is a lowercase, package-private method, so no same-named thing can live in another package; and `defaultFlagSet`, although the same name, has a different signature and a different body). So this commit goes back to "nothing is watching this change" (warn).
+**What hashicorp/terraform's `<sha>` becomes after the fix**: the deduplication verdict **no longer fires** (`extendedFlagSet` is a lowercase, package-private method, so no same-named thing can live in another package; and `defaultFlagSet`, although the same name, has a different signature and a different body). So this commit goes back to "nothing is watching this change" (warn).
 
 **Does this undo what 3.52 fixed?** No. 3.52's **severity** change (high → warn) and its **wording** change ("say it about the change, not about the test") are **two independent things** from the deduplication verdict, and they hold up: in the measurements across 16 real repositories, "the behavior changed and nothing is watching it" is exactly the class that should be shouted about. After fixing the "reading the name" bug, `<sha>` is still **not** high — it just moves from info to warn — which is exactly the tone 3.52 wanted.
 

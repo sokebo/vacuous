@@ -71,8 +71,8 @@ history is public anyway.
 | Repo G | Go · a cross-repository admin repository |
 | Repo H | Go · a cross-repository relay repository |
 | Repo I | Python · a harness repository |
-| Repo J | Node · a mascot theme repository |
-| Repo K | Node · a mascot repository |
+| Repo J | Node · a theme package repository |
+| Repo K | Node · a standalone asset package |
 | Repo L | Go · another repository in the same family |
 | Repo M | Go · a meta repository that mounts 7 submodules |
 | Shared Lib S | the **sibling directory** library that Repo G and Repo H both depend on |
