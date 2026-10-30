@@ -459,7 +459,7 @@ func harnessLocalFiles(root, cmd, base string, scope core.FileScope) []string {
 // A path that leaves the repository belongs to a sibling checkout, and that
 // sibling's script is not this repository's harness.
 func repoRelativePath(base, token string) (string, bool) {
-	if filepath.IsAbs(token) {
+	if core.IsAbsolutePath(token) {
 		return "", false
 	}
 	joined := token

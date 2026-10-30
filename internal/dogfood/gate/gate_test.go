@@ -1150,3 +1150,53 @@ func TestWorkingFingerprintIsQuietWhenNothingChanged(t *testing.T) {
 		t.Errorf("nothing changed, yet the fingerprint changed:\n%s\n%s", first, second)
 	}
 }
+
+// TestCheckNoticesAnExeGuardInTheHooksDir 守的是闸门在 Windows 上的一只眼睛。
+//
+// git 在 Windows 上会找 "<name>.exe"：find_hook() 在 Windows 分支里追加扩展名
+// 再问一次。所以 ".git/hooks/pre-push.exe" 是货真价实的守卫 —— git 会跑它。
+//
+// 而闸门以前只按名字认 hook（core.IsGitHookNames），".exe" 那个名字不在名单
+// 里，于是这个守卫不进指纹：装上它、换掉它、删掉它，闸门全都看不见。
+//
+// 检查器那边已经认这个名字了（core.HookNameOf）。两边问法不一样，就多一只
+// 看不见的眼睛 —— 而这只眼睛看不见的那次变化，恰恰是「守卫装上了」那一次。
+//
+// 负控：把 core.HookNameOf 换回 core.IsGitHookName，这条用例在 Windows 上失败。
+func TestCheckNoticesAnExeGuardInTheHooksDir(t *testing.T) {
+	dir := seedRepo(t)
+	target := seedRepo(t)
+
+	st, err := CurrentState(dir, []string{target})
+	if err != nil {
+		t.Fatalf("failed to collect the state: %v", err)
+	}
+	if err := SaveState(dir, st); err != nil {
+		t.Fatalf("failed to write the state: %v", err)
+	}
+
+	// 装进去一个 git 在 Windows 上会跑的那个名字。
+	writeFile(t, filepath.Join(target, ".git", "hooks"), "pre-push.exe", "MZ fake\n")
+
+	loaded, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("failed to read the state: %v", err)
+	}
+	changes := Check(dir, loaded)
+
+	if runtime.GOOS == "windows" {
+		if len(changes) != 1 {
+			t.Fatalf("installing an .exe guard should report 1 change, but it reported %d: %+v", len(changes), changes)
+		}
+		if changes[0].Kind != "target-guards" {
+			t.Errorf("expected target-guards, got %q", changes[0].Kind)
+		}
+		return
+	}
+
+	// POSIX 上 git 只按名字找 hook，".exe" 那个名字它根本不认 ——
+	// 这样的文件跟结论毫无关系，闸门不该为它响一次。
+	if len(changes) != 0 {
+		t.Errorf(`on POSIX git does not run "pre-push.exe", so it must not trigger a rerun, but it reported: %+v`, changes)
+	}
+}
