@@ -30,7 +30,14 @@ func resolveAgainstDir(repoRoot, rel, srcPath string) string {
 	// is wrong: filepath.Join cleans the result and drops the leading
 	// slash, so "/tmp/l.html" would quietly become "tmp/l.html" inside the
 	// repository and be reported as an uncommitted file.
-	if filepath.IsAbs(srcPath) {
+	//
+	// filepath.IsAbs only knows the absolute paths of the platform it
+	// runs on: on Windows it says no to "/tmp/l.html", because that form
+	// names no drive and no UNC share. So the leading slash is checked as
+	// well - a path written in source code uses forward slashes on every
+	// platform, and one that starts with a slash is rooted, not
+	// repository-relative, everywhere.
+	if filepath.IsAbs(srcPath) || strings.HasPrefix(srcPath, "/") {
 		rel, err := filepath.Rel(repoRoot, filepath.Clean(srcPath))
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return ""
