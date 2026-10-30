@@ -388,6 +388,59 @@ func (r RunResult) Failed() []TestOutcome {
 	return out
 }
 
+// Witness is one test the counterfactual turned red, together with what the
+// run with the fix in place said about it.
+//
+// The name is the question this tool asks about every test it turns red:
+// is this a witness? The answer is in Baseline. "pass" means it is one —
+// the test was red without the fix and green with it. Anything else means
+// it is not: the baseline saw it red already, or it never saw it pass at
+// all.
+//
+// Both statuses are kept, not just the conclusion, because the conclusion
+// is what the reader has to check. "pass" next to "fail" is a test that
+// caught the bug. "skip" next to "fail" is a test that was never seen
+// green, and that is a different fact about the same experiment.
+type Witness struct {
+	// Test is the test's name, exactly as the runner reported it.
+	Test string
+	// Baseline is what the run with the fix in place said about it.
+	Baseline TestStatus
+	// Counterfactual is what the run with the fix removed said about it.
+	Counterfactual TestStatus
+}
+
+// Judgement is one change window's conclusion, with the evidence behind it.
+//
+// It is not a finding. A finding is a problem, and "this fix is guarded by
+// a test" is not one — it is the good case. A judgement is the record of
+// what the experiment concluded and of what it saw, and it exists because
+// every other verdict already carries a finding that says so, while the
+// positive one did not.
+//
+// A reader who has to take "proven" on faith has been asked for more trust
+// than the report earns. This is the receipt: which test, what each side
+// of the experiment said about it, and the command that produced it.
+type Judgement struct {
+	// Base is the revision the window starts from.
+	Base string
+	// Head is the last commit of the window.
+	Head string
+	// Commits is how many commits the window covered.
+	Commits int
+	// Verdict is the conclusion the experiment reached.
+	Verdict string
+	// TestCommand is the command that was run.
+	TestCommand string
+	// Witnesses are the tests the counterfactual turned red, and what the
+	// baseline said about each of them.
+	//
+	// It is empty for a window whose experiment never got that far — one
+	// that could not build, or whose baseline could not run. Those
+	// windows have a finding of their own that says so.
+	Witnesses []Witness
+}
+
 // Report is the whole outcome of one vacuous run.
 type Report struct {
 	// Project is the repo-relative name of the audited project.
@@ -463,6 +516,19 @@ type Report struct {
 	AuditedWindows int
 	// RepoRoot is the absolute path the run was rooted at.
 	RepoRoot string
+	// Judgements is one entry per audited change window: what the
+	// experiment concluded, and what it saw.
+	//
+	// It is the audit trail behind the counters. The counters say "3
+	// proven"; this says which three, and what was actually observed in
+	// each case — so a reader can check the conclusion instead of taking
+	// it on faith, and a CI wrapper can tell a confirmed witness apart
+	// from a window nobody could judge.
+	//
+	// It is kept apart from Findings because it is not a list of
+	// problems. Every verdict except "proven" has a finding that says
+	// what happened; this is where the one that has no finding says it.
+	Judgements []Judgement
 }
 
 // Add appends a finding.
