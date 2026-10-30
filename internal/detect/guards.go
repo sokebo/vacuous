@@ -73,14 +73,17 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 		if err != nil {
 			continue
 		}
-		var hooks []string
+		var hooks []guardCandidate
 		for _, e := range entries {
 			if e.IsDir() {
 				continue
 			}
 			// Git runs a hook by name. A file whose name is not one of
-			// them is not a guard, however executable it is.
-			if !core.IsGitHookName(e.Name()) {
+			// them is not a guard, however executable it is - and on
+			// Windows the same guard can be there under another name:
+			// git runs "<hook>.exe" when "<hook>" is not there.
+			hook, ok := hookNameOf(e.Name())
+			if !ok {
 				continue
 			}
 			// A hook that is not part of the repository is not this
@@ -95,7 +98,7 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 				continue
 			}
 			if hookRunnable(filepath.Join(abs, e.Name()), info) {
-				hooks = append(hooks, e.Name())
+				hooks = addGuard(hooks, guardCandidate{hook: hook, file: e.Name()})
 			}
 		}
 		if len(hooks) == 0 {
@@ -162,11 +165,13 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 
 		var notInstalled []string
 		var reasons []string
-		for _, name := range hooks {
-			ok, why := guardRuns(effective, repoRoot, dir, name)
+		var lookedAt []string
+		for _, c := range hooks {
+			ok, why, at := guardRuns(effective, repoRoot, dir, c)
 			if !ok {
-				notInstalled = append(notInstalled, name)
+				notInstalled = append(notInstalled, c.file)
 				reasons = append(reasons, why)
+				lookedAt = append(lookedAt, at)
 			}
 		}
 		if len(notInstalled) == 0 {
@@ -179,12 +184,12 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 				"The guard file is there, but it was never installed — it has never run even once",
 				fmt.Sprintf(
 					"%s/ holds executable guards (%s), but core.hooksPath is not set and "+
-						"the default hooks directory does not hold them either.\n"+
-						"That means git does not know they exist at all: a push will not run them.\n"+
+						"the default hooks directory does not hold them.\n"+
+						"So git does not run this repository's guard: a push will not run it.\n"+
 						"A guard that is not installed has no symptom — until the day it is needed.",
 					dir, strings.Join(notInstalled, ", ")),
 				"git config --get core.hooksPath → (not set)\n"+
-					hookEvidence(effective, notInstalled, reasons),
+					hookEvidence(lookedAt, reasons),
 				"Run the repository's install script, or set it by hand: git config core.hooksPath "+dir))
 			continue
 		}
@@ -198,7 +203,7 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 					"guards anywhere else never run.",
 				configured, dir, strings.Join(notInstalled, ", ")),
 			"git config --get core.hooksPath → "+configured+"\n"+
-				hookEvidence(effective, notInstalled, reasons),
+				hookEvidence(lookedAt, reasons),
 			"Put the guards in "+configured+", or point core.hooksPath back at "+dir))
 	}
 	return out
@@ -301,8 +306,73 @@ func effectiveHooksDir(repoRoot, configured string, isSet bool) (string, bool) {
 	return p, true
 }
 
+// guardCandidate is one guard the repository holds.
+//
+// hook is the name git looks the hook up by. file is the file in the
+// repository's guard directory - on Windows that can be "<hook>.exe",
+// because git runs a native executable when the plain name is not there.
+type guardCandidate struct {
+	hook string
+	file string
+}
+
+// hookNameOf reports which git hook a file in a hooks directory is.
+//
+// Git looks a hook up by name, and a file whose name is not one of them
+// is not a guard however executable it is.
+//
+// On Windows there is a second name for the same hook: git falls back to
+// "<name>.exe" when "<name>" is not there, so a native executable in the
+// hooks directory IS that hook. A checker that only knows the plain names
+// cannot see it - and the guard it cannot see is the one git runs.
+func hookNameOf(file string) (string, bool) {
+	if core.IsGitHookName(file) {
+		return file, true
+	}
+	if runtime.GOOS == "windows" && strings.HasSuffix(strings.ToLower(file), ".exe") {
+		base := file[:len(file)-len(".exe")]
+		if core.IsGitHookName(base) {
+			return base, true
+		}
+	}
+	return "", false
+}
+
+// addGuard records a guard, keeping the file git would actually run when
+// the same hook is in the directory twice: git runs "<hook>" in preference
+// to "<hook>.exe".
+func addGuard(cands []guardCandidate, c guardCandidate) []guardCandidate {
+	for i, existing := range cands {
+		if existing.hook != c.hook {
+			continue
+		}
+		if existing.file == existing.hook {
+			return cands
+		}
+		cands[i] = c
+		return cands
+	}
+	return append(cands, c)
+}
+
+// installedHookFiles returns the files git would run for this hook, in the
+// order it prefers them.
+//
+// Git looks the hook up by name and stops at the first name that is
+// there. On Windows it falls back to "<name>.exe"; on POSIX it falls back
+// to "<name>.sample", which is a template and not a hook, so there is
+// nothing else to look for.
+func installedHookFiles(hooksDir, hook string) []string {
+	out := []string{filepath.Join(hooksDir, hook)}
+	if runtime.GOOS == "windows" {
+		out = append(out, filepath.Join(hooksDir, hook+".exe"))
+	}
+	return out
+}
+
 // guardRuns reports whether git would actually run this repository's guard
-// from the given hooks directory, and why not when it would not.
+// from the given hooks directory, why not when it would not, and the file
+// it looked at.
 //
 // A file sitting in the hooks directory is not automatically the
 // repository's guard: git will happily run a hook that has nothing to do
@@ -311,49 +381,63 @@ func effectiveHooksDir(repoRoot, configured string, isSet bool) (string, bool) {
 //
 // Whether git can run it at all is part of the question. A copy git cannot
 // run guards exactly as much as no copy at all.
-func guardRuns(hooksDir, repoRoot, dir, name string) (bool, string) {
+func guardRuns(hooksDir, repoRoot, dir string, c guardCandidate) (bool, string, string) {
 	if hooksDir == "" {
-		return false, "cannot tell where git looks for hooks"
+		return false, "cannot tell where git looks for hooks", ""
 	}
-	installed := filepath.Join(hooksDir, name)
-	info, err := os.Stat(installed)
-	if err != nil {
-		return false, "does not exist"
+	// The file git would run: the first of the names it looks for that is
+	// actually there. Git stops at the first one it finds, so a plain
+	// "pre-commit" that cannot be run is not replaced by a "pre-commit.exe"
+	// sitting next to it - git never gets to the second name.
+	installed := filepath.Join(hooksDir, c.hook)
+	for _, candidate := range installedHookFiles(hooksDir, c.hook) {
+		info, err := os.Stat(candidate)
+		if err != nil {
+			continue
+		}
+		installed = candidate
+		if info.IsDir() {
+			return false, "not a file", installed
+		}
+		if !hookRunnable(installed, info) {
+			return false, notRunnableReason(), installed
+		}
+		return guardIsThisOne(installed, repoRoot, dir, c)
 	}
-	if info.IsDir() {
-		return false, "not a file"
-	}
-	if !hookRunnable(installed, info) {
-		return false, notRunnableReason()
-	}
+	return false, "does not exist", installed
+}
 
-	guard := filepath.Join(repoRoot, dir, name)
+// guardIsThisOne reports whether the installed file is the repository's
+// guard: the same bytes, a symlink pointing at it, or a wrapper that calls
+// it.
+func guardIsThisOne(installed, repoRoot, dir string, c guardCandidate) (bool, string, string) {
+	guard := filepath.Join(repoRoot, dir, c.file)
 	if filepath.Clean(installed) == filepath.Clean(guard) {
 		// The effective hooks directory IS the guard directory.
-		return true, ""
+		return true, "", installed
 	}
 
 	// A symlink pointing at the guard.
 	if resolved, err := filepath.EvalSymlinks(installed); err == nil {
 		if target, err := filepath.EvalSymlinks(guard); err == nil && resolved == target {
-			return true, ""
+			return true, "", installed
 		}
 	}
 
 	data, err := os.ReadFile(installed)
 	if err != nil {
-		return false, "cannot be read"
+		return false, "cannot be read", installed
 	}
 	// The same bytes: the guard copied into place.
 	if guardData, err := os.ReadFile(guard); err == nil && bytes.Equal(data, guardData) {
-		return true, ""
+		return true, "", installed
 	}
 	// A wrapper that calls the guard.
-	rel := filepath.ToSlash(filepath.Join(dir, name))
+	rel := filepath.ToSlash(filepath.Join(dir, c.file))
 	if strings.Contains(string(data), rel) {
-		return true, ""
+		return true, "", installed
 	}
-	return false, "not this guard"
+	return false, "not this guard", installed
 }
 
 // hookRunnable reports whether git would run this file as a hook.
@@ -389,17 +473,18 @@ func hookRunnable(path string, info os.FileInfo) bool {
 	if hasShebang(path) {
 		return true
 	}
-	return windowsSpawnable[strings.ToLower(filepath.Ext(path))]
+	return isWindowsNativeExe(path)
 }
 
-// windowsSpawnable are the extensions git for Windows can start without a
-// shebang: the native executables, and the batch files it runs through
-// cmd.exe.
-var windowsSpawnable = map[string]bool{
-	".exe": true,
-	".com": true,
-	".bat": true,
-	".cmd": true,
+// isWindowsNativeExe reports whether the file is a native Windows
+// executable.
+//
+// Git for Windows starts "<hook>.exe" itself, when "<hook>" is not there.
+// It does not run "<hook>.bat" or "<hook>.cmd" - those names are not
+// looked for at all, so a checker that counts them is counting a file git
+// will never touch.
+func isWindowsNativeExe(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".exe")
 }
 
 // hasShebang reports whether a file starts with "#!".
@@ -427,14 +512,17 @@ func notRunnableReason() string {
 
 // hookEvidence renders where the tool looked for a hook that is not there,
 // and what it found instead, so that a reader can look in the same place.
-func hookEvidence(hooksDir string, names, reasons []string) string {
-	lines := make([]string, 0, len(names))
-	for i, name := range names {
+//
+// The paths are the files that were looked for - on Windows that can be
+// "<hook>.exe", because that is the other name git runs a hook under.
+func hookEvidence(paths, reasons []string) string {
+	lines := make([]string, 0, len(paths))
+	for i, path := range paths {
 		why := "does not exist"
 		if i < len(reasons) {
 			why = reasons[i]
 		}
-		lines = append(lines, filepath.Join(hooksDir, name)+" → "+why)
+		lines = append(lines, path+" → "+why)
 	}
 	return strings.Join(lines, "\n")
 }
