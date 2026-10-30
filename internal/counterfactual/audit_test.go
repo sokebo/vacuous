@@ -225,6 +225,62 @@ func TestAuditProvesRealTest(t *testing.T) {
 	}
 }
 
+// TestAuditDoesNotProveAWitnessItNeverSawPass is the end-to-end guard for
+// the false "proven".
+//
+// The fixture's witness turns red when the fix is removed - so the
+// counterfactual has a red light - but it skips itself once the fix is in
+// place, so the baseline never saw it pass.
+//
+// "Proven" means: red without the fix, green with it. The baseline of this
+// fixture never showed it green, so the verdict cannot be "proven".
+//
+// This is the bug in its most expensive shape. "Proven" is what a
+// maintainer stops checking because of, and the evidence behind it was a
+// test that failed once and was never seen passing.
+func TestAuditDoesNotProveAWitnessItNeverSawPass(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real go test")
+	}
+	m := testfixtures.UnverifiedWitnessFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict == VerdictProven {
+		t.Fatalf("the verdict must not be %q — the witness skipped itself with the fix in place, "+
+			"so it was never seen passing\nfindings: %+v", VerdictProven, res.Findings)
+	}
+	if res.Verdict != VerdictUnverified {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictUnverified, res.Verdict, res.Findings)
+	}
+
+	// The finding has to carry the evidence, not just the conclusion. A
+	// reader who cannot see WHICH test and WHAT the baseline did with it
+	// has to take the verdict on faith - which is the thing this verdict
+	// exists to avoid.
+	var found bool
+	for _, f := range res.Findings {
+		if f.Kind != core.KindUnverifiedWitness {
+			continue
+		}
+		found = true
+		if !strings.Contains(f.Detail, "TestGreetEmptyName") {
+			t.Errorf("the finding must name the test, got:\n%s", f.Detail)
+		}
+		if !strings.Contains(f.Detail, "skipped") {
+			t.Errorf("the finding must say the baseline skipped it, got:\n%s", f.Detail)
+		}
+	}
+	if !found {
+		t.Fatalf("expected a %q finding, got: %+v", core.KindUnverifiedWitness, res.Findings)
+	}
+}
+
 // TestAuditDoesNotCallABuildFailureVacuous is the regression guard for the
 // most dangerous bug this tool ever had.
 //
