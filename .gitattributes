@@ -1,0 +1,9 @@
+# A shell script with CRLF line endings does not run: the shebang line ends
+# with a carriage return, and the interpreter it names is "/bin/bash\r" - a
+# file that does not exist. The symptom is "bad interpreter" on every
+# Windows checkout, because git converts line endings on the way out and
+# nothing told it not to for these files.
+#
+# The scripts in this repository are run by a shell, on every platform
+# including the ones where git checks them out with CRLF.
+*.sh text eol=lf

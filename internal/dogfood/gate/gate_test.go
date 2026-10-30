@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -462,6 +463,11 @@ func TestCheckIsQuietWhenTheHooksDirOnlyHasFilesGitDoesNotRun(t *testing.T) {
 //
 // ★ 同样走公开接口，理由见上面那条。
 func TestCheckNoticesTheInstalledHookLosingItsExecutableBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// 同上：Windows 的文件系统没有权限位，os.Chmod 改不动它，
+		// 所以「装好的守卫失去了可执行位」这个场景在这里造不出来。
+		t.Skip("this platform has no permission bits to change: Windows filesystems carry no executable bit")
+	}
 	dir := seedRepo(t)
 	target := seedRepo(t)
 
@@ -1083,6 +1089,16 @@ func TestSaveStateDoesNotDirtyTheRepository(t *testing.T) {
 //
 // 症状和「一切正常」完全一样：NO CHANGE、退出码 0、CI 绿。
 func TestCheckReportsTargetWorkingTreeModeChange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows 的文件系统没有权限位这回事：os.Chmod 改不动它，git 也
+		// 不记录它（core.fileMode 默认 false）。所以这个场景在这个平台上
+		// 根本造不出来 —— 不是闸门看不见，是这个平台上没有这件事可看。
+		//
+		// 顺带一句：闸门指纹里那部分权限位，在 Windows 上现在也对应不上
+		// check 的任何结论了 —— check 问的是「git 会不会跑这个 hook」，
+		// 而 Windows 上的答案是 shebang，不是权限位。
+		t.Skip("this platform has no permission bits to change: Windows filesystems carry no executable bit")
+	}
 	dir := seedRepo(t)
 	target := seedRepo(t)
 
