@@ -249,6 +249,22 @@ The first line is the conclusion:
 vacuous — found 3 problems (critical 0 · high 1 · unwatched 0; audited 1 window of 20 commits, 1 not applicable)
 ```
 
+The number after "found" is every finding in the report. The three counters
+next to it are a **triage, not a breakdown**, and they do not add up to it:
+
+| Counter | What it counts |
+|---|---|
+| **critical** | Findings at the highest severity. |
+| **high** | Findings at the severity above `warn`. |
+| **unwatched** | Change windows whose behaviour no test watches — the same count as `vacuous` in the summary below. |
+
+`critical` and `high` are the two severities that block a release; `unwatched`
+is a count of windows, not of findings. So a run whose 43 findings are all
+warnings reads `found 43 problems (critical 0 · high 0 · unwatched 0)` —
+nothing in it blocks a release, and the number of warnings is in the total
+and in the summary, not in the headline. The `Decision:` line says which
+rule produced the exit code.
+
 The counters are deliberately kept apart, because collapsing them makes two
 different situations look the same:
 

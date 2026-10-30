@@ -101,13 +101,23 @@ type Window struct {
 	Base string
 	// BaseShort is the abbreviated form of Base, for display.
 	BaseShort string
-	// BaseSHA is the resolved commit the base names, in full.
+	// BaseSHA is the resolved object the base names, in full.
 	//
 	// It is a separate field because Base is whatever the caller asked
 	// for: "HEAD", "HEAD~3", a branch name. A report that carries that
 	// string is carrying something that moves - "HEAD" is a different
 	// commit tomorrow - and a machine reading it has to resolve it
 	// itself, in a repository it may not have.
+	//
+	// It is empty when the base does not resolve to an object, and that is
+	// deliberate. The field exists to be resolvable by somebody else, so
+	// it carries an id or nothing: a moving expression, or the name of a
+	// file on disk, would look like an id and not be one.
+	//
+	// "An object" rather than "a commit", because that is what
+	// `rev-parse --verify` resolves to: a base that names an annotated
+	// tag resolves to the tag object, not to the commit behind it. In
+	// practice the base is derived from a commit, so it is a commit id.
 	BaseSHA string
 	// Head is the last commit of the window.
 	Head string
@@ -557,13 +567,22 @@ func (a *Auditor) shortRev(ctx context.Context, rev string) string {
 // and "HEAD^" name different commits tomorrow than they do today, and a
 // report that carries them carries something that moves.
 //
-// A revision that cannot be resolved comes back empty, and the caller
-// leaves the raw string alone.
+// The resolution is verified. Without --verify, git rev-parse treats an
+// argument that names a file on disk as a path and prints it back - so the
+// field could hold "README.md" instead of a commit, and a field whose whole
+// purpose is to be resolvable by someone else would not be.
+//
+// A revision that cannot be resolved comes back empty. The field's whole
+// purpose is to be a commit id somebody else can resolve, so it must not
+// carry a string that is not one - neither the revision as it was typed
+// ("HEAD~3", which names a different commit tomorrow) nor the name of a
+// file on disk. The revision the caller asked for is still in Window.Base,
+// which is where a moving expression belongs.
 func (a *Auditor) fullRev(ctx context.Context, rev string) string {
 	if rev == "" {
 		return ""
 	}
-	out, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-parse", rev)
+	out, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-parse", "--verify", rev)
 	if err != nil {
 		return ""
 	}
@@ -1150,21 +1169,6 @@ type runOutcome struct {
 	// test to watch, so "this test is vacuous" is not a finding about the
 	// test; it is a finding about nothing.
 	deduplicated bool
-	// witnesses are the tests that the counterfactual turned red and the
-	// baseline saw PASSING.
-	//
-	// These, and only these, are the witnesses. A witness has to be seen
-	// twice - red without the fix, green with it - and the second half of
-	// that is an observation, not an absence. "The baseline did not report
-	// this test as red" is not the same thing as "the baseline saw it
-	// pass", and the tool used to read it as the same thing: a test that
-	// was skipped in the baseline was counted as a witness, and the tool
-	// said "this fix is guarded by a test" about an observation it had
-	// never made.
-	//
-	// They live in redTests together with the ones that were not
-	// witnesses; this is the confirmed subset of it.
-	witnesses []string
 	// redTests are the tests the counterfactual turned red, and what the
 	// baseline said about each of them.
 	//
@@ -1172,6 +1176,15 @@ type runOutcome struct {
 	// the report has to be able to show a reader which test was seen
 	// passing and which one was only ever seen red, and a list that
 	// kept only the confirmed ones would throw the second half away.
+	//
+	// The confirmed subset - the witnesses proper - is computed from it by
+	// confirmedWitnesses. A witness has to be seen twice: red without the
+	// fix, and green with it. The second half is an observation, not an
+	// absence. "The baseline did not report this test as red" is not the
+	// same thing as "the baseline saw it pass", and the tool used to read
+	// it as the same thing: a test that was skipped in the baseline was
+	// counted as a witness, and the tool said "this fix is guarded by a
+	// test" about an observation it had never made.
 	redTests []core.Witness
 }
 

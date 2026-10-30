@@ -2,11 +2,21 @@ package cli
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/sokebo/vacuous/internal/testfixtures"
 )
+
+// commitID matches a full commit id, and nothing else.
+//
+// The report carries the revisions it judged, so that whoever reads it can
+// pin the window to a commit without resolving anything themselves. A
+// string that is not a commit id - "HEAD~1", which moves, or the name of a
+// file on disk, which means nothing - does not do that, and a consumer
+// cannot tell it apart from one.
+var commitID = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // The evidence, end to end.
 //
@@ -96,8 +106,11 @@ func TestTheAuditJSONCarriesTheJudgement(t *testing.T) {
 	if j.Head == "HEAD" || j.Head == "" {
 		t.Errorf("the judgement's head must be a resolved revision, got %q", j.Head)
 	}
-	if j.Base == "" {
-		t.Errorf("the judgement must name the revision it starts from")
+	// The base has to be resolved the same way, and to an id and nothing
+	// else: a reader in another repository has to be able to resolve it
+	// there.
+	if !commitID.MatchString(j.Base) {
+		t.Errorf("the judgement's base must be a resolved id (40 characters), got %q", j.Base)
 	}
 	if len(j.Witnesses) != 1 {
 		t.Fatalf("witnesses = %d, want 1\n%s", len(j.Witnesses), stdout)

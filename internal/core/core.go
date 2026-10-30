@@ -423,6 +423,17 @@ type Witness struct {
 // of the experiment said about it, and the command that produced it.
 type Judgement struct {
 	// Base is the revision the window starts from.
+	//
+	// It is the resolved object id when the revision resolved to one, and
+	// empty when it did not - the field exists so that a reader can pin
+	// the window to a commit without resolving anything themselves, so it
+	// carries an id or nothing. An empty field is not a failure: it is the
+	// honest answer for a window that starts where there is no parent.
+	//
+	// "An object" rather than "a commit", because that is what
+	// `rev-parse --verify` resolves to: a base that names an annotated tag
+	// resolves to the tag object, not to the commit behind it. In practice
+	// the base is derived from a commit, so it is a commit id.
 	Base string
 	// Head is the last commit of the window.
 	Head string

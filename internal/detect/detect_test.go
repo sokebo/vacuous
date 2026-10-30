@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -670,6 +671,11 @@ func TestGuardUnrelatedToTheDefaultHookIsReported(t *testing.T) {
 // TestGuardCopyThatIsNotExecutableIsReported keeps the executable bit part
 // of the question. git only runs a hook that is executable, so a
 // non-executable copy guards exactly as much as no copy at all.
+//
+// The platform decides what a hook git cannot run looks like. On POSIX it
+// is a script with a shebang and no executable bit. Windows has no
+// executable bit to remove - and git runs a shebang script there anyway -
+// so the copy git cannot run is one that names no interpreter.
 func TestGuardCopyThatIsNotExecutableIsReported(t *testing.T) {
 	dir := newRepo(t)
 	guard := "#!/bin/sh\nexit 1\n"
@@ -680,7 +686,14 @@ func TestGuardCopyThatIsNotExecutableIsReported(t *testing.T) {
 	commit(t, dir)
 
 	// Same bytes, but not executable.
-	write(t, dir, filepath.Join(".git", "hooks", "pre-push"), guard)
+	installed := guard
+	if runtime.GOOS == "windows" {
+		// Windows has no executable bit, and git hands a shebang script
+		// to the shell whether it has one or not. The copy git cannot
+		// run is one that names no interpreter at all.
+		installed = "exit 1\n"
+	}
+	write(t, dir, filepath.Join(".git", "hooks", "pre-push"), installed)
 
 	findings, err := GuardLiveness(dir, trackedScope(t, dir))
 	if err != nil {

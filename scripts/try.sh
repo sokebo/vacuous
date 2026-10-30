@@ -60,6 +60,37 @@ fi
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/vacuous-try-XXXXXX")
 trap 'rm -rf "$OUT"' EXIT
 
+# ── find the interpreter that reads the JSON ─────────────────────────────
+# The reports are JSON, and the tally is computed by a Python interpreter.
+#
+# "python3" is not always python3. On Windows the name usually belongs to
+# an App Execution Alias: it opens the Microsoft Store instead of running
+# anything, and exits without producing a word. So the interpreter is
+# looked for rather than assumed, and the one that actually runs is the one
+# that reads the report.
+PYTHON=""
+for candidate in python3 python; do
+	if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "" >/dev/null 2>&1; then
+		PYTHON="$candidate"
+		break
+	fi
+done
+if [ -z "$PYTHON" ]; then
+	echo "No working Python interpreter found (tried python3 and python)."
+	echo "The script reads the tool's JSON report with one, and cannot"
+	echo "compute the tally without it."
+	exit 1
+fi
+
+# The verdict is printed with "✓" and "✗", and the report is read from a
+# file the tool wrote as UTF-8. The interpreter is not told either of those
+# things on Windows: its default encoding is the system's - GBK on a Chinese
+# Windows - and that encoding cannot represent those characters, and cannot
+# decode the report either. So the interpreter is put in UTF-8 mode rather
+# than left to fail halfway through the answer.
+export PYTHONUTF8=1
+export PYTHONIOENCODING=utf-8
+
 echo "Repo     : $TARGET"
 echo "Tool     : $BIN"
 echo "Commits  : $(git -C "$TARGET" rev-list --count HEAD 2>/dev/null || echo '?')"
@@ -120,9 +151,9 @@ node)
 	;;
 python)
 	echo "Language : Python"
-	if python3 -c "import pytest" >/dev/null 2>&1; then
+	if [ -n "$PYTHON" ] && "$PYTHON" -c "import pytest" >/dev/null 2>&1; then
 		echo "Deps     : ✓ pytest is present"
-	elif python3 -c "import unittest" >/dev/null 2>&1; then
+	elif [ -n "$PYTHON" ] && "$PYTHON" -c "import unittest" >/dev/null 2>&1; then
 		echo "Deps     : ✓ only the standard library's unittest"
 	else
 		echo "Deps     : ? neither pytest nor unittest found"
@@ -147,9 +178,9 @@ check_exit=$?
 #       *conclusion*, not a failure)
 #   2 = the tool itself could not finish (there is a hole in the report)
 if [ -s "$OUT/check.json" ] && [ $check_exit -ne 2 ]; then
-	python3 - "$OUT/check.json" <<'PY'
+	"$PYTHON" - "$OUT/check.json" <<'PY'
 import json, sys
-d = json.load(open(sys.argv[1]))
+d = json.load(open(sys.argv[1], encoding="utf-8"))
 s = d.get("summary", {})
 kinds = s.get("by_kind", {})
 print("Findings:", ", ".join(f"{k}={v}" for k, v in sorted(kinds.items())) or "none")
@@ -181,9 +212,9 @@ if [ ! -s "$OUT/audit.json" ]; then
 	exit $audit_exit
 fi
 
-python3 - "$OUT/audit.json" <<'PY'
+"$PYTHON" - "$OUT/audit.json" <<'PY'
 import json, sys
-d = json.load(open(sys.argv[1]))
+d = json.load(open(sys.argv[1], encoding="utf-8"))
 s = d.get("summary", {})
 
 # The arithmetic must match the tool's own — see headline() in

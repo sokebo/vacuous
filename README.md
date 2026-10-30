@@ -36,6 +36,28 @@ reproduce it by hand. **You never have to take the tool's word for it.**
 > padding behind it was never read, so `git` blocked on writing forever. The
 > defect was on every platform; Linux's pipe buffer was hiding it. See
 > [dogfood bug 3.94](./docs/dogfood/12-bugs-3.94.md).
+>
+> Two of the static checks needed the platform asked directly. The guard
+> checks ask *"would git run this hook?"*, and git answers it with the
+> executable bit on POSIX and with the shebang on Windows — which has no
+> executable bit at all. And a path that starts with a slash is rooted on
+> every platform, even where `filepath.IsAbs` says otherwise. See
+> [dogfood bugs 3.100 – 3.101](./docs/dogfood/17-bugs-3.100-3.102.md).
+>
+> A hook has two names on Windows. Git looks a hook up by name, and when the
+> name is not there it looks for `<name>.exe` — so a native executable in the
+> hooks directory is that hook, and a checker that only knows the plain names
+> cannot see it. See
+> [dogfood bug 3.103](./docs/dogfood/18-bugs-3.103.md).
+>
+> `scripts/try.sh` runs on Windows too, under Git Bash. Three things had to
+> be true for that: the scripts are pinned to LF line endings (a shell
+> script with CRLF names an interpreter that does not exist), the script
+> looks for a Python interpreter that actually runs rather than assuming
+> `python3` is one (on Windows that name is usually a Store alias), and the
+> interpreter is put in UTF-8 mode (the console's encoding is GBK on a
+> Chinese Windows, and it cannot decode the report or print the "✓"). See
+> [dogfood bug 3.102](./docs/dogfood/17-bugs-3.100-3.102.md).
 
 ---
 
@@ -468,7 +490,7 @@ the code first.
 
 ## Results on real repositories
 
-The full record — every run, every finding, and the **97 bugs dogfooding found
+The full record — every run, every finding, and the **105 bugs dogfooding found
 in the tool itself** — is in [`docs/dogfood/`](./docs/dogfood/), with the
 repository names and paths sanitized.
 
@@ -546,7 +568,7 @@ The full list, with the reasoning behind each edge, is in
 |---|---|
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How the tool is put together, and the contracts it holds to |
 | [`docs/BOUNDARIES.md`](./docs/BOUNDARIES.md) | What the method cannot do, and what every finding kind means |
-| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 97 bugs dogfooding found in the tool itself |
+| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 105 bugs dogfooding found in the tool itself |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | How to build, test, and contribute — and the six rules the design holds to |
 | [`SECURITY.md`](./SECURITY.md) | What this tool does to your repository, and how to audit a repository you do not trust |
 | [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) | The behavior expected from everyone taking part |
