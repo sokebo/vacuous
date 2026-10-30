@@ -30,6 +30,30 @@ inputs:
     required: false
     default: 'high'
 
+  policy:
+    description: |
+      What to do when the audit finds a behaviour change that no test watches.
+        warn  — report it, do not block the merge (default)
+        block — block the merge
+        off   — report only; nothing blocks, not even `fail-on`
+
+      This is separate from `fail-on` because severity cannot tell the two
+      apart: the "nobody is watching it" finding (`vacuous`) and the "nobody
+      could judge it" finding (`coupled`) are both "warn". A team that
+      wants the first to block does not want the second to — a repository
+      whose tests cannot be separated from its fix is not a repository with
+      no tests.
+
+      A window the tool could not judge (coupled, environment,
+      unverified-witness) is never a gap, so it never blocks because of this
+      setting. Neither is a commit that only added a test - that is the best
+      kind of commit there is.
+
+      A run the tool could not finish always fails: a report with a hole in it
+      is not a clean bill of health.
+    required: false
+    default: 'warn'
+
   base:
     description: 'Revision to audit against. Empty means "the most recent commits".'
     required: false
@@ -68,18 +92,21 @@ runs:
           --mode "${{ inputs.mode }}" \
           --limit "${{ inputs.limit }}" \
           --fail-on "${{ inputs.fail-on }}" \
+          --policy "${{ inputs.policy }}" \
           ${{ inputs.base && format('--base {0}', inputs.base) || '' }} \
           ${{ inputs.commit && format('--commit {0}', inputs.commit) || '' }}
 
     - name: Explain a non-zero exit
-      # Exit code 1 means "findings above the threshold", which is the tool
-      # working as intended. Exit code 2 means the tool itself could not
-      # finish, and that deserves to be loud: a broken audit that looks like
-      # a clean bill of health is the failure mode this tool exists to catch.
+      # Exit code 1 means "the run found something the policy says is worth
+      # blocking on", which is the tool working as intended. Exit code 2
+      # means the tool itself could not finish, and that deserves to be
+      # loud: a broken audit that looks like a clean bill of health is the
+      # failure mode this tool exists to catch.
       if: failure()
       shell: bash
       run: |
         echo "::error::vacuous did not pass. Exit code 1 means it found" \
-          "problems at or above the '${{ inputs.fail-on }}' severity;" \
+          "problems at or above the '${{ inputs.fail-on }}' severity, or a" \
+          "behaviour change no test watches (policy: ${{ inputs.policy }});" \
           "the report above says which." \
           "Exit code 2 means the audit could not run at all."
