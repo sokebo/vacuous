@@ -255,6 +255,26 @@ func TestGreetEmptyName(t *testing.T) {
 }
 `
 
+// selfSkippingWitnessTestBody is a witness that never witnesses.
+//
+// It skips itself as soon as the fix is in place, so the run with the fix
+// never executes it. Without the fix it runs, and it fails - so the
+// counterfactual sees a red light that the baseline never saw go green.
+//
+// The skip is the realistic shape of the mistake: the bug is known, so the
+// test documents it and stays out of the way until the bug is fixed. It
+// looks like a test for the fix. It is a test for the bug.
+const selfSkippingWitnessTestBody = `
+func TestGreetEmptyName(t *testing.T) {
+	if Greet("") == "hello, stranger" {
+		t.Skip("the known bug is already fixed")
+	}
+	if got := Greet(""); got != "hello, stranger" {
+		t.Fatalf("Greet(\"\") = %q, want %q", got, "hello, stranger")
+	}
+}
+`
+
 // unrelatedTestBody asserts on something the fix never touches.
 //
 // It passes with or without the fix, so it witnesses nothing.
@@ -446,6 +466,33 @@ func ProvenFixture(t *testing.T) *GoModule {
 	m.Init(t)
 	m.Write(t, "greet.go", fixedSource)
 	m.Write(t, "greet_test.go", baseTest+witnessTestBody)
+	m.Commit(t, "fix: greet an empty name")
+	return m
+}
+
+// UnverifiedWitnessFixture builds a repository whose witness test SKIPS
+// itself once the fix is in place.
+//
+// Removing the fix turns the test red, so the counterfactual has something
+// to show. But with the fix in place - the baseline - the test skips
+// itself, so it is never seen passing.
+//
+// A tool that reads "the baseline did not report this test as red" as "the
+// baseline saw this test pass" calls that "proven". It is not proven: the
+// witness was only ever seen red, and a witness has to be seen twice.
+//
+// This is the shape of a real mistake. A test written to skip while a known
+// bug is still open is a reasonable thing to write - the bug is known, the
+// test documents it - and it is exactly the test that cannot prove the fix
+// works.
+func UnverifiedWitnessFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/unverified")
+	m.Write(t, "greet.go", buggySource)
+	m.Write(t, "greet_test.go", baseTest)
+	m.Init(t)
+	m.Write(t, "greet.go", fixedSource)
+	m.Write(t, "greet_test.go", baseTest+selfSkippingWitnessTestBody)
 	m.Commit(t, "fix: greet an empty name")
 	return m
 }

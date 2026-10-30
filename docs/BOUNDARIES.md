@@ -186,7 +186,8 @@ A CI that **calls** a workflow from another repository is reported as
 
 | Verdict | Severity | What it means | What to do |
 |---|---|---|---|
-| `proven` | — | Removing the fix made a test red that was green with the fix in place. **The test guards the behavior.** | Nothing. This is the good case. |
+| `proven` | — | Removing the fix made a test red that was **green with the fix in place**. **The test guards the behavior.** | Nothing. This is the good case. |
+| `unverified-witness` | warn | Removing the fix made a test red, but that test was **never seen passing** with the fix in place — it was skipped, or the runner never reported it. **No answer.** | If the test skips itself while the fix is in place, the skip condition is doing the guarding rather than the assertions. Let it run in both states, and pass in both. |
 | `vacuous` | warn | The experiment ran, everything passed, and the runner's own output does not say otherwise. **This change has no test watching it.** | Write a test **for the behavior** — assert a concrete return value, error message or state — not a replacement for the existing test. |
 | `no-test-for-fix` | warn / high | A behavior changed and nothing in the tree watches it. High when the change is 10+ lines. | Write a test for the behavior. |
 | `coupled` | warn | The test depends on the fix at compile time. **No answer.** | Add a test closer to the behavior — one that does not import the new symbol. |
@@ -243,7 +244,7 @@ different situations look the same:
 | **proven** | Behaviors shown to be guarded by a test that fails without the fix. |
 | **vacuous** | Behaviors whose test passed with or without the fix — they prove nothing. |
 | **no test watching** (`no_test`) | Behavior changes that landed with no test at all. This is an **answer**, not a shrug: "nobody wrote a test" is different from "we could not tell". |
-| **undecidable** (`inconclusive`) | Coupled, environment, suite-crash, skipped, pre-existing. **No answer.** |
+| **undecidable** (`inconclusive`) | Coupled, environment, suite-crash, skipped, pre-existing, unverified. **No answer.** |
 | **not applicable** | Change windows with nothing to judge: merges, the repository's first commit, docs-only, test-only. |
 | **could not audit** | Change windows the tool could not audit at all. **A hole in the report**, and the reason the run exits 2. |
 | **silenced** | Change windows whose findings were suppressed by a `// vacuous:ignore` comment. Not a verdict — the change *was* judged, and the verdict stands. It is counted so that "one finding was suppressed on purpose" is visible next to an empty findings list. |

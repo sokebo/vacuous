@@ -161,6 +161,16 @@ const (
 	// suite is red with the fix in place, so the red says nothing about
 	// whether the test guards this fix.
 	KindPreExistingFailure Kind = "pre-existing-failure"
+	// KindUnverifiedWitness means a test went red when the fix was
+	// removed, but the same test was never seen passing with the fix in
+	// place - it was skipped, or the runner never reported it.
+	//
+	// It is its own kind because the difference is the whole point: a
+	// witness has to be seen twice, red without the fix and green with
+	// it. A test that was only ever seen red has witnessed nothing, and
+	// calling it a witness is the strongest claim this tool makes
+	// resting on an observation that was never made.
+	KindUnverifiedWitness Kind = "unverified-witness"
 	// KindAuditFailed means the tool could not audit this commit at all.
 	//
 	// It is not a statement about the code: the commit might be perfect.

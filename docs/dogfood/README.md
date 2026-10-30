@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **94 bugs the tool had in itself** that dogfooding uncovered.
+the **95 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -61,6 +61,7 @@ in the tables below are the record of that run.
 | [`10-bugs-3.90.md`](./10-bugs-3.90.md) | Tool bug 3.90 — the unit of judgement, from the commit to the change window |
 | [`11-bugs-3.91-3.93.md`](./11-bugs-3.91-3.93.md) | Tool bugs 3.91 – 3.93 — three false accusations against real repositories, and the copies of facts the repository already stated |
 | [`12-bugs-3.94.md`](./12-bugs-3.94.md) | Tool bug 3.94 — the audit hung forever on Windows, and the reason was not Windows |
+| [`13-bugs-3.95.md`](./13-bugs-3.95.md) | Tool bug 3.95 — "this fix is guarded by a test", said about a test that was never seen passing |
 
 ---
 
@@ -94,7 +95,7 @@ history is public anyway.
 
 ## The catalog
 
-94 entries. The number in front is a stable identifier: it is referenced from
+95 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
 The log was written over many rounds, and three of its numbers were used
@@ -200,6 +201,7 @@ themselves.
 | **3.92** | The CI ran `make ci` and the tool said the CI runs no tests at all | CI detection |
 | **3.93** | The rule "do not claim what you have not earned" was written down and applied in one half of the tool only | Static detection |
 | **3.94** | The audit hung forever on Windows — the tar reader stopped at the end-of-archive marker and the padding behind it was never read | Counterfactual mechanics |
+| **3.95** | "This fix is guarded by a test" — said about a test that was never seen passing | Verdict |
 
 ---
 
