@@ -17,10 +17,42 @@ import (
 // The types are unexported on purpose: SPEC section 4.4 freezes this
 // package's exports to RenderText and RenderJSON.
 type jsonReport struct {
-	Project  string        `json:"project"`
-	RepoRoot string        `json:"repo_root"`
-	Summary  jsonSummary   `json:"summary"`
-	Findings []jsonFinding `json:"findings"`
+	Project    string          `json:"project"`
+	RepoRoot   string          `json:"repo_root"`
+	Summary    jsonSummary     `json:"summary"`
+	Findings   []jsonFinding   `json:"findings"`
+	Judgements []jsonJudgement `json:"judgements"`
+}
+
+// jsonJudgement is one audited change window: what the experiment
+// concluded, and what it saw.
+type jsonJudgement struct {
+	// Base is the revision the window starts from.
+	Base string `json:"base"`
+	// Head is the last commit of the window.
+	Head string `json:"head"`
+	// Commits is how many commits the window covered.
+	Commits int `json:"commits"`
+	// Verdict is the conclusion: "proven", "vacuous", "no-test",
+	// "coupled", "unverified", ...
+	Verdict string `json:"verdict"`
+	// TestCommand is the command that was run.
+	TestCommand string `json:"test_command"`
+	// Witnesses are the tests the counterfactual turned red, and what the
+	// baseline said about each of them.
+	Witnesses []jsonWitness `json:"witnesses"`
+}
+
+// jsonWitness is one test the counterfactual turned red, and what each side
+// of the experiment said about it.
+type jsonWitness struct {
+	// Test is the test's name, as the runner reported it.
+	Test string `json:"test"`
+	// Baseline is what the run with the fix in place said: "pass",
+	// "fail", "skip" or "unknown".
+	Baseline string `json:"baseline"`
+	// Counterfactual is what the run with the fix removed said.
+	Counterfactual string `json:"counterfactual"`
 }
 
 // jsonSummary is the tally at the top of the document.
@@ -130,7 +162,8 @@ func buildJSON(r *core.Report) jsonReport {
 			AuditedCommits: r.AuditedCommits,
 			AuditedWindows: r.AuditedWindows,
 		},
-		Findings: make([]jsonFinding, 0, len(findings)),
+		Findings:   make([]jsonFinding, 0, len(findings)),
+		Judgements: make([]jsonJudgement, 0, len(r.Judgements)),
 	}
 	for _, f := range findings {
 		doc.Findings = append(doc.Findings, jsonFinding{
@@ -145,6 +178,24 @@ func buildJSON(r *core.Report) jsonReport {
 			Hint:     f.Hint,
 			Repro:    f.Repro,
 		})
+	}
+	for _, j := range r.Judgements {
+		entry := jsonJudgement{
+			Base:        j.Base,
+			Head:        j.Head,
+			Commits:     j.Commits,
+			Verdict:     j.Verdict,
+			TestCommand: j.TestCommand,
+			Witnesses:   make([]jsonWitness, 0, len(j.Witnesses)),
+		}
+		for _, w := range j.Witnesses {
+			entry.Witnesses = append(entry.Witnesses, jsonWitness{
+				Test:           w.Test,
+				Baseline:       string(w.Baseline),
+				Counterfactual: string(w.Counterfactual),
+			})
+		}
+		doc.Judgements = append(doc.Judgements, entry)
 	}
 	return doc
 }

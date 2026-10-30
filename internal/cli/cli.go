@@ -509,6 +509,21 @@ func record(repo *git.Repo, res *counterfactual.Result, rev string, rep *core.Re
 	default:
 		rep.Inconclusive++
 	}
+
+	// The judgement, with the evidence behind it.
+	//
+	// The counters above say "3 proven". This says which three, and what
+	// was observed in each case - so a reader can check the conclusion
+	// instead of taking it on faith, and a CI wrapper can tell a
+	// confirmed witness apart from a window nobody could judge.
+	rep.Judgements = append(rep.Judgements, core.Judgement{
+		Base:        res.Window.BaseSHA,
+		Head:        res.Commit.SHA,
+		Commits:     len(res.Window.Commits),
+		Verdict:     string(res.Verdict),
+		TestCommand: res.TestCommand,
+		Witnesses:   res.Witnesses,
+	})
 }
 
 // changeWindow is the range of commits the audit judges as one unit.
