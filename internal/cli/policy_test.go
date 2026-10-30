@@ -253,3 +253,188 @@ func TestTheBlockPolicyDoesNotBlockACommitThatOnlyAddsATest(t *testing.T) {
 			code, ExitOK)
 	}
 }
+
+// What the report says about the decision.
+//
+// The exit code and the report are two halves of one contract, and the
+// report is the half a reader and a CI consumer actually read.
+
+// TestTheReportSaysWhyTheRunBlocked is the report's half of the contract.
+//
+// The exit code is 1 and the worst finding is a warning, so the report
+// has to say that the gap policy blocked it - otherwise the two facts
+// look like a broken tool rather than a blocked merge.
+func TestTheReportSaysWhyTheRunBlocked(t *testing.T) {
+	m := testfixtures.VacuousFixture(t)
+
+	code, stdout, stderr := runCLI(t, "--mode", "audit", "--policy", "block", "--commit", m.Head(t), m.Dir)
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+	if code != ExitFindings {
+		t.Fatalf("exit code = %d, want %d", code, ExitFindings)
+	}
+
+	out := flat(stdout)
+	if !strings.Contains(out, "Decision: blocked — a behaviour changed and nothing watches it") {
+		t.Fatalf("the report must say why it blocked:\n%s", stdout)
+	}
+	if !strings.Contains(out, "--policy block") {
+		t.Fatalf("the report must name the rule it used:\n%s", stdout)
+	}
+}
+
+// TestTheJSONReportCarriesTheDecision is the same thing for the
+// machine-readable report.
+//
+// A CI consumer reads the JSON, and the exit code does not say which rule
+// produced it. Without these fields, "exit 1" next to a "warn" in the
+// report is a contradiction the consumer cannot resolve.
+func TestTheJSONReportCarriesTheDecision(t *testing.T) {
+	m := testfixtures.VacuousFixture(t)
+
+	code, stdout, stderr := runCLI(t, "--mode", "audit", "--policy", "block", "--json", "--commit", m.Head(t), m.Dir)
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+	if code != ExitFindings {
+		t.Fatalf("exit code = %d, want %d", code, ExitFindings)
+	}
+
+	for _, want := range []string{
+		`"policy": "block"`,
+		`"fail_on": "high"`,
+		`"blocked_by": "gap-policy"`,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the JSON report is missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+// TestTheReportSaysThatNothingBlocked is the other half.
+//
+// A gap that the default policy only reports must not leave the reader
+// wondering whether it blocked the merge.
+func TestTheReportSaysThatNothingBlocked(t *testing.T) {
+	m := testfixtures.VacuousFixture(t)
+
+	code, stdout, stderr := runCLI(t, "--mode", "audit", "--commit", m.Head(t), m.Dir)
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want %d", code, ExitOK)
+	}
+
+	out := flat(stdout)
+	if !strings.Contains(out, "Decision: nothing blocked this run") {
+		t.Fatalf("the report must say that nothing blocked it:\n%s", stdout)
+	}
+}
+
+// TestTheDecisionNamesTheRuleThatFired is the contract in one place.
+//
+// The exit code says whether the run blocked; the reason says why. They
+// are different questions, and the report can only carry the answer to
+// the second one if the tool worked it out.
+func TestTheDecisionNamesTheRuleThatFired(t *testing.T) {
+	cases := []struct {
+		name       string
+		report     *core.Report
+		failOn     core.Severity
+		policy     string
+		wantCode   int
+		wantReason string
+	}{
+		{
+			name:       "nothing blocked",
+			report:     gapReport(core.KindVacuousTest, core.SevWarn),
+			failOn:     core.SevHigh,
+			policy:     PolicyWarn,
+			wantCode:   ExitOK,
+			wantReason: "",
+		},
+		{
+			name:       "the severity threshold blocked",
+			report:     gapReport(core.KindNoTestForFix, core.SevHigh),
+			failOn:     core.SevHigh,
+			policy:     PolicyWarn,
+			wantCode:   ExitFindings,
+			wantReason: "severity",
+		},
+		{
+			name:       "the gap policy blocked",
+			report:     gapReport(core.KindVacuousTest, core.SevWarn),
+			failOn:     core.SevHigh,
+			policy:     PolicyBlock,
+			wantCode:   ExitFindings,
+			wantReason: "gap-policy",
+		},
+		{
+			name:       "the audit did not finish",
+			report:     gapReport(core.KindNoTestForFix, core.SevCritical),
+			failOn:     core.SevCritical,
+			policy:     PolicyBlock,
+			wantCode:   ExitError,
+			wantReason: "audit-failed",
+		},
+		{
+			name:       "off blocks nothing",
+			report:     gapReport(core.KindNoTestForFix, core.SevCritical),
+			failOn:     core.SevCritical,
+			policy:     PolicyOff,
+			wantCode:   ExitOK,
+			wantReason: "",
+		},
+	}
+
+	for _, c := range cases {
+		if c.name == "the audit did not finish" {
+			c.report.AuditFailed = 1
+		}
+		got := decide(c.report, c.failOn, c.policy)
+		if got.code != c.wantCode {
+			t.Errorf("%s: exit code = %d, want %d", c.name, got.code, c.wantCode)
+		}
+		if got.reason != c.wantReason {
+			t.Errorf("%s: reason = %q, want %q", c.name, got.reason, c.wantReason)
+		}
+	}
+}
+
+// TestAnEmptyReportDoesNotBlockAtTheLowestThreshold is the case the
+// sentinel severity used to break.
+//
+// A run whose every window was proven has no findings at all - the proof
+// is not a finding - and the empty report's "info" is a placeholder, not
+// something that reached the threshold. Such a run used to exit 1 while
+// its report said "1 fix is guarded by a test" and listed no findings.
+func TestAnEmptyReportDoesNotBlockAtTheLowestThreshold(t *testing.T) {
+	m := testfixtures.ProvenFixture(t)
+
+	code, stdout, stderr := runCLI(t, "--mode", "audit", "--fail-on", "info", "--commit", m.Head(t), m.Dir)
+	if stderr != "" {
+		t.Fatalf("unexpected stderr: %s", stderr)
+	}
+	if code != ExitOK {
+		t.Fatalf("exit code = %d, want %d — a run that found nothing must not block for finding nothing:\n%s",
+			code, ExitOK, stdout)
+	}
+	if !strings.Contains(flat(stdout), "Decision: nothing blocked this run") {
+		t.Fatalf("the report must say that nothing blocked it:\n%s", stdout)
+	}
+}
+
+// TestTheDecisionOnAnEmptyReportIsNotBlocked is the same thing at the
+// unit level.
+func TestTheDecisionOnAnEmptyReportIsNotBlocked(t *testing.T) {
+	got := decide(&core.Report{}, core.SevInfo, PolicyWarn)
+
+	if got.code != ExitOK {
+		t.Errorf("exit code = %d, want %d — there is no finding to reach the threshold", got.code, ExitOK)
+	}
+	if got.reason != "" {
+		t.Errorf("reason = %q, want %q", got.reason, "")
+	}
+}

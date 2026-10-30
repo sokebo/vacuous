@@ -92,3 +92,27 @@ func TestHasProvenGapIsTrueForAGapKindAtWarningSeverity(t *testing.T) {
 		}
 	}
 }
+
+// TestWorstFindingTellsAnEmptyReportFromALowFinding is the difference
+// between "nothing was found" and "something was found, and it was
+// only a note".
+//
+// The empty report's severity is a sentinel, not a finding, and a
+// threshold of "info" must not match it - otherwise a run that found
+// nothing blocks itself for finding nothing.
+func TestWorstFindingTellsAnEmptyReportFromALowFinding(t *testing.T) {
+	empty := &Report{}
+	if sev, ok := empty.WorstFinding(); ok {
+		t.Errorf("an empty report has no worst finding, but it reported %v", sev)
+	}
+
+	note := &Report{}
+	note.Add(Finding{Kind: KindVacuousTest, Severity: SevInfo, Summary: "a note"})
+	sev, ok := note.WorstFinding()
+	if !ok {
+		t.Fatal("a report with a finding has a worst finding")
+	}
+	if sev != SevInfo {
+		t.Errorf("severity = %v, want %v", sev, SevInfo)
+	}
+}
