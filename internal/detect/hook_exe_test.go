@@ -159,7 +159,7 @@ func TestTheEvidenceNamesEveryNameGitWouldLookUnder(t *testing.T) {
 	}
 }
 
-// hookNameOfKnowsTheTwoNamesGitHas pins the mapping the two rules
+// TestHookNameOfKnowsTheTwoNamesGitHas pins the mapping the two rules
 // above stand on.
 func TestHookNameOfKnowsTheTwoNamesGitHas(t *testing.T) {
 	if hook, ok := hookNameOf("pre-push"); !ok || hook != "pre-push" {
