@@ -3,8 +3,10 @@ package detect
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -92,7 +94,7 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 			if err != nil {
 				continue
 			}
-			if info.Mode()&0o111 != 0 {
+			if hookRunnable(filepath.Join(abs, e.Name()), info) {
 				hooks = append(hooks, e.Name())
 			}
 		}
@@ -307,9 +309,8 @@ func effectiveHooksDir(repoRoot, configured string, isSet bool) (string, bool) {
 // with it. So the installed file has to BE this guard - the same bytes, a
 // symlink pointing at it, or a wrapper that calls it.
 //
-// The executable bit is part of the question. git only runs a hook that is
-// executable, and a non-executable copy in the hooks directory guards
-// exactly as much as no copy at all.
+// Whether git can run it at all is part of the question. A copy git cannot
+// run guards exactly as much as no copy at all.
 func guardRuns(hooksDir, repoRoot, dir, name string) (bool, string) {
 	if hooksDir == "" {
 		return false, "cannot tell where git looks for hooks"
@@ -322,8 +323,8 @@ func guardRuns(hooksDir, repoRoot, dir, name string) (bool, string) {
 	if info.IsDir() {
 		return false, "not a file"
 	}
-	if info.Mode()&0o111 == 0 {
-		return false, "not executable"
+	if !hookRunnable(installed, info) {
+		return false, notRunnableReason()
 	}
 
 	guard := filepath.Join(repoRoot, dir, name)
@@ -353,6 +354,75 @@ func guardRuns(hooksDir, repoRoot, dir, name string) (bool, string) {
 		return true, ""
 	}
 	return false, "not this guard"
+}
+
+// hookRunnable reports whether git would run this file as a hook.
+//
+// The question is "does git run it", and git answers it differently on
+// different platforms.
+//
+// On POSIX the executable bit is the answer: git runs a hook it can
+// execute.
+//
+// On Windows there is no executable bit. The filesystem does not have such
+// a thing, and Go's os.Stat never reports one - so a check that asks for
+// it gets the same answer for every file on the disk, and the rule it
+// guards stops existing. git for Windows runs a hook that starts with a
+// shebang: it hands the file to the shell. It also spawns a native
+// executable directly.
+//
+// Getting this wrong in either direction costs something real. Demanding
+// the executable bit on Windows makes every guard invisible, and the tool
+// then says nothing at all about a guard that has never run - the silent
+// absence this tool exists to catch. Dropping it on POSIX would report a
+// guard that git cannot execute as installed, and that is an accusation.
+//
+// So the question is asked in git's own terms: the shebang on Windows, the
+// executable bit everywhere else.
+func hookRunnable(path string, info os.FileInfo) bool {
+	if info.Mode()&0o111 != 0 {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	if hasShebang(path) {
+		return true
+	}
+	return windowsSpawnable[strings.ToLower(filepath.Ext(path))]
+}
+
+// windowsSpawnable are the extensions git for Windows can start without a
+// shebang: the native executables, and the batch files it runs through
+// cmd.exe.
+var windowsSpawnable = map[string]bool{
+	".exe": true,
+	".com": true,
+	".bat": true,
+	".cmd": true,
+}
+
+// hasShebang reports whether a file starts with "#!".
+func hasShebang(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var head [2]byte
+	n, _ := io.ReadFull(f, head[:])
+	return n == 2 && head[0] == '#' && head[1] == '!'
+}
+
+// notRunnableReason says why git would not run a hook on this platform.
+//
+// The two platforms have different reasons, and using the POSIX one on
+// Windows would send a reader to chmod a file git never looks at.
+func notRunnableReason() string {
+	if runtime.GOOS == "windows" {
+		return "git cannot run it (Windows has no executable bit, and this file names no interpreter)"
+	}
+	return "not executable"
 }
 
 // hookEvidence renders where the tool looked for a hook that is not there,
@@ -391,13 +461,27 @@ func absoluteHookInstall(repoRoot, dir string, scope core.FileScope, opts Option
 			}
 			for _, field := range strings.Fields(line) {
 				field = strings.Trim(field, `"'`)
-				if strings.HasPrefix(field, "/") && strings.Contains(field, dir) {
+				if isAbsolutePath(field) && strings.Contains(field, dir) {
 					return field
 				}
 			}
 		}
 	}
 	return ""
+}
+
+// isAbsolutePath reports whether a path written in a script is absolute.
+//
+// Two forms count, and they are not the same form: a POSIX absolute path
+// ("/home/x/.githooks") and a native one ("C:\Users\x\.githooks"). A script
+// on Windows writes the native form, and a path that is absolute there
+// breaks the same way when the directory moves - which is the whole point
+// of the rule.
+//
+// The MSYS form ("/c/Users/x/.githooks") starts with a slash as well, so
+// the slash test covers it.
+func isAbsolutePath(p string) bool {
+	return strings.HasPrefix(p, "/") || filepath.IsAbs(p)
 }
 
 // workflow is one CI workflow file.
