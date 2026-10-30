@@ -37,7 +37,7 @@ The same repository, on Linux, produced:
 | The question | git's answer on Windows | The tool's answer |
 |---|---|---|
 | Does git run `.git/hooks/pre-commit` with a `#!` line and **no executable bit**? | **yes** — it hands the file to the shell | **no** — the file is "not executable" |
-| Does git run a hook with no `#!` line and no executable bit? | **no** — `error: cannot spawn …: No such file or directory` | **no** ✓ |
+| Does git run a hook with no `#!` line and no executable bit? | **no** — `error: cannot spawn …` | **no** ✓ |
 
 The first row is the bug: the tool's answer and git's answer disagree about
 a hook git actually runs.
