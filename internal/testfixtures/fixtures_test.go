@@ -37,10 +37,11 @@ func TestFixtureCommitsCarryThePinnedTimestamp(t *testing.T) {
 // suite pass while the tool was actually broken against real repositories.
 func TestFixturesAreRealRepositories(t *testing.T) {
 	cases := map[string]func(*testing.T) *GoModule{
-		"vacuous": VacuousFixture,
-		"proven":  ProvenFixture,
-		"notest":  NoTestFixture,
-		"skipped": SkippedFixture,
+		"vacuous":    VacuousFixture,
+		"proven":     ProvenFixture,
+		"notest":     NoTestFixture,
+		"skipped":    SkippedFixture,
+		"unverified": UnverifiedWitnessFixture,
 	}
 	for name, build := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -149,6 +150,48 @@ func TestVacuousFixtureTestPassesWithoutFix(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the vacuous test must still pass without the fix, but it failed:\n%s", out)
+	}
+}
+
+// TestUnverifiedWitnessFixtureFailsWithoutFixAndSkipsWithIt pins both
+// halves of the unverified fixture.
+//
+// The fixture is only meaningful if BOTH are true:
+//
+//   - without the fix the witness goes red (so the counterfactual has a red
+//     light, and the question is worth asking), and
+//   - with the fix in place the witness SKIPS (so the baseline never saw it
+//     pass, and the answer cannot be "proven").
+//
+// If either half stops holding, the fixture stops being the shape it
+// claims to be - and a test built on it would pass for the wrong reason.
+func TestUnverifiedWitnessFixtureFailsWithoutFixAndSkipsWithIt(t *testing.T) {
+	m := UnverifiedWitnessFixture(t)
+
+	// With the fix in place: the witness skips.
+	cmd := exec.Command("go", "test", "-v", "./...")
+	cmd.Dir = m.Dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the run with the fix must exit 0, but it failed:\n%s", out)
+	}
+	if !strings.Contains(string(out), "SKIP") {
+		t.Fatalf("the witness must skip itself once the fix is in place, got:\n%s", out)
+	}
+	if strings.Contains(string(out), "FAIL") {
+		t.Fatalf("the run with the fix must not fail, got:\n%s", out)
+	}
+
+	// Without the fix: the witness goes red.
+	m.Write(t, "greet.go", buggySource)
+	cmd = exec.Command("go", "test", "./...")
+	cmd.Dir = m.Dir
+	out, err = cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("the witness must fail once the fix is removed, but it passed:\n%s", out)
+	}
+	if !strings.Contains(string(out), "TestGreetEmptyName") {
+		t.Fatalf("expected the witness to fail by name, got:\n%s", out)
 	}
 }
 

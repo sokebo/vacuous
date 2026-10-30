@@ -324,7 +324,8 @@ and in suppression comments, so renaming one is a breaking change.
 
 | Verdict | Kind | Severity | Meaning |
 |---|---|---|---|
-| `proven` | — | — | Removing the fix made a test red that was green with the fix in place. The test guards the behaviour. |
+| `proven` | — | — | Removing the fix made a test red that was **green with the fix in place**. The test guards the behaviour. Both halves are observed: the same test, red without the fix and green with it. |
+| `unverified` | `unverified-witness` | warn | Removing the fix made a test red, but that test was **never seen passing** with the fix in place — it was skipped, or the runner never reported it. **No answer.** |
 | `vacuous` | `vacuous-test` | warn | The experiment ran, everything passed, and the runner's own output does not say otherwise. **This change has no test watching it.** |
 | `no-test` | `no-test-for-fix` | warn / high | A behaviour changed and nothing in the tree watches it. High when the change is 10+ lines. |
 | `coupled` | `coupled` | warn | The test depends on the fix at compile time. **No answer.** |
@@ -343,6 +344,12 @@ Two distinctions carry most of the weight:
   other says "the environment was incomplete, so nobody knows". Filing them
   under one name makes the report say "the test is coupled" when the truth is
   "we could not run the test".
+- **`proven` vs `unverified`.** A witness has to be seen **twice**: red
+  without the fix, green with it. "The baseline did not report this test as
+  red" is not "the baseline saw this test pass" — a test that skipped itself
+  while the fix was in place was never seen green, and calling it a witness
+  makes the strongest claim this tool makes rest on an observation nobody
+  made.
 - **`not-applicable` vs `unsupported-source`.** A commit that only edited a
   README has nothing to judge. A commit that changed TypeScript in a
   repository whose runner is `go test` **also** cannot be judged — but it did
