@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **104 bugs the tool had in itself** that dogfooding uncovered.
+the **105 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -67,7 +67,8 @@ in the tables below are the record of that run.
 | [`16-bugs-3.98-3.99.md`](./16-bugs-3.98-3.99.md) | Tool bugs 3.98 – 3.99 — a run that found nothing exited 1, and a run that blocked said why |
 | [`17-bugs-3.100-3.102.md`](./17-bugs-3.100-3.102.md) | Tool bugs 3.100 – 3.102 — on Windows the guard check was silent, an absolute path was reported as an uncommitted file, and the script that says whether a run counts could not run |
 | [`18-bugs-3.103.md`](./18-bugs-3.103.md) | Tool bug 3.103 — the tool did not know that git runs "<hook>.exe": a native guard was invisible, and a guard git had just run was reported as never run |
-| [`19-bugs-3.104.md`](./19-bugs-3.104.md) | Tool bug 3.104 — the report's base revision was not verified, and a file on disk could have been reported as a commit |
+| [19-bugs-3.104.md](./19-bugs-3.104.md) | Tool bug 3.104 — the report's base revision was not verified, and a file on disk could have been reported as a commit |
+| [20-bugs-3.105.md](./20-bugs-3.105.md) | Tool bug 3.105 — the rule about rooted paths was fixed in one place and missed in three others |
 
 ---
 
@@ -101,7 +102,7 @@ history is public anyway.
 
 ## The catalog
 
-104 entries. The number in front is a stable identifier: it is referenced from
+105 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
 The log was written over many rounds, and three of its numbers were used
@@ -217,6 +218,7 @@ themselves.
 | **3.102** | The script that says whether a run's result counts could not run on Windows — CRLF, a Store alias named `python3`, and a GBK console | The shell script |
 | **3.103** | The tool did not know that git runs "<hook>.exe" — a native guard was invisible, and a guard git had just run was reported as never run | Static detection |
 | **3.104** | The report's base revision was not verified — a file on disk could have been reported as a commit | Report |
+| **3.105** | The rule about rooted paths was fixed in one place and missed in three others — and the finding named a path that cannot exist | Static detection |
 
 ---
 
@@ -230,7 +232,9 @@ distributed. They cluster in three places:
   a place where the tool substituted an assumption for the code's actual
   meaning. 3.101 belongs here: "/tmp/l.html" was not a path in the
   repository, and on Windows the tool said it was. 3.103 belongs here too:
-  a hook has two names on Windows, and the tool assumed it had one.
+  a hook has two names on Windows, and the tool assumed it had one. 3.105 belongs
+  here as well: the rule about rooted paths was written down and then asked in
+  only one of the four places that had to ask it.
 - **Places where "I could not tell" was dressed up as an answer** — 3.1, 3.13,
   3.33, 3.41, 3.43, 3.55, 3.60, 3.81, 3.98, 3.100, 3.103, 3.104. This is the cluster that matters
   most, because those are the bugs that produce confident, specific, wrong
