@@ -82,7 +82,7 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 			// them is not a guard, however executable it is - and on
 			// Windows the same guard can be there under another name:
 			// git runs "<hook>.exe" when "<hook>" is not there.
-			hook, ok := hookNameOf(e.Name())
+			hook, ok := core.HookNameOf(e.Name())
 			if !ok {
 				continue
 			}
@@ -113,7 +113,7 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 		// A configured path that does not exist. git silently ignores it.
 		if isSet {
 			resolved := configured
-			if !isAbsolutePath(resolved) {
+			if !core.IsAbsolutePath(resolved) {
 				resolved = filepath.Join(repoRoot, resolved)
 			}
 			if _, err := os.Stat(resolved); err != nil {
@@ -285,7 +285,7 @@ func containsString(list []string, value string) bool {
 func effectiveHooksDir(repoRoot, configured string, isSet bool) (string, bool) {
 	if isSet {
 		resolved := configured
-		if !isAbsolutePath(resolved) {
+		if !core.IsAbsolutePath(resolved) {
 			resolved = filepath.Join(repoRoot, resolved)
 		}
 		return resolved, true
@@ -298,7 +298,7 @@ func effectiveHooksDir(repoRoot, configured string, isSet bool) (string, bool) {
 	if p == "" {
 		return "", false
 	}
-	if !isAbsolutePath(p) {
+	if !core.IsAbsolutePath(p) {
 		p = filepath.Join(repoRoot, p)
 	}
 	return p, true
@@ -312,28 +312,6 @@ func effectiveHooksDir(repoRoot, configured string, isSet bool) (string, bool) {
 type guardCandidate struct {
 	hook string
 	file string
-}
-
-// hookNameOf reports which git hook a file in a hooks directory is.
-//
-// Git looks a hook up by name, and a file whose name is not one of them
-// is not a guard however executable it is.
-//
-// On Windows there is a second name for the same hook: git falls back to
-// "<name>.exe" when "<name>" is not there, so a native executable in the
-// hooks directory IS that hook. A checker that only knows the plain names
-// cannot see it - and the guard it cannot see is the one git runs.
-func hookNameOf(file string) (string, bool) {
-	if core.IsGitHookName(file) {
-		return file, true
-	}
-	if runtime.GOOS == "windows" && strings.HasSuffix(strings.ToLower(file), ".exe") {
-		base := file[:len(file)-len(".exe")]
-		if core.IsGitHookName(base) {
-			return base, true
-		}
-	}
-	return "", false
 }
 
 // addGuard records a guard, keeping the file git would actually run when
@@ -353,17 +331,15 @@ func addGuard(cands []guardCandidate, c guardCandidate) []guardCandidate {
 	return append(cands, c)
 }
 
-// installedHookFiles returns the files git would run for this hook, in the
-// order it prefers them.
+// installedHookFiles returns the files git would run for this hook.
 //
-// Git looks the hook up by name and stops at the first name that is
-// there. On Windows there is a second name: git's find_hook() retries with
-// the extension appended, so "<name>.exe" is the same hook. On POSIX there
-// is no second name - the plain name is the only one git consults.
+// The names are core's too — the same list, in the same order, because git
+// stops at the first name that is there.
 func installedHookFiles(hooksDir, hook string) []string {
-	out := []string{filepath.Join(hooksDir, hook)}
-	if runtime.GOOS == "windows" {
-		out = append(out, filepath.Join(hooksDir, hook+".exe"))
+	names := core.HookFileNames(hook)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, filepath.Join(hooksDir, name))
 	}
 	return out
 }
@@ -556,27 +532,13 @@ func absoluteHookInstall(repoRoot, dir string, scope core.FileScope, opts Option
 			}
 			for _, field := range strings.Fields(line) {
 				field = strings.Trim(field, `"'`)
-				if isAbsolutePath(field) && strings.Contains(field, dir) {
+				if core.IsAbsolutePath(field) && strings.Contains(field, dir) {
 					return field
 				}
 			}
 		}
 	}
 	return ""
-}
-
-// isAbsolutePath reports whether a path written in a script is absolute.
-//
-// Two forms count, and they are not the same form: a POSIX absolute path
-// ("/home/x/.githooks") and a native one ("C:\Users\x\.githooks"). A script
-// on Windows writes the native form, and a path that is absolute there
-// breaks the same way when the directory moves - which is the whole point
-// of the rule.
-//
-// The MSYS form ("/c/Users/x/.githooks") starts with a slash as well, so
-// the slash test covers it.
-func isAbsolutePath(p string) bool {
-	return strings.HasPrefix(p, "/") || filepath.IsAbs(p)
 }
 
 // workflow is one CI workflow file.

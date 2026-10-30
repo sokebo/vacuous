@@ -2,8 +2,9 @@ package detect
 
 import (
 	"path"
-	"path/filepath"
 	"strings"
+
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // This file reads the commands out of a CI workflow, together with the
@@ -62,7 +63,7 @@ func ciCommands(text string) []ciCommand {
 				// A "cd" changes the directory for the commands after
 				// it - the ones on the next line of the same step too.
 				if target, ok := cdTarget(trimmed); ok {
-					if filepath.IsAbs(target) {
+					if core.IsAbsolutePath(target) {
 						// Outside the repository: nothing after this can
 						// be running the repository's checks.
 						break lines
@@ -254,7 +255,7 @@ func usableCheckoutPath(p string) bool {
 	if strings.Contains(p, "${{") {
 		return false
 	}
-	if filepath.IsAbs(p) {
+	if core.IsAbsolutePath(p) {
 		return false
 	}
 	return true
