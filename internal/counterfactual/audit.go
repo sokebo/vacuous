@@ -557,17 +557,26 @@ func (a *Auditor) shortRev(ctx context.Context, rev string) string {
 // and "HEAD^" name different commits tomorrow than they do today, and a
 // report that carries them carries something that moves.
 //
-// A revision that cannot be resolved comes back empty, and the caller
-// leaves the raw string alone.
+// The resolution is verified. Without --verify, git rev-parse treats an
+// argument that names a file on disk as a path and prints it back - so the
+// field could hold "README.md" instead of a commit, and a field whose whole
+// purpose is to be resolvable by someone else would not be.
+//
+// A revision that cannot be resolved comes back as it was typed. An empty
+// field would say less than the reader already knows.
 func (a *Auditor) fullRev(ctx context.Context, rev string) string {
 	if rev == "" {
 		return ""
 	}
-	out, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-parse", rev)
+	out, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-parse", "--verify", rev)
 	if err != nil {
-		return ""
+		return rev
 	}
-	return strings.TrimSpace(out)
+	resolved := strings.TrimSpace(out)
+	if resolved == "" {
+		return rev
+	}
+	return resolved
 }
 
 // auditRange does the part of the audit that is the same for a commit and
