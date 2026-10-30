@@ -77,6 +77,19 @@ type Options struct {
 	JSON bool
 	// FailOn is the lowest severity that makes the run fail.
 	FailOn string
+	// Policy says what the run does about a behaviour change that no
+	// test watches.
+	//
+	// "warn" reports it and leaves the merge alone. "block" fails the
+	// run on it. "off" fails on nothing at all - not even on a finding
+	// above the severity threshold. Only the tool failing to finish
+	// still fails.
+	//
+	// It is a separate knob from FailOn because severity cannot tell the
+	// two apart: the "nobody is watching it" finding and the "nobody
+	// could judge it" one are both "warn". A team that wants the first
+	// to block does not want the second to.
+	Policy string
 	// Timeout bounds a single test run.
 	Timeout time.Duration
 	// Concurrency is how many change windows are audited at the same time.
@@ -87,6 +100,52 @@ type Options struct {
 	Concurrency int
 	// Verbose enables extra detail.
 	Verbose bool
+}
+
+// The policies a run can follow.
+//
+// They say what happens to a behaviour change that no test watches - the
+// one finding in the report that a maintainer can act on today.
+const (
+	// PolicyWarn reports a gap and leaves the merge alone. It is the
+	// default, and it is what a severity threshold alone has always
+	// meant.
+	PolicyWarn = "warn"
+	// PolicyBlock fails the run on a proven gap.
+	//
+	// It is separate from the severity threshold because severity
+	// cannot tell a gap apart from a change nobody could judge. The
+	// "nobody is watching it" finding is "warn", and so is the "nobody
+	// could judge it" one - the same word, for two different facts. A
+	// team that wants the first to block does not want the second to: a
+	// repository whose tests cannot be separated from its fix is not a
+	// repository with no tests.
+	PolicyBlock = "block"
+	// PolicyOff blocks nothing. The run is a report.
+	//
+	// "Nothing" includes the severity threshold: `off` turns the whole
+	// run into a report rather than a gate. The three policies are a
+	// ladder - `off` blocks nothing, `warn` lets the severity threshold
+	// block, `block` blocks on a proven gap as well.
+	//
+	// The tool not finishing still fails: a report with a hole in it
+	// is not a report.
+	PolicyOff = "off"
+)
+
+// policies are the accepted values of --policy.
+var policies = map[string]bool{
+	PolicyWarn:  true,
+	PolicyBlock: true,
+	PolicyOff:   true,
+}
+
+// parsePolicy reads a policy name.
+func parsePolicy(name string) (string, error) {
+	if policies[name] {
+		return name, nil
+	}
+	return "", fmt.Errorf("unknown policy %q: use warn, block or off", name)
 }
 
 // Run executes the CLI and returns a process exit code.
@@ -124,6 +183,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "vacuous: %v\n", err)
 		return ExitError
 	}
+	return exitCode(rep, failOn, opts.Policy)
+}
+
+// exitCode decides what the run says to the CI system.
+//
+// It is a pure function of the report and the two knobs, so the whole
+// exit-code contract lives in one place and can be tested without
+// running an audit.
+//
+// The order matters. A run that could not finish is the loudest answer,
+// then the severity threshold, then the policy.
+func exitCode(rep *core.Report, failOn core.Severity, policy string) int {
 	if rep.AuditFailed > 0 {
 		// A run that could not look at one of its commits has not judged
 		// that commit. "There were no findings" and "we could not look"
@@ -134,9 +205,32 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		// report with a hole in it is not a complete report, whatever
 		// else it found. The findings are still in the report; the exit
 		// code says the audit itself did not finish.
+		//
+		// It also takes precedence over the policy. "Report only" means
+		// "do not block on findings", not "do not block on a report with
+		// a hole in it".
 		return ExitError
 	}
+	if policy == PolicyOff {
+		// The run is a report and nothing else. The tool finished, so
+		// there is no hole to fail on.
+		//
+		// This also stops the severity threshold from blocking. "off"
+		// means the whole run is a report, not "the gap policy is off" -
+		// the three policies are a ladder, and `off` is its bottom rung.
+		return ExitOK
+	}
 	if rep.MaxSeverity() >= failOn {
+		return ExitFindings
+	}
+	if policy == PolicyBlock && rep.HasProvenGap() {
+		// A behaviour changed and nothing watches it, and the report
+		// knows it by experiment. The team asked for that to block.
+		//
+		// What it is NOT is a change nobody could judge: those are
+		// "warn" too, and they are not gaps. A repository whose tests
+		// cannot be separated from its fix does not become a repository
+		// with no tests because the policy asked for strictness.
 		return ExitFindings
 	}
 	return ExitOK
@@ -148,6 +242,7 @@ func parse(args []string, stderr io.Writer) (*Options, error) {
 		Dir:    ".",
 		Mode:   "all",
 		FailOn: "high",
+		Policy: PolicyWarn,
 		// The default audit window: the most recent commits on this
 		// branch. Twenty is roughly one working week of commits, which
 		// is the span a person can still remember and act on.
@@ -175,6 +270,9 @@ func parse(args []string, stderr io.Writer) (*Options, error) {
 	fs.IntVar(&opts.Limit, "limit", opts.Limit, "how many commits back the audited change window reaches (0 = no limit)")
 	fs.BoolVar(&opts.JSON, "json", false, "emit JSON instead of text")
 	fs.StringVar(&opts.FailOn, "fail-on", opts.FailOn, "lowest severity that fails the run: info|warn|high|critical")
+	fs.StringVar(&opts.Policy, "policy", opts.Policy,
+		"what the run does about a behaviour change no test watches: "+
+			"warn (report it) | block (fail on it) | off (report only, never fails)")
 	fs.DurationVar(&opts.Timeout, "timeout", opts.Timeout, "timeout for a single test run")
 	fs.IntVar(&opts.Concurrency, "concurrency", opts.Concurrency,
 		"how many change windows to audit at the same time (1 = one at a time)")
@@ -189,6 +287,9 @@ func parse(args []string, stderr io.Writer) (*Options, error) {
 	case "audit", "check", "all":
 	default:
 		return nil, fmt.Errorf("unknown mode %q (want audit, check or all)", opts.Mode)
+	}
+	if _, err := parsePolicy(opts.Policy); err != nil {
+		return nil, err
 	}
 	return opts, nil
 }
