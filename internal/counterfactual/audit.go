@@ -1150,21 +1150,6 @@ type runOutcome struct {
 	// test to watch, so "this test is vacuous" is not a finding about the
 	// test; it is a finding about nothing.
 	deduplicated bool
-	// witnesses are the tests that the counterfactual turned red and the
-	// baseline saw PASSING.
-	//
-	// These, and only these, are the witnesses. A witness has to be seen
-	// twice - red without the fix, green with it - and the second half of
-	// that is an observation, not an absence. "The baseline did not report
-	// this test as red" is not the same thing as "the baseline saw it
-	// pass", and the tool used to read it as the same thing: a test that
-	// was skipped in the baseline was counted as a witness, and the tool
-	// said "this fix is guarded by a test" about an observation it had
-	// never made.
-	//
-	// They live in redTests together with the ones that were not
-	// witnesses; this is the confirmed subset of it.
-	witnesses []string
 	// redTests are the tests the counterfactual turned red, and what the
 	// baseline said about each of them.
 	//
@@ -1172,6 +1157,15 @@ type runOutcome struct {
 	// the report has to be able to show a reader which test was seen
 	// passing and which one was only ever seen red, and a list that
 	// kept only the confirmed ones would throw the second half away.
+	//
+	// The confirmed subset - the witnesses proper - is computed from it by
+	// confirmedWitnesses. A witness has to be seen twice: red without the
+	// fix, and green with it. The second half is an observation, not an
+	// absence. "The baseline did not report this test as red" is not the
+	// same thing as "the baseline saw it pass", and the tool used to read
+	// it as the same thing: a test that was skipped in the baseline was
+	// counted as a witness, and the tool said "this fix is guarded by a
+	// test" about an observation it had never made.
 	redTests []core.Witness
 }
 
