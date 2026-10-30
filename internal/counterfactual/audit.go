@@ -59,6 +59,18 @@ type Result struct {
 	Findings []core.Finding
 	// TestCommand is the command that was run, for the report.
 	TestCommand string
+	// Witnesses are the tests the counterfactual turned red, and what the
+	// baseline said about each of them.
+	//
+	// It is the evidence behind the verdict, kept whole: the report shows
+	// the tests that were seen passing AND the ones that were only ever
+	// seen red, because the difference between those two is what tells a
+	// reader whether the conclusion holds.
+	//
+	// It is empty when the experiment never got far enough to turn
+	// anything red — a window that could not build, or whose baseline
+	// could not run.
+	Witnesses []core.Witness
 	// FailureOutput is the tail of the test output when the run failed.
 	FailureOutput string
 	// SourceChange says how much the commit changed its source files.
@@ -89,6 +101,14 @@ type Window struct {
 	Base string
 	// BaseShort is the abbreviated form of Base, for display.
 	BaseShort string
+	// BaseSHA is the resolved commit the base names, in full.
+	//
+	// It is a separate field because Base is whatever the caller asked
+	// for: "HEAD", "HEAD~3", a branch name. A report that carries that
+	// string is carrying something that moves - "HEAD" is a different
+	// commit tomorrow - and a machine reading it has to resolve it
+	// itself, in a repository it may not have.
+	BaseSHA string
 	// Head is the last commit of the window.
 	Head string
 	// Commits are the commits in the window, newest first.
@@ -377,10 +397,12 @@ func (a *Auditor) AuditCommit(ctx context.Context, sha string) (*Result, error) 
 	}
 
 	res := &Result{Commit: info}
+	base := parentOf(sha)
 	res.Window = Window{
-		Base:      parentOf(sha),
-		BaseShort: a.shortRev(ctx, parentOf(sha)),
-		Head:      sha,
+		Base:      base,
+		BaseShort: a.shortRev(ctx, base),
+		BaseSHA:   a.fullRev(ctx, base),
+		Head:      info.SHA,
 		Commits:   []core.CommitInfo{info},
 	}
 
@@ -469,7 +491,8 @@ func (a *Auditor) AuditWindow(ctx context.Context, base, head string, commits []
 	res.Window = Window{
 		Base:      base,
 		BaseShort: a.shortRev(ctx, base),
-		Head:      head,
+		BaseSHA:   a.fullRev(ctx, base),
+		Head:      headInfo.SHA,
 		Commits:   commits,
 	}
 
@@ -522,6 +545,25 @@ func (a *Auditor) isCommit(ctx context.Context, rev string) bool {
 // cannot shorten, and the report can say so by leaving the field blank.
 func (a *Auditor) shortRev(ctx context.Context, rev string) string {
 	out, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-parse", "--short", rev)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// fullRev resolves a revision to the full commit it names.
+//
+// The report needs the resolved form, not the one the caller typed: "HEAD"
+// and "HEAD^" name different commits tomorrow than they do today, and a
+// report that carries them carries something that moves.
+//
+// A revision that cannot be resolved comes back empty, and the caller
+// leaves the raw string alone.
+func (a *Auditor) fullRev(ctx context.Context, rev string) string {
+	if rev == "" {
+		return ""
+	}
+	out, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-parse", rev)
 	if err != nil {
 		return ""
 	}
@@ -730,6 +772,7 @@ func (a *Auditor) auditRange(ctx context.Context, base, head string, res *Result
 	}
 	res.TestCommand = run.command
 	res.FailureOutput = run.failureTail
+	res.Witnesses = run.redTests
 
 	res.Verdict = classify(run, a.isTest, changedPaths(res.Changed))
 
@@ -1118,25 +1161,18 @@ type runOutcome struct {
 	// was skipped in the baseline was counted as a witness, and the tool
 	// said "this fix is guarded by a test" about an observation it had
 	// never made.
-	witnesses []string
-	// unverified are the tests that the counterfactual turned red and the
-	// baseline never saw passing.
 	//
-	// They were skipped, or the runner never reported them at all. Each
-	// one carries what the baseline said about it, because "skipped" and
-	// "not collected" send the reader to different places.
-	unverified []unverifiedWitness
-}
-
-// unverifiedWitness is one test the counterfactual turned red, which the
-// baseline never saw pass.
-type unverifiedWitness struct {
-	// name is the test's name, exactly as the runner reported it.
-	name string
-	// status is what the baseline said about it: skipped, or unknown -
-	// which is what the core vocabulary calls a test the runner did not
-	// report.
-	status core.TestStatus
+	// They live in redTests together with the ones that were not
+	// witnesses; this is the confirmed subset of it.
+	witnesses []string
+	// redTests are the tests the counterfactual turned red, and what the
+	// baseline said about each of them.
+	//
+	// It is the whole evidence of the experiment, kept whole on purpose:
+	// the report has to be able to show a reader which test was seen
+	// passing and which one was only ever seen red, and a list that
+	// kept only the confirmed ones would throw the second half away.
+	redTests []core.Witness
 }
 
 // witnessVerdict returns the verdict for a counterfactual that turned
@@ -1152,7 +1188,10 @@ type unverifiedWitness struct {
 // happens when the run was assembled by hand. There is nothing to hold
 // against the verdict then, so it stands.
 func (o *runOutcome) witnessVerdict() Verdict {
-	if len(o.witnesses) == 0 && len(o.unverified) > 0 {
+	if len(confirmedWitnesses(o.redTests)) > 0 {
+		return VerdictProven
+	}
+	if len(unverifiedWitnesses(o.redTests)) > 0 {
 		return VerdictUnverified
 	}
 	return VerdictProven
@@ -1163,10 +1202,42 @@ func (o *runOutcome) witnessVerdict() Verdict {
 // It falls back to the number of failures when the baseline comparison
 // never ran, so that a run assembled by hand still reports a count.
 func (o *runOutcome) witnessCount() int {
-	if len(o.witnesses) > 0 || len(o.unverified) > 0 {
-		return len(o.witnesses)
+	if len(o.redTests) > 0 {
+		return len(confirmedWitnesses(o.redTests))
 	}
 	return countFail(o)
+}
+
+// confirmedWitnesses are the tests the baseline saw passing.
+//
+// A witness has to be seen twice: red without the fix, green with it.
+// These are the ones that were seen twice.
+func confirmedWitnesses(redTests []core.Witness) []core.Witness {
+	var out []core.Witness
+	for _, w := range redTests {
+		if w.Baseline == core.StatusPass {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// unverifiedWitnesses are the tests the baseline never saw passing.
+//
+// They were skipped, or the runner never reported them at all. They went
+// red once, and that is the only observation there is - which is why they
+// cannot be witnesses.
+//
+// A test the baseline saw RED is in neither list: it was already broken,
+// and its red says nothing about this fix.
+func unverifiedWitnesses(redTests []core.Witness) []core.Witness {
+	var out []core.Witness
+	for _, w := range redTests {
+		if w.Baseline != core.StatusPass && w.Baseline != core.StatusFail {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 // runCounterfactual builds the "fix removed, test kept" tree and runs the
@@ -1350,7 +1421,7 @@ func (a *Auditor) runCounterfactual(ctx context.Context, base, head string, res 
 			// was never set up.
 			out.baselineUnknown = true
 			out.baselineUnknownDetail = baseline.detail
-		case len(baseline.witnesses) == 0 && len(baseline.unverified) == 0:
+		case len(confirmedWitnesses(baseline.redTests)) == 0 && len(unverifiedWitnesses(baseline.redTests)) == 0:
 			// Every red in the counterfactual was already red in the
 			// baseline. Nothing this fix's removal did shows up.
 			out.preExisting = true
@@ -1358,8 +1429,7 @@ func (a *Auditor) runCounterfactual(ctx context.Context, base, head string, res 
 		default:
 			// The baseline ran and it has something to say about the
 			// tests the counterfactual turned red.
-			out.witnesses = baseline.witnesses
-			out.unverified = baseline.unverified
+			out.redTests = baseline.redTests
 		}
 	}
 
@@ -1388,13 +1458,9 @@ func (a *Auditor) runCounterfactual(ctx context.Context, base, head string, res 
 // never seen run, and the reader's next move was to go and fix a green
 // suite.
 type baselineOutcome struct {
-	// witnesses are the tests that fail in the counterfactual and were
-	// seen PASSING in the baseline - the witnesses the fix's removal
-	// broke.
-	witnesses []string
-	// unverified are the tests that fail in the counterfactual and were
-	// never seen passing in the baseline: skipped, or not reported at all.
-	unverified []unverifiedWitness
+	// redTests are the tests that fail in the counterfactual, with what
+	// the baseline said about each of them.
+	redTests []core.Witness
 	// ran says the baseline actually ran. When it did not, the question it
 	// was asked has no answer, and the tool must not pretend otherwise.
 	ran bool
@@ -1491,9 +1557,9 @@ func (a *Auditor) compareWithBaseline(ctx context.Context, sha string, target co
 			"), so it cannot be confirmed whether this red was caused by this fix"}
 	}
 
-	witnesses, unverified := splitWitnesses(counterfactual, result)
-	if len(witnesses) > 0 || len(unverified) > 0 {
-		return baselineOutcome{witnesses: witnesses, unverified: unverified, ran: true}
+	redTests := splitWitnesses(counterfactual, result)
+	if len(redTests) > 0 {
+		return baselineOutcome{redTests: redTests, ran: true}
 	}
 
 	return baselineOutcome{ran: true, detail: fmt.Sprintf(
@@ -1502,22 +1568,33 @@ func (a *Auditor) compareWithBaseline(ctx context.Context, sha string, target co
 		shortSHA(sha), countFailures(result))}
 }
 
-// splitWitnesses sorts the tests the counterfactual turned red into the
-// ones the baseline confirmed and the ones it never saw pass.
+// splitWitnesses lists every test the counterfactual turned red, together
+// with what the baseline said about it.
 //
-// The first list is the witnesses: red without the fix, green with it.
+// The list is kept whole on purpose. The report has to be able to show a
+// reader which test was seen passing and which one was only ever seen
+// red - and a list that kept only the confirmed witnesses would throw the
+// second half away, which is exactly the half that makes the difference
+// between "proven" and "cannot tell".
 //
-// The second list is everything else that went red without the fix and was
-// never seen green: skipped, or never collected. Those tests are NOT
-// witnesses, and the difference is the whole point - "the baseline did not
-// report this test as red" is not "the baseline saw this test pass".
+// The reading of each test decides what it is:
 //
-// A test that was already red in the baseline belongs to neither list: it
-// was broken before this fix's removal had anything to do with it.
-func splitWitnesses(counterfactual, baseline core.RunResult) ([]string, []unverifiedWitness) {
+//   - pass in the baseline -> a witness. Red without the fix, green with
+//     it: that is the whole experiment.
+//   - red in the baseline -> it was already broken. Nothing this fix's
+//     removal did.
+//   - skipped, or never reported -> it was never seen passing at all, so
+//     it cannot be a witness. It went red once, and that is the only
+//     observation there is.
+//
+// The third case is the one this function used to get wrong. It read "the
+// baseline did not report this test as red" as "the baseline saw this test
+// pass", and a test that skipped itself while the fix was in place was
+// reported as guarding the fix. That is the strongest claim this tool
+// makes, resting on an observation that was never made.
+func splitWitnesses(counterfactual, baseline core.RunResult) []core.Witness {
 	baseStatus := baselineStatusOf(baseline)
-	var witnesses []string
-	var unverified []unverifiedWitness
+	var out []core.Witness
 	seen := map[string]bool{}
 	for _, o := range counterfactual.Outcomes {
 		if o.Status != core.StatusFail {
@@ -1528,25 +1605,20 @@ func splitWitnesses(counterfactual, baseline core.RunResult) ([]string, []unveri
 		}
 		seen[o.Name] = true
 		status, reported := baseStatus[o.Name]
-		switch {
-		case !reported:
+		if !reported {
 			// The baseline never mentioned this test. It was not
 			// collected, or it was not run - either way it was never
-			// seen passing, so it is not a witness.
-			unverified = append(unverified, unverifiedWitness{name: o.Name, status: core.StatusUnknown})
-		case status == core.StatusFail:
-			// Already red with the fix in place. Whatever broke it, it
-			// was not this fix's removal.
-		case status == core.StatusPass:
-			witnesses = append(witnesses, o.Name)
-		default:
-			// Skipped, or a status the runner did not fill in.
-			unverified = append(unverified, unverifiedWitness{name: o.Name, status: status})
+			// seen passing.
+			status = core.StatusUnknown
 		}
+		out = append(out, core.Witness{
+			Test:           o.Name,
+			Baseline:       status,
+			Counterfactual: o.Status,
+		})
 	}
-	sort.Strings(witnesses)
-	sort.Slice(unverified, func(i, j int) bool { return unverified[i].name < unverified[j].name })
-	return witnesses, unverified
+	sort.Slice(out, func(i, j int) bool { return out[i].Test < out[j].Test })
+	return out
 }
 
 // baselineStatusOf records what the baseline run reported about each test.
@@ -1979,7 +2051,7 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 				"so they did not witness anything.\n"+
 				"So this change is not shown to be guarded by a test, and it is not shown to be unguarded either: "+
 				"the experiment cannot tell, and this report does not claim that it can.",
-			len(run.unverified), unverifiedList(run.unverified))
+			len(unverifiedWitnesses(run.redTests)), unverifiedList(run.redTests))
 		out = append(out, core.Finding{
 			Kind:     core.KindUnverifiedWitness,
 			Severity: core.SevWarn,
@@ -2294,11 +2366,19 @@ func countSkip(run *runOutcome) int {
 // without the fix and green with it. A reader who wants to check the claim
 // needs to know WHICH tests it is about - a count alone does not say.
 func witnessNames(run *runOutcome) string {
-	if run == nil || len(run.witnesses) == 0 {
+	if run == nil {
 		return ""
 	}
+	confirmed := confirmedWitnesses(run.redTests)
+	if len(confirmed) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(confirmed))
+	for _, w := range confirmed {
+		names = append(names, w.Test)
+	}
 	return "\nThe baseline saw these tests pass with the fix in place, and they are the witnesses: " +
-		strings.Join(run.witnesses, ", ") + "."
+		strings.Join(names, ", ") + "."
 }
 
 // unverifiedList renders the tests the counterfactual turned red and the
@@ -2309,16 +2389,16 @@ func witnessNames(run *runOutcome) string {
 // points at a skip condition, and a test the runner never reported points
 // at collection. One sentence that blurred them would send the reader to
 // the wrong one.
-func unverifiedList(unverified []unverifiedWitness) string {
+func unverifiedList(redTests []core.Witness) string {
 	var b strings.Builder
-	for _, u := range unverified {
-		switch u.status {
+	for _, w := range unverifiedWitnesses(redTests) {
+		switch w.Baseline {
 		case core.StatusSkip:
-			b.WriteString("  - " + u.name + " — skipped in the run with the fix in place, so it never ran\n")
+			b.WriteString("  - " + w.Test + " — skipped in the run with the fix in place, so it never ran\n")
 		case core.StatusFail:
-			b.WriteString("  - " + u.name + " — already red in the run with the fix in place\n")
+			b.WriteString("  - " + w.Test + " — already red in the run with the fix in place\n")
 		default:
-			b.WriteString("  - " + u.name + " — not reported by the runner in the run with the fix in place, so it was never collected\n")
+			b.WriteString("  - " + w.Test + " — not reported by the runner in the run with the fix in place, so it was never collected\n")
 		}
 	}
 	return b.String()

@@ -272,6 +272,52 @@ packages: the failure marker had been pushed out of it, and the tool reported
 "my verdict contradicts my own output" on runs that were perfectly consistent.
 **The check was right; the window it looked through was too small.**
 
+### 3.5 `core.Judgement` — the verdict and its evidence
+
+A `Report` carries two different things, and they are not the same kind of
+thing:
+
+- `Findings` are **problems**. Every one of them is something to act on.
+- `Judgements` are **conclusions and the evidence behind them**.
+
+They are separate because one verdict has no finding: `proven` is the good
+case, so it was reported as a number — "1 fix is guarded by a test" — with
+nothing behind it. The evidence existed, in a finding the CLI filtered out on
+the way to the report, but it never reached the reader. A claim the reader
+cannot check is a claim the reader has to believe, and "proven" is the
+strongest claim this tool makes.
+
+```go
+type Judgement struct {
+    Base        string    // the resolved revision the window starts from
+    Head        string    // the resolved revision it ends at
+    Commits     int
+    Verdict     string    // "proven", "vacuous", "coupled", "unverified", ...
+    TestCommand string    // the command that was run
+    Witnesses   []Witness // the tests the counterfactual turned red
+}
+
+type Witness struct {
+    Test           string     // as the runner reported it
+    Baseline       TestStatus // what the run with the fix in place said
+    Counterfactual TestStatus // what the run with the fix removed said
+}
+```
+
+Both statuses are kept, not just the conclusion. `pass` next to `fail` is a
+test that caught the bug; `skip` next to `fail` is a test that was never
+seen green — and the difference between those two is what tells a reader
+whether the conclusion holds.
+
+The revisions are **resolved**. `Base` and `Head` name commits, not the
+strings the caller typed: `HEAD` names a different commit tomorrow, and a
+report that carries it carries something that moves.
+
+The text report shows the witnesses of the `proven` windows; every other
+verdict already has a finding that says what happened. The JSON report
+carries every window, so a CI wrapper can tell a confirmed witness apart
+from a window nobody could judge — which is what a merge policy needs.
+
 ---
 
 ## 4. The static-check API

@@ -70,6 +70,10 @@ func renderText(w io.Writer, r *core.Report) error {
 		}
 	}
 
+	if err := writeProvenBy(w, r); err != nil {
+		return err
+	}
+
 	if err := writeField(w, "Summary", fmt.Sprintf(
 		"proven %d · vacuous %d · no test %d · undecidable %d · not applicable %d · could not audit %d",
 		r.Proven, r.Vacuous, r.NoTest, r.Inconclusive, r.NotApplicable, r.AuditFailed)); err != nil {
@@ -268,6 +272,80 @@ func writeFinding(w io.Writer, f core.Finding) error {
 		}
 	}
 	return nil
+}
+
+// writeProvenBy writes the evidence behind the "proven" verdicts.
+//
+// Every other verdict has a finding that says what happened. "proven" is
+// the one that does not - it is the good case, and it was reported as a
+// number with nothing behind it. A reader who has to take "proven" on
+// faith has been asked for more trust than the report earns.
+//
+// So the witnesses are named here: which test, and what each side of the
+// experiment said about it. That is the receipt, and it is what makes the
+// claim checkable instead of merely believable.
+//
+// The section only appears when there is something to show. A run with no
+// proven window is byte-for-byte what it was before.
+func writeProvenBy(w io.Writer, r *core.Report) error {
+	var proven []core.Judgement
+	for _, j := range r.Judgements {
+		if j.Verdict == "proven" {
+			proven = append(proven, j)
+		}
+	}
+	if len(proven) == 0 {
+		return nil
+	}
+
+	if err := writeLine(w, "Proven by these tests:"); err != nil {
+		return err
+	}
+	for _, j := range proven {
+		head := fmt.Sprintf("  %s", windowLabel(j))
+		if j.TestCommand != "" {
+			head += " — " + j.TestCommand
+		}
+		if _, err := fmt.Fprintln(w, head); err != nil {
+			return err
+		}
+		for _, wit := range j.Witnesses {
+			if wit.Baseline != core.StatusPass {
+				continue
+			}
+			line := fmt.Sprintf("    %s — green with the fix, red without it", wit.Test)
+			if _, err := fmt.Fprintln(w, line); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// windowLabel names one change window for display.
+//
+// A window of one commit is named by its commit; a longer one by the range
+// it covers, because a reader told "commit abc1234 changed something" has
+// to go and find that commit, and a reader told "abc1234..def5678" knows
+// where to look.
+func windowLabel(j core.Judgement) string {
+	base := shortSHA(j.Base)
+	head := shortSHA(j.Head)
+	if j.Commits <= 1 {
+		return head
+	}
+	return fmt.Sprintf("%s..%s (%d commits)", base, head, j.Commits)
+}
+
+// shortSHA abbreviates a revision for display.
+//
+// Seven characters is what git itself shows, and it is enough to name a
+// commit in a repository this size. A shorter revision is already short.
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 // writeWrapped writes text to the body column, wrapped to the width budget.

@@ -34,6 +34,15 @@ func runWith(name string) *runOutcome {
 	}
 }
 
+// names renders a witness list as test names, for the assertions below.
+func names(ws []core.Witness) []string {
+	out := make([]string, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, w.Test)
+	}
+	return out
+}
+
 // TestAPassingBaselineIsAWitness is the negative control, stated first.
 //
 // The whole point of the rule is that it must not throw the real witnesses
@@ -47,12 +56,18 @@ func TestAPassingBaselineIsAWitness(t *testing.T) {
 		{Name: "pkg.TestWitness", Status: core.StatusPass},
 	}}
 
-	witnesses, unverified := splitWitnesses(counterfactual, baseline)
-	if len(witnesses) != 1 || witnesses[0] != "pkg.TestWitness" {
-		t.Fatalf("witnesses = %v, want [pkg.TestWitness]", witnesses)
+	redTests := splitWitnesses(counterfactual, baseline)
+	confirmed := confirmedWitnesses(redTests)
+	if len(confirmed) != 1 || confirmed[0].Test != "pkg.TestWitness" {
+		t.Fatalf("confirmed = %v, want [pkg.TestWitness]", names(confirmed))
 	}
-	if len(unverified) != 0 {
-		t.Fatalf("unverified = %v, want none", unverified)
+	if got := len(unverifiedWitnesses(redTests)); got != 0 {
+		t.Fatalf("unverified = %v, want none", names(unverifiedWitnesses(redTests)))
+	}
+	// Both statuses are kept, because the conclusion is what the reader
+	// has to check.
+	if confirmed[0].Baseline != core.StatusPass || confirmed[0].Counterfactual != core.StatusFail {
+		t.Fatalf("witness = %+v, want baseline=pass counterfactual=fail", confirmed[0])
 	}
 }
 
@@ -68,19 +83,20 @@ func TestASkippedBaselineIsNotAWitness(t *testing.T) {
 		{Name: "pkg.TestWitness", Status: core.StatusSkip},
 	}}
 
-	witnesses, unverified := splitWitnesses(counterfactual, baseline)
-	if len(witnesses) != 0 {
-		t.Fatalf("a test that was skipped in the baseline must not be a witness, got %v", witnesses)
+	redTests := splitWitnesses(counterfactual, baseline)
+	if got := confirmedWitnesses(redTests); len(got) != 0 {
+		t.Fatalf("a test that was skipped in the baseline must not be a witness, got %v", names(got))
 	}
+	unverified := unverifiedWitnesses(redTests)
 	if len(unverified) != 1 {
-		t.Fatalf("unverified = %v, want one entry", unverified)
+		t.Fatalf("unverified = %v, want one entry", names(unverified))
 	}
-	if unverified[0].name != "pkg.TestWitness" {
-		t.Fatalf("unverified[0] = %q, want %q", unverified[0].name, "pkg.TestWitness")
+	if unverified[0].Test != "pkg.TestWitness" {
+		t.Fatalf("unverified[0] = %q, want %q", unverified[0].Test, "pkg.TestWitness")
 	}
-	if unverified[0].status != core.StatusSkip {
-		t.Fatalf("unverified[0].status = %q, want %q — the report has to say it was skipped",
-			unverified[0].status, core.StatusSkip)
+	if unverified[0].Baseline != core.StatusSkip {
+		t.Fatalf("unverified[0].Baseline = %q, want %q — the report has to say it was skipped",
+			unverified[0].Baseline, core.StatusSkip)
 	}
 }
 
@@ -96,15 +112,16 @@ func TestAnUncollectedBaselineIsNotAWitness(t *testing.T) {
 		{Name: "pkg.TestOther", Status: core.StatusPass},
 	}}
 
-	witnesses, unverified := splitWitnesses(counterfactual, baseline)
-	if len(witnesses) != 0 {
-		t.Fatalf("a test the baseline never reported must not be a witness, got %v", witnesses)
+	redTests := splitWitnesses(counterfactual, baseline)
+	if got := confirmedWitnesses(redTests); len(got) != 0 {
+		t.Fatalf("a test the baseline never reported must not be a witness, got %v", names(got))
 	}
-	if len(unverified) != 1 || unverified[0].name != "pkg.TestWitness" {
-		t.Fatalf("unverified = %v, want one entry for pkg.TestWitness", unverified)
+	unverified := unverifiedWitnesses(redTests)
+	if len(unverified) != 1 || unverified[0].Test != "pkg.TestWitness" {
+		t.Fatalf("unverified = %v, want one entry for pkg.TestWitness", names(unverified))
 	}
-	if unverified[0].status != core.StatusUnknown {
-		t.Fatalf("unverified[0].status = %q, want %q", unverified[0].status, core.StatusUnknown)
+	if unverified[0].Baseline != core.StatusUnknown {
+		t.Fatalf("unverified[0].Baseline = %q, want %q", unverified[0].Baseline, core.StatusUnknown)
 	}
 }
 
@@ -123,12 +140,12 @@ func TestAnAlreadyRedBaselineIsNeitherWitnessNorUnverified(t *testing.T) {
 		{Name: "pkg.TestWitness", Status: core.StatusFail},
 	}}
 
-	witnesses, unverified := splitWitnesses(counterfactual, baseline)
-	if len(witnesses) != 0 {
-		t.Fatalf("an already-red test must not be a witness, got %v", witnesses)
+	redTests := splitWitnesses(counterfactual, baseline)
+	if got := confirmedWitnesses(redTests); len(got) != 0 {
+		t.Fatalf("an already-red test must not be a witness, got %v", names(got))
 	}
-	if len(unverified) != 0 {
-		t.Fatalf("an already-red test is not unverified, got %v", unverified)
+	if got := unverifiedWitnesses(redTests); len(got) != 0 {
+		t.Fatalf("an already-red test is not unverified, got %v", names(got))
 	}
 }
 
@@ -148,12 +165,14 @@ func TestAMixedRunCreditsOnlyTheConfirmedWitness(t *testing.T) {
 		{Name: "pkg.TestWitness", Status: core.StatusPass},
 	}}
 
-	witnesses, unverified := splitWitnesses(counterfactual, baseline)
-	if len(witnesses) != 1 || witnesses[0] != "pkg.TestWitness" {
-		t.Fatalf("witnesses = %v, want [pkg.TestWitness]", witnesses)
+	redTests := splitWitnesses(counterfactual, baseline)
+	confirmed := confirmedWitnesses(redTests)
+	if len(confirmed) != 1 || confirmed[0].Test != "pkg.TestWitness" {
+		t.Fatalf("confirmed = %v, want [pkg.TestWitness]", names(confirmed))
 	}
-	if len(unverified) != 1 || unverified[0].name != "pkg.TestSkipped" {
-		t.Fatalf("unverified = %v, want one entry for pkg.TestSkipped", unverified)
+	unverified := unverifiedWitnesses(redTests)
+	if len(unverified) != 1 || unverified[0].Test != "pkg.TestSkipped" {
+		t.Fatalf("unverified = %v, want one entry for pkg.TestSkipped", names(unverified))
 	}
 }
 
@@ -165,7 +184,7 @@ func TestAMixedRunCreditsOnlyTheConfirmedWitness(t *testing.T) {
 // that is the claim a maintainer stops checking because of.
 func TestTheVerdictIsNotProvenWhenTheBaselineNeverSawItPass(t *testing.T) {
 	run := runWith("pkg.TestWitness")
-	run.unverified = []unverifiedWitness{{name: "pkg.TestWitness", status: core.StatusSkip}}
+	run.redTests = []core.Witness{{Test: "pkg.TestWitness", Baseline: core.StatusSkip, Counterfactual: core.StatusFail}}
 
 	got := classify(run, nil, nil)
 	if got == VerdictProven {
@@ -183,7 +202,7 @@ func TestTheVerdictIsNotProvenWhenTheBaselineNeverSawItPass(t *testing.T) {
 // was seen passing is proven, and a witness that was not is not.
 func TestTheVerdictIsStillProvenWhenTheBaselineSawItPass(t *testing.T) {
 	run := runWith("pkg.TestWitness")
-	run.witnesses = []string{"pkg.TestWitness"}
+	run.redTests = []core.Witness{{Test: "pkg.TestWitness", Baseline: core.StatusPass, Counterfactual: core.StatusFail}}
 
 	if got := classify(run, nil, nil); got != VerdictProven {
 		t.Fatalf("verdict = %q, want %q — the real witnesses must still be proven", got, VerdictProven)
@@ -200,7 +219,7 @@ func TestTheWitnessCountCountsOnlyConfirmedWitnesses(t *testing.T) {
 	run := runWith("pkg.TestWitness")
 	run.result.Outcomes = append(run.result.Outcomes,
 		core.TestOutcome{Name: "pkg.TestOther", Status: core.StatusFail})
-	run.witnesses = []string{"pkg.TestWitness"}
+	run.redTests = []core.Witness{{Test: "pkg.TestWitness", Baseline: core.StatusPass, Counterfactual: core.StatusFail}}
 
 	if got := run.witnessCount(); got != 1 {
 		t.Fatalf("witnessCount() = %d, want 1", got)
