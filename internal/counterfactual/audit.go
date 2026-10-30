@@ -108,6 +108,11 @@ type Window struct {
 	// string is carrying something that moves - "HEAD" is a different
 	// commit tomorrow - and a machine reading it has to resolve it
 	// itself, in a repository it may not have.
+	//
+	// It is empty when the base does not resolve to a commit, and that is
+	// deliberate. The field exists to be resolvable by somebody else, so
+	// it carries a commit id or nothing: a moving expression, or the name
+	// of a file on disk, would look like a commit id and not be one.
 	BaseSHA string
 	// Head is the last commit of the window.
 	Head string
@@ -562,21 +567,21 @@ func (a *Auditor) shortRev(ctx context.Context, rev string) string {
 // field could hold "README.md" instead of a commit, and a field whose whole
 // purpose is to be resolvable by someone else would not be.
 //
-// A revision that cannot be resolved comes back as it was typed. An empty
-// field would say less than the reader already knows.
+// A revision that cannot be resolved comes back empty. The field's whole
+// purpose is to be a commit id somebody else can resolve, so it must not
+// carry a string that is not one - neither the revision as it was typed
+// ("HEAD~3", which names a different commit tomorrow) nor the name of a
+// file on disk. The revision the caller asked for is still in Window.Base,
+// which is where a moving expression belongs.
 func (a *Auditor) fullRev(ctx context.Context, rev string) string {
 	if rev == "" {
 		return ""
 	}
 	out, err := a.repo.RunGit(ctx, a.repo.Root(), "rev-parse", "--verify", rev)
 	if err != nil {
-		return rev
+		return ""
 	}
-	resolved := strings.TrimSpace(out)
-	if resolved == "" {
-		return rev
-	}
-	return resolved
+	return strings.TrimSpace(out)
 }
 
 // auditRange does the part of the audit that is the same for a commit and
