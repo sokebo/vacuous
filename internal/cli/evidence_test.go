@@ -106,11 +106,11 @@ func TestTheAuditJSONCarriesTheJudgement(t *testing.T) {
 	if j.Head == "HEAD" || j.Head == "" {
 		t.Errorf("the judgement's head must be a resolved revision, got %q", j.Head)
 	}
-	// The base has to be resolved the same way, and to a commit id and
-	// nothing else: a reader in another repository has to be able to
-	// resolve it there.
+	// The base has to be resolved the same way, and to an id and nothing
+	// else: a reader in another repository has to be able to resolve it
+	// there.
 	if !commitID.MatchString(j.Base) {
-		t.Errorf("the judgement's base must be a resolved commit id, got %q", j.Base)
+		t.Errorf("the judgement's base must be a resolved id (40 characters), got %q", j.Base)
 	}
 	if len(j.Witnesses) != 1 {
 		t.Fatalf("witnesses = %d, want 1\n%s", len(j.Witnesses), stdout)

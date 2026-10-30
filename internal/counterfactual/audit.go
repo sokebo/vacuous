@@ -109,10 +109,15 @@ type Window struct {
 	// commit tomorrow - and a machine reading it has to resolve it
 	// itself, in a repository it may not have.
 	//
-	// It is empty when the base does not resolve to a commit, and that is
+	// It is empty when the base does not resolve to an object, and that is
 	// deliberate. The field exists to be resolvable by somebody else, so
-	// it carries a commit id or nothing: a moving expression, or the name
-	// of a file on disk, would look like a commit id and not be one.
+	// it carries an id or nothing: a moving expression, or the name of a
+	// file on disk, would look like an id and not be one.
+	//
+	// "An object" rather than "a commit", because that is what
+	// `rev-parse --verify` resolves to: a base that names an annotated
+	// tag resolves to the tag object, not to the commit behind it. In
+	// practice the base is derived from a commit, so it is a commit id.
 	BaseSHA string
 	// Head is the last commit of the window.
 	Head string

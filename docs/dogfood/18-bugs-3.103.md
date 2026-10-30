@@ -54,8 +54,9 @@ stop trusting the report."*
 
 ★ **git looks a hook up by name, and on Windows it has two names for one
 hook.** `find_hook()` asks for `<name>`; when that is not there, Windows
-gets a second try at `<name>.exe`. On POSIX the second try is
-`<name>.sample` — a template, and not a hook at all.
+gets a second try at `<name>.exe` — git's own code appends the extension
+and asks again. On POSIX there is no second try: the plain name is the
+only name git consults.
 
 ★ The second row is the opposite error, and it is the one the old code was
 heading towards: the tool's own model said "git for Windows starts .bat and
@@ -144,7 +145,7 @@ Evidence: …\.git\hooks\pre-commit.exe → not this guard
   answers stand on.
 
 **Negative control**: taking the ".exe" lookup out — both the enumeration
-and the installed copy — makes three of the six fail. The tool goes back
+and the installed copy — makes four of the six fail. The tool goes back
 to saying nothing about a native guard, and back to looking for a file that
 is not there.
 

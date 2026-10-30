@@ -53,6 +53,15 @@ apart from one. An empty field says "this was not resolved", which is
 unambiguous. The revision the caller asked for is still in `Window.Base`,
 which is where a moving expression belongs.
 
+★ One more precision, because the field's contract is the whole point:
+`--verify` resolves a name to the **object** it points at. A base that
+names an annotated tag therefore resolves to the tag object, not to the
+commit behind it (measured: `rev-parse --verify v1.0` gives the tag's id,
+`rev-parse --verify "v1.0^{commit}"` gives the commit's). In practice the
+base is derived from a commit — it is the parent of the commit that was
+audited — so the field carries a commit id. The contract is written as
+"an id or nothing", because that is what the field can promise.
+
 **Verification**: `internal/counterfactual/revision_test.go`, and one
 end-to-end assertion in `internal/cli/evidence_test.go`.
 

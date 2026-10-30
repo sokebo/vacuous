@@ -423,6 +423,12 @@ type Witness struct {
 // of the experiment said about it, and the command that produced it.
 type Judgement struct {
 	// Base is the revision the window starts from.
+	//
+	// It is the resolved commit id when the revision resolved to one, and
+	// empty when it did not - the field exists so that a reader can pin
+	// the window to a commit without resolving anything themselves, so it
+	// carries an id or nothing. An empty field is not a failure: it is the
+	// honest answer for a window that starts where there is no parent.
 	Base string
 	// Head is the last commit of the window.
 	Head string
