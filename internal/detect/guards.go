@@ -248,6 +248,25 @@ func workflowsReusingElsewhere(n int) string {
 	return fmt.Sprintf("%d workflows reuse", n)
 }
 
+// workflowsRunningMake names how many workflows run a make invocation this
+// tool could not follow.
+func workflowsRunningMake(n int) string {
+	if n == 1 {
+		return "1 workflow runs"
+	}
+	return fmt.Sprintf("%d workflows run", n)
+}
+
+// containsString reports whether the list holds the value.
+func containsString(list []string, value string) bool {
+	for _, s := range list {
+		if s == value {
+			return true
+		}
+	}
+	return false
+}
+
 // Git uses core.hooksPath when it is set and the default hooks directory
 // otherwise - exactly one of the two. Setting core.hooksPath makes git
 // ignore .git/hooks entirely, so "the hook is in .git/hooks" stops being
@@ -463,15 +482,28 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 	// never runs tests" when the answer is "I could not see" is exactly
 	// the kind of confident wrong claim this tool exists to stop making.
 	var opaque []string
+	// A make invocation the tool cannot follow tells us nothing either.
+	// "make -f CI.mk ci" names a file the tool has to be able to read,
+	// and "make ci" in a repository with no Makefile names a target
+	// nobody can look up. Neither is "the CI runs no tests" - and
+	// reporting them as that is how the tool said "this repository's CI
+	// never runs a test suite" about a CI that was running one.
+	var unresolved []string
 	for _, w := range workflows {
 		if runsAnyCommand(w.text, commands) || ci.runsTestCommand(w.text) {
 			withTests = append(withTests, w.name)
-		} else if w.runsMakeTargetThatRunsTests(repoRoot, scope) {
-			// The CI reaches the tests through a Makefile target:
-			// "make ci", where the recipe is "pytest tests". The command
-			// line says nothing a spelling list can recognise - only the
-			// repository's own Makefile says what it runs.
-			withTests = append(withTests, w.name)
+		} else {
+			switch w.resolveMakeTarget(repoRoot, scope) {
+			case makeRunsTests:
+				// The CI reaches the tests through a Makefile target:
+				// "make ci", where the recipe is "pytest tests". The
+				// command line says nothing a spelling list can
+				// recognise - only the repository's own Makefile says
+				// what it runs.
+				withTests = append(withTests, w.name)
+			case makeUnresolved:
+				unresolved = append(unresolved, w.name)
+			}
 		}
 		if callsAnotherWorkflow(w.text) {
 			opaque = append(opaque, w.name)
@@ -479,7 +511,7 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 		checks = append(checks, matchedCommands(w.text, checkCommands)...)
 	}
 
-	if len(withTests) == 0 && len(opaque) == 0 {
+	if len(withTests) == 0 && len(opaque) == 0 && len(unresolved) == 0 {
 		// The CI may not run a test suite and still not be a sham: it can
 		// run the repository's own check scripts. "npm run build" hides
 		// "npm run smoke:css" one level down, and the smoke script turns
@@ -539,22 +571,46 @@ func workflowFindings(repoRoot string, scope core.FileScope, opts Options) []cor
 	} else if len(withTests) == 0 {
 		// Some workflows are opaque: they call a workflow that lives in
 		// another repository, so the test command is not in this file.
+		// Or they reach the tests through a make invocation this tool
+		// cannot follow.
 		//
 		// "I could not see" is not "there is none". Saying "this
 		// repository's CI never runs tests" when the truth is "I could
 		// not look" is exactly the kind of confident wrong claim this
 		// tool exists to stop making.
+		var reasons []string
+		var evidence []string
+		if len(opaque) > 0 {
+			reasons = append(reasons, fmt.Sprintf(
+				"%s a workflow from somewhere else (%s). "+
+					"The test command may live in that repository, and this tool cannot see it.",
+				workflowsReusingElsewhere(len(opaque)), strings.Join(dedupe(opaque), ", ")))
+			evidence = append(evidence, "reused workflows: "+strings.Join(dedupe(opaque), ", "))
+		}
+		if len(unresolved) > 0 {
+			var cmds []string
+			for _, w := range workflows {
+				if !containsString(unresolved, w.name) {
+					continue
+				}
+				cmds = append(cmds, unresolvedMakeTargets(repoRoot, scope, w.text)...)
+			}
+			reasons = append(reasons, fmt.Sprintf(
+				"%s a make target this tool could not follow (%s). "+
+					"The recipe that says what the target runs is not in a file this tool can read, "+
+					"so this tool cannot see whether it reaches a test suite.",
+				workflowsRunningMake(len(unresolved)), strings.Join(dedupe(cmds), ", ")))
+			evidence = append(evidence, "unresolved make targets: "+strings.Join(dedupe(cmds), ", "))
+		}
+		detail := strings.Join(reasons, "\n") +
+			"\nSo this report does not conclude that CI runs no tests — not seeing it is " +
+			"not the same as it not being there."
 		out = append(out, finding(core.KindUnsupportedTests, core.SevInfo,
 			".github/workflows", 0,
 			"Cannot tell whether this repository's CI runs tests",
-			fmt.Sprintf(
-				"%s a workflow from somewhere else (%s). "+
-					"The test command may live in that repository, and this tool cannot see it.\n"+
-					"So this report does not conclude that CI runs no tests — not seeing it is "+
-					"not the same as it not being there.",
-				workflowsReusingElsewhere(len(opaque)), strings.Join(dedupe(opaque), ", ")),
-			"reused workflows: "+strings.Join(dedupe(opaque), ", "),
-			"If those reused workflows really do not run tests, "+
+			detail,
+			strings.Join(evidence, "\n"),
+			"If those workflows really do not run tests, "+
 				"write the test command into this repository's own workflow — that is the only "+
 				"way this tool can see it"))
 	}

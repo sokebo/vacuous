@@ -177,8 +177,21 @@ the next repository will use `make test-unit`, and the one after that
 `just test`. So the tool follows the CI's `make <target>` into the target's
 recipe in the repository's own Makefile, and asks that file what it runs.
 
+★ The Makefile it reads is **the one make would read**. A command that names
+its own file — `make -f CI.mk ci` — runs `CI.mk`, not the default
+`Makefile`, and reading the default one would put a recipe in the report
+that the CI never runs.
+
 A CI that **calls** a workflow from another repository is reported as
 "cannot tell" — not seeing the command is not the same as it not being there.
+
+★ **The same answer covers a make invocation the tool cannot follow**: a
+Makefile that is not in the repository, or a target that is not in it. The
+tool cannot see what such a target runs, so it says so — it does not report
+"this repository's CI runs no tests at all", which is a finding about
+somebody else's CI and has to be true. (It is also false in a second way:
+`make` itself fails when there is no Makefile, so the code breaking does
+NOT leave CI green.)
 
 ---
 
