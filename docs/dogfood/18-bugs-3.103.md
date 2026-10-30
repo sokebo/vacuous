@@ -130,7 +130,8 @@ the file git does run:
 Evidence: …\.git\hooks\pre-commit.exe → not this guard
 ```
 
-**Verification**: seven tests in `internal/detect/hook_exe_test.go`.
+**Verification**: seven tests — five in `internal/detect/hook_exe_test.go`,
+two in `internal/core/hooks_test.go`.
 
 - `TestGitRunsAHookNamedWithTheExeSuffix` asks git the question directly.
   `git hook run pre-commit` looks the hook up the way git does when it runs
@@ -140,12 +141,15 @@ Evidence: …\.git\hooks\pre-commit.exe → not this guard
   `TestANativeGuardThatIsNotInstalledIsReported` and
   `TestANativeGuardWithAnUnrelatedInstalledCopyIsReported` are the three
   answers the tool has to give.
-- `TestHookNameOfKnowsTheTwoNamesGitHas` and
-  `TestInstalledHookFilesAreTheNamesGitLooksFor` pin the two rules those
-  answers stand on.
 - `TestTheEvidenceNamesEveryNameGitWouldLookUnder` pins the evidence: it
   has to name every file git would look under — not only the one that
   happens to be there — because git consults more than one name.
+- `TestHookNameOfKnowsTheTwoNamesGitHas` and
+  `TestHookFileNamesAreTheNamesGitLooksFor` pin the two rules those answers
+  stand on. They live in `internal/core/hooks_test.go` because the rules
+  themselves moved to `internal/core` (3.106): a rule that moves has to
+  bring its test with it, and a test left behind would be testing a
+  function that is no longer there.
 
 **Negative control**: taking the ".exe" lookup out — both the enumeration
 and the installed copy — makes five of the seven fail. The tool goes back

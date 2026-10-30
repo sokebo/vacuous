@@ -159,45 +159,8 @@ func TestTheEvidenceNamesEveryNameGitWouldLookUnder(t *testing.T) {
 	}
 }
 
-// TestHookNameOfKnowsTheTwoNamesGitHas pins the mapping the two rules
-// above stand on.
-func TestHookNameOfKnowsTheTwoNamesGitHas(t *testing.T) {
-	if hook, ok := hookNameOf("pre-push"); !ok || hook != "pre-push" {
-		t.Errorf(`hookNameOf("pre-push") = %q, %v; want "pre-push", true`, hook, ok)
-	}
-	if hook, ok := hookNameOf("setup-dev-env.sh"); ok {
-		t.Errorf(`hookNameOf("setup-dev-env.sh") = %q, true; want "", false - git does not run that name`, hook)
-	}
-	name, ok := hookNameOf("pre-push.exe")
-	if runtime.GOOS == "windows" {
-		if !ok || name != "pre-push" {
-			t.Errorf(`hookNameOf("pre-push.exe") = %q, %v; want "pre-push", true`, name, ok)
-		}
-	} else if ok {
-		t.Errorf(`hookNameOf("pre-push.exe") = %q, true; want "", false - POSIX looks a hook up by name only`, name)
-	}
-}
-
-// TestInstalledHookFilesAreTheNamesGitLooksFor pins the order.
-//
-// Git stops at the first name that is there: a plain "pre-push" that
-// cannot be run is not replaced by a "pre-push.exe" sitting next to it,
-// because git never gets to the second name.
-func TestInstalledHookFilesAreTheNamesGitLooksFor(t *testing.T) {
-	got := installedHookFiles("hooks", "pre-push")
-	want := []string{filepath.Join("hooks", "pre-push")}
-	if runtime.GOOS == "windows" {
-		want = append(want, filepath.Join("hooks", "pre-push.exe"))
-	}
-	if len(got) != len(want) {
-		t.Fatalf("installedHookFiles = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("installedHookFiles = %v, want %v", got, want)
-		}
-	}
-}
+// The two rules about how git names a hook moved to internal/core, where the
+// gate can ask them too — see internal/core/hooks_test.go.
 
 // gitHookRun asks git to run a hook the way it runs one, and returns what
 // it said.

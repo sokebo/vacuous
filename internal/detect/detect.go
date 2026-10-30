@@ -261,7 +261,7 @@ func underTestDir(rel string) bool {
 // path. It reports false for paths outside the repository.
 func repoRel(root, repoRoot, p string) (string, bool) {
 	var abs string
-	if filepath.IsAbs(p) {
+	if core.IsAbsolutePath(p) {
 		abs = filepath.Clean(p)
 	} else {
 		abs = filepath.Clean(filepath.Join(root, p))

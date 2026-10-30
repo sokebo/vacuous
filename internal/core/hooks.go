@@ -1,5 +1,10 @@
 package core
 
+import (
+	"runtime"
+	"strings"
+)
+
 // GitHookNames are the names git runs as hooks.
 //
 // Git looks a hook up BY NAME. A file called "setup-dev-env.sh" sitting in
@@ -35,4 +40,43 @@ var GitHookNames = map[string]bool{
 // IsGitHookName reports whether git runs a hook by this name.
 func IsGitHookName(name string) bool {
 	return GitHookNames[name]
+}
+
+// HookNameOf reports which git hook a file in a hooks directory is.
+//
+// Git looks a hook up by name, and a file whose name is not one of them
+// is not a guard however executable it is.
+//
+// On Windows there is a second name for the same hook: git's find_hook()
+// retries with the extension appended when the plain name is not there, so
+// "<name>.exe" is that hook. A checker that only knows the plain names
+// cannot see it - and the guard it cannot see is the one git runs.
+//
+// It lives here for the same reason GitHookNames does: the checker and the
+// gate both have to ask it, and they have to get the same answer.
+func HookNameOf(file string) (string, bool) {
+	if IsGitHookName(file) {
+		return file, true
+	}
+	if runtime.GOOS == "windows" && strings.HasSuffix(strings.ToLower(file), ".exe") {
+		base := file[:len(file)-len(".exe")]
+		if IsGitHookName(base) {
+			return base, true
+		}
+	}
+	return "", false
+}
+
+// HookFileNames returns the file names git would run for a hook, in the
+// order it prefers them.
+//
+// Git looks the hook up by name and stops at the first name that is there.
+// On Windows there is a second name ("<name>.exe"); on POSIX the plain name
+// is the only one git consults.
+func HookFileNames(hook string) []string {
+	out := []string{hook}
+	if runtime.GOOS == "windows" {
+		out = append(out, hook+".exe")
+	}
+	return out
 }
