@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **96 bugs the tool had in itself** that dogfooding uncovered.
+the **97 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -63,6 +63,7 @@ in the tables below are the record of that run.
 | [`12-bugs-3.94.md`](./12-bugs-3.94.md) | Tool bug 3.94 — the audit hung forever on Windows, and the reason was not Windows |
 | [`13-bugs-3.95.md`](./13-bugs-3.95.md) | Tool bug 3.95 — "this fix is guarded by a test", said about a test that was never seen passing |
 | [`14-bugs-3.96.md`](./14-bugs-3.96.md) | Tool bug 3.96 — the report made its strongest claim and offered nothing to check it against |
+| [`15-bugs-3.97.md`](./15-bugs-3.97.md) | Tool bug 3.97 — "this repository's CI runs no tests at all", said about a CI that was running them |
 
 ---
 
@@ -96,7 +97,7 @@ history is public anyway.
 
 ## The catalog
 
-96 entries. The number in front is a stable identifier: it is referenced from
+97 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
 The log was written over many rounds, and three of its numbers were used
@@ -204,6 +205,7 @@ themselves.
 | **3.94** | The audit hung forever on Windows — the tar reader stopped at the end-of-archive marker and the padding behind it was never read | Counterfactual mechanics |
 | **3.95** | "This fix is guarded by a test" — said about a test that was never seen passing | Verdict |
 | **3.96** | The report made its strongest claim and offered nothing to check it against | Report |
+| **3.97** | "This repository's CI runs no tests at all" — said about a CI that was running them | CI detection |
 
 ---
 

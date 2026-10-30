@@ -102,33 +102,59 @@ func TestMakeTargetAfterReadsTheTargetOutOfACommandLine(t *testing.T) {
 		tokens []string
 		want   string
 		dir    string
+		file   string
 	}{
-		{[]string{"make", "ci"}, "ci", ""},
-		{[]string{"make", "test", "-j4"}, "test", ""},
-		{[]string{"make", "-j4", "test"}, "test", ""},
-		{[]string{"make", "-C", "sub", "ci"}, "ci", "sub"},
-		{[]string{"make", "--directory", "sub", "ci"}, "ci", "sub"},
-		{[]string{"make", "VAR=1", "ci"}, "ci", ""},
-		{[]string{"make"}, "", ""},
+		{[]string{"make", "ci"}, "ci", "", ""},
+		{[]string{"make", "test", "-j4"}, "test", "", ""},
+		{[]string{"make", "-j4", "test"}, "test", "", ""},
+		{[]string{"make", "-C", "sub", "ci"}, "ci", "sub", ""},
+		{[]string{"make", "--directory", "sub", "ci"}, "ci", "sub", ""},
+		{[]string{"make", "VAR=1", "ci"}, "ci", "", ""},
+		{[]string{"make"}, "", "", ""},
+		// The makefile the command names is part of what the command
+		// runs. "make -f CI.mk ci" does not run the default Makefile.
+		{[]string{"make", "-f", "CI.mk", "ci"}, "ci", "", "CI.mk"},
+		{[]string{"make", "--file", "CI.mk", "ci"}, "ci", "", "CI.mk"},
+		{[]string{"make", "--file=CI.mk", "ci"}, "ci", "", "CI.mk"},
+		{[]string{"make", "-C", "sub", "-f", "CI.mk", "ci"}, "ci", "sub", "CI.mk"},
 	}
 	for _, c := range cases {
-		got, dir := makeTargetAfter(c.tokens, "")
+		got, dir, file := makeTargetAfter(c.tokens, "")
 		if got != c.want {
 			t.Errorf("makeTargetAfter(%v) = %q, want %q", c.tokens, got, c.want)
 		}
 		if dir != c.dir {
 			t.Errorf("makeTargetAfter(%v) dir = %q, want %q", c.tokens, dir, c.dir)
 		}
+		if file != c.file {
+			t.Errorf("makeTargetAfter(%v) file = %q, want %q", c.tokens, file, c.file)
+		}
 	}
 }
 
-// TestMakeTargetAfterIgnoresTheMakefileFlag proves that "make -f Other.mk
-// ci" still names the target "ci" - and that the file it names is a
-// different Makefile, which this reader cannot follow.
-func TestMakeTargetAfterIgnoresTheMakefileFlag(t *testing.T) {
-	got, _ := makeTargetAfter([]string{"make", "-f", "Other.mk", "ci"}, "")
-	if got != "ci" {
-		t.Errorf("makeTargetAfter = %q, want %q", got, "ci")
+// TestMakefileRecipeOfAnEmptyTargetIsEmpty is the boundary that broke.
+//
+// A target with no recipe has no recipe. The lines after it belong to the
+// next target, and reading them as this one's is how "make ci" came out
+// as "the CI runs the tests" whenever the target AFTER "ci" happened to
+// run them - and the CI ran nothing at all.
+func TestMakefileRecipeOfAnEmptyTargetIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "Makefile", `ci:
+
+test:
+	go test ./...
+`)
+	recipe, ok := makefileRecipe(dir, "Makefile", "ci")
+	if !ok {
+		t.Fatal("the target ci was not found")
+	}
+	joined := ""
+	for _, line := range recipe {
+		joined += line + "\n"
+	}
+	if contains(joined, "go test") {
+		t.Errorf("the recipe of an empty target must not hold the next target's commands:\n%s", joined)
 	}
 }
 

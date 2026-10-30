@@ -45,16 +45,91 @@ import (
 // the repository does not contain says nothing about what the CI runs at
 // that revision.
 func (w workflow) runsMakeTargetThatRunsTests(root string, scope core.FileScope) bool {
+	return w.resolveMakeTarget(root, scope) == makeRunsTests
+}
+
+// makeResolution is what the tool could work out about a make invocation.
+//
+// It has three answers, not two, and the third one is the one this whole
+// file exists for: an invocation the tool cannot follow is NOT the same as
+// an invocation that runs no tests.
+//
+// The tool used to answer "no tests" for both. That is how "make -f CI.mk
+// ci" — a makefile the reader never opened — turned into "this
+// repository's CI runs no tests at all": a confident, specific, wrong
+// claim about somebody else's repository.
+type makeResolution int
+
+const (
+	// makeUnresolved means the invocation could not be followed: the
+	// makefile is not in the repository, the target is not in it, or the
+	// recipe cannot be read.
+	//
+	// It is not "runs no tests". It is "this tool cannot tell", and the
+	// report has to say exactly that.
+	makeUnresolved makeResolution = iota
+	// makeRunsTests means the target's recipe runs a test suite.
+	makeRunsTests
+	// makeRunsNoTests means the recipe was read and it runs no test
+	// suite. This is a definite answer.
+	makeRunsNoTests
+)
+
+// resolveMakeTarget works out what a workflow's make invocation runs.
+//
+// The three answers are the three things that can be true, and only one of
+// them is a definite "no".
+func (w workflow) resolveMakeTarget(root string, scope core.FileScope) makeResolution {
+	resolution := makeRunsNoTests
 	for _, target := range makeTargetsIn(w.text) {
-		rel := findMakefile(root, target.dir)
-		if rel == "" || !scope.Allows(rel) {
-			continue
-		}
-		if makeTargetRunsTests(root, target.dir, target.target) {
-			return true
+		switch resolveMakeTarget(root, scope, target) {
+		case makeRunsTests:
+			return makeRunsTests
+		case makeUnresolved:
+			// Remember it and keep looking: another invocation in the
+			// same workflow may still answer the question. If none
+			// does, this one is why the answer is "cannot tell".
+			resolution = makeUnresolved
 		}
 	}
-	return false
+	return resolution
+}
+
+// resolveMakeTarget works out what ONE make invocation runs.
+func resolveMakeTarget(root string, scope core.FileScope, cmd makeTargetCommand) makeResolution {
+	rel := findMakefile(root, cmd.dir, cmd.file)
+	if rel == "" || !scope.Allows(rel) {
+		// The makefile is not in the repository, or it is not in the
+		// scope this analysis is allowed to look at. Either way the
+		// recipe is a file this tool cannot read, and "cannot read" is
+		// not "runs no tests".
+		return makeUnresolved
+	}
+	recipe, ok := makefileRecipe(root, rel, cmd.target)
+	if !ok {
+		// The makefile is there but the target is not in it. Whatever
+		// the CI runs, this tool cannot see it.
+		return makeUnresolved
+	}
+	if recipeRunsTests(recipe) {
+		return makeRunsTests
+	}
+	return makeRunsNoTests
+}
+
+// unresolvedMakeTargets returns the make invocations the tool could not
+// follow.
+//
+// It is the evidence half of the "cannot tell" answer: without it the
+// report says "this tool cannot see" and the reader has to guess why.
+func unresolvedMakeTargets(root string, scope core.FileScope, text string) []string {
+	var out []string
+	for _, target := range makeTargetsIn(text) {
+		if resolveMakeTarget(root, scope, target) == makeUnresolved {
+			out = append(out, target.describe())
+		}
+	}
+	return dedupe(out)
 }
 
 // makeTargetCommand is a command line that invokes make.
@@ -64,6 +139,25 @@ type makeTargetCommand struct {
 	// dir is the directory the command runs in, relative to the
 	// repository root.
 	dir string
+	// file is the makefile the command names, when it names one.
+	//
+	// "make -f CI.mk ci" runs CI.mk, not the default Makefile. A reader
+	// that ignores this reads the wrong file and draws the wrong
+	// conclusion - and the wrong conclusion is a statement about the
+	// repository.
+	file string
+}
+
+// describe names the invocation for a report.
+func (c makeTargetCommand) describe() string {
+	cmd := "make"
+	if c.file != "" {
+		cmd += " -f " + c.file
+	}
+	if c.dir != "" {
+		cmd += " -C " + c.dir
+	}
+	return cmd + " " + c.target
 }
 
 // makeTargetsIn finds the make targets a CI command runs.
@@ -82,11 +176,11 @@ func makeTargetsIn(text string) []makeTargetCommand {
 				if path.Base(tokens[i]) != "make" && tokens[i] != "gmake" {
 					continue
 				}
-				target, dir := makeTargetAfter(tokens[i:], cmd.dir)
+				target, dir, file := makeTargetAfter(tokens[i:], cmd.dir)
 				if target == "" {
 					continue
 				}
-				out = append(out, makeTargetCommand{target: target, dir: dir})
+				out = append(out, makeTargetCommand{target: target, dir: dir, file: file})
 			}
 		}
 	}
@@ -98,22 +192,41 @@ func makeTargetsIn(text string) []makeTargetCommand {
 // The target is the first argument that is not a flag and not a flag's
 // value. "make -C sub ci" names the target "ci" in the directory "sub";
 // "make ci -j4" names "ci".
-func makeTargetAfter(tokens []string, dir string) (string, string) {
+//
+// It also reads the makefile the command names, because "make -f CI.mk ci"
+// runs CI.mk and not the default Makefile. Dropping that flag is how the
+// reader ended up reading a file the CI never runs.
+func makeTargetAfter(tokens []string, dir string) (string, string, string) {
 	target := ""
+	file := ""
 	for i := 1; i < len(tokens); i++ {
 		tok := tokens[i]
 		if tok == "" {
 			continue
 		}
 		if strings.HasPrefix(tok, "-") {
-			// "-C sub" and "-f Makefile" carry a value in the next token.
-			if tok == "-C" || tok == "-f" || tok == "--directory" || tok == "--file" {
+			// "-C sub", "-f Makefile" and their long forms carry a
+			// value in the next token.
+			if tok == "-C" || tok == "--directory" {
 				if i+1 < len(tokens) {
-					if tok == "-C" || tok == "--directory" {
-						dir = joinRepoPath(dir, tokens[i+1])
-					}
+					dir = joinRepoPath(dir, tokens[i+1])
 					i++
 				}
+				continue
+			}
+			if tok == "-f" || tok == "--file" {
+				if i+1 < len(tokens) {
+					file = tokens[i+1]
+					i++
+				}
+				continue
+			}
+			// "--file=CI.mk" carries its value in the same token.
+			if name, value, ok := strings.Cut(tok, "="); ok {
+				if name == "--file" {
+					file = value
+				}
+				continue
 			}
 			continue
 		}
@@ -124,28 +237,7 @@ func makeTargetAfter(tokens []string, dir string) (string, string) {
 		target = tok
 		break
 	}
-	return target, dir
-}
-
-// makeTargetRunsTests reports whether a make target's recipe runs a test
-// suite.
-//
-// The recipe is read from the Makefile the repository ships. The question
-// is whether the recipe mentions a test command - and it may mention one
-// several lines down, because a recipe is a list of shell commands.
-//
-// The test commands are the same ones the CI check already knows, plus
-// the ones that reach a runner through a variable.
-func makeTargetRunsTests(root, dir, target string) bool {
-	rel := findMakefile(root, dir)
-	if rel == "" {
-		return false
-	}
-	recipe, ok := makefileRecipe(root, rel, target)
-	if !ok {
-		return false
-	}
-	return recipeRunsTests(recipe)
+	return target, dir, file
 }
 
 // recipeRunsTests reports whether a recipe runs a test suite.
@@ -181,7 +273,21 @@ func testCommandSpellings() []string {
 // make itself looks for. A repository that names it something else
 // ("build.mk") is one this reader cannot follow, and saying so is
 // better than guessing.
-func findMakefile(root, dir string) string {
+//
+// A command that names its own makefile - "make -f CI.mk ci" - runs that
+// file and not the default one. The reader has to read the same file make
+// would, or it draws its conclusion from a recipe the CI never runs.
+func findMakefile(root, dir, named string) string {
+	if named != "" {
+		rel := joinRepoPath(dir, named)
+		if rel == "" {
+			rel = named
+		}
+		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err == nil && !info.IsDir() {
+			return rel
+		}
+		return ""
+	}
 	if dir == "" {
 		dir = "."
 	}
@@ -252,10 +358,17 @@ func makefileRecipe(root, rel, target string) ([]string, bool) {
 		}
 		if found {
 			// The next target starts: the recipe is over.
-			if inRecipe {
-				break
-			}
-			continue
+			//
+			// It is over even when this target's own recipe was
+			// EMPTY. An empty target has no recipe, and the lines
+			// that follow it belong to the next target - not to it.
+			//
+			// The reader used to keep scanning in that case, and the
+			// next target's recipe was read as this one's. So "make ci"
+			// on a Makefile whose "ci" target is empty came out as
+			// "the CI runs the tests" whenever the target AFTER "ci"
+			// happened to run them - and the CI ran nothing at all.
+			break
 		}
 		if name == target {
 			found = true
