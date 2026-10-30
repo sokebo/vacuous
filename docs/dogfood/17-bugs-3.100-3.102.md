@@ -90,13 +90,19 @@ func hookRunnable(path string, info os.FileInfo) bool {
 	if hasShebang(path) {
 		return true
 	}
-	return windowsSpawnable[strings.ToLower(filepath.Ext(path))]
+	return isWindowsNativeExe(path)
 }
 ```
 
 The shebang is the question on Windows, because there is no executable bit
-to ask about. `.exe`, `.com`, `.bat` and `.cmd` count too — git for Windows
-starts those directly.
+to ask about. A native executable is the other answer: git for Windows
+starts `<hook>.exe` itself.
+
+★ **And a hook has two names on Windows, which this fix did not have yet.**
+Git looks a hook up by name; when the name is not there, Windows gets a
+second try at `<name>.exe`. So a native executable in the hooks directory
+IS that hook — and a checker that only knows the plain names cannot see
+it. That gap is [3.103](./18-bugs-3.103.md).
 
 The same root cause reached a second rule: `absoluteHookInstall` looked for
 a Unix absolute path (`strings.HasPrefix(field, "/")`), so on Windows an
