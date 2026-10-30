@@ -30,6 +30,86 @@ func tryScript(t *testing.T) string {
 	return script
 }
 
+// shell returns the shell to run the script under test with, and whether
+// there is one.
+//
+// On Windows the ambient "bash" is often the launcher that comes with the
+// Windows Subsystem for Linux, and that launcher rewrites the command line
+// on the way in: a backslash becomes an escape, so a path arrives mangled
+// and the script cannot find itself.
+//
+// Git Bash does not do that. It understands Windows paths and hands the
+// command line through untouched, so it is preferred when it is installed.
+//
+// If no shell on this machine can run a script file, the test skips rather
+// than failing for a reason that has nothing to do with what it is testing.
+func shell(t *testing.T) (string, bool) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return "bash", true
+	}
+	for _, p := range gitBashPaths() {
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+	if runsScriptFile("bash") {
+		return "bash", true
+	}
+	return "", false
+}
+
+// gitBashPaths are the places Git for Windows installs its shell.
+func gitBashPaths() []string {
+	var out []string
+	if root := os.Getenv("GIT_INSTALL_ROOT"); root != "" {
+		out = append(out, filepath.Join(root, "bin", "bash.exe"))
+	}
+	for _, programFiles := range []string{
+		os.Getenv("ProgramFiles"),
+		os.Getenv("ProgramFiles(x86)"),
+	} {
+		if programFiles == "" {
+			continue
+		}
+		out = append(out, filepath.Join(programFiles, "Git", "bin", "bash.exe"))
+	}
+	return out
+}
+
+// runsScriptFile reports whether a shell can run a script file.
+//
+// The probe is the smallest thing that could catch the failure: a script
+// that prints one word. A shell that rewrites the command line cannot run
+// it, and the answer is "no" rather than a mystery.
+func runsScriptFile(shellPath string) bool {
+	dir, err := os.MkdirTemp("", "vacuous-shell-probe")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(dir)
+
+	script := filepath.Join(dir, "probe.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho probe-ran\n"), 0o755); err != nil {
+		return false
+	}
+	out, err := exec.Command(shellPath, filepath.ToSlash(script)).CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "probe-ran")
+}
+
+// bashPath turns a native path into one the shell can reach.
+//
+// The script under test is a shell script, so every path that reaches it
+// has to be one the shell understands. Forward slashes are understood by
+// every shell on every platform, and by the paths the script builds from
+// them.
+func bashPath(p string) string {
+	return filepath.ToSlash(p)
+}
+
 // stubVacuous writes a stand-in for the vacuous binary.
 //
 // It answers the two calls try.sh makes and nothing else. The JSON it
@@ -86,11 +166,16 @@ func renderJSON(t *testing.T, r *core.Report) []byte {
 func runTry(t *testing.T, script, stub, target string) (string, int) {
 	t.Helper()
 
-	cmd := exec.Command("bash", script, target, "5")
+	sh, ok := shell(t)
+	if !ok {
+		t.Skip("no shell on this machine can run a script file: the WSL launcher rewrites the command line")
+	}
+
+	cmd := exec.Command(sh, bashPath(script), bashPath(target), "5")
 	cmd.Env = append(os.Environ(),
-		"VACUOUS="+stub,
-		"STUB_CHECK="+filepath.Join(filepath.Dir(stub), "check.json"),
-		"STUB_AUDIT="+filepath.Join(filepath.Dir(stub), "audit.json"),
+		"VACUOUS="+bashPath(stub),
+		"STUB_CHECK="+bashPath(filepath.Join(filepath.Dir(stub), "check.json")),
+		"STUB_AUDIT="+bashPath(filepath.Join(filepath.Dir(stub), "audit.json")),
 	)
 	out, err := cmd.CombinedOutput()
 
@@ -256,11 +341,16 @@ func TestTryScriptPassesThroughTheToolsExitCode(t *testing.T) {
 	// The stub exits 2: the tool could not finish. try.sh has to hand that
 	// on, because a caller that only looks at the exit code would otherwise
 	// read a failed audit as a passing one.
-	cmd := exec.Command("bash", tryScript(t), stub, target.Dir, "5")
+	sh, usable := shell(t)
+	if !usable {
+		t.Skip("no shell on this machine can run a script file: the WSL launcher rewrites the command line")
+	}
+
+	cmd := exec.Command(sh, bashPath(tryScript(t)), bashPath(stub), bashPath(target.Dir), "5")
 	cmd.Env = append(os.Environ(),
-		"VACUOUS="+stub,
-		"STUB_CHECK="+filepath.Join(filepath.Dir(stub), "check.json"),
-		"STUB_AUDIT="+filepath.Join(filepath.Dir(stub), "audit.json"),
+		"VACUOUS="+bashPath(stub),
+		"STUB_CHECK="+bashPath(filepath.Join(filepath.Dir(stub), "check.json")),
+		"STUB_AUDIT="+bashPath(filepath.Join(filepath.Dir(stub), "audit.json")),
 		"STUB_AUDIT_EXIT=2",
 	)
 	out, err := cmd.CombinedOutput()
