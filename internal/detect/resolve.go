@@ -4,6 +4,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/sokebo/vacuous/internal/core"
 )
 
 // resolveAgainstDir turns a path written in source code into a
@@ -37,7 +39,7 @@ func resolveAgainstDir(repoRoot, rel, srcPath string) string {
 	// well - a path written in source code uses forward slashes on every
 	// platform, and one that starts with a slash is rooted, not
 	// repository-relative, everywhere.
-	if filepath.IsAbs(srcPath) || strings.HasPrefix(srcPath, "/") {
+	if core.IsAbsolutePath(srcPath) {
 		rel, err := filepath.Rel(repoRoot, filepath.Clean(srcPath))
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return ""

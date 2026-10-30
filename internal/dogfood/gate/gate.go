@@ -378,9 +378,10 @@ func GuardState(dir string) (string, error) {
 		if e.IsDir() {
 			continue
 		}
-		// 只看 git 按名字找的那几个 hook —— 名单和检查器用的是同一份
-		// （core.GitHookNames）。别的文件不是守卫，它们跟结论无关。
-		if !core.IsGitHookName(e.Name()) {
+		// 只看 git 按名字找的那几个 hook —— 名单和问法都和检查器是同一份
+		// （core.HookNameOf：Windows 上 git 还会找 <name>.exe）。别的文件
+		// 不是守卫，它们跟结论无关。
+		if _, ok := core.HookNameOf(e.Name()); !ok {
 			continue
 		}
 		names = append(names, e.Name())
@@ -420,7 +421,7 @@ func repoRoot(dir string) (string, error) {
 func effectiveHooksDir(root, configured string, isSet bool) (string, bool) {
 	if isSet {
 		resolved := configured
-		if !filepath.IsAbs(resolved) {
+		if !core.IsAbsolutePath(resolved) {
 			resolved = filepath.Join(root, resolved)
 		}
 		return resolved, true
@@ -433,7 +434,7 @@ func effectiveHooksDir(root, configured string, isSet bool) (string, bool) {
 	if p == "" {
 		return "", false
 	}
-	if !filepath.IsAbs(p) {
+	if !core.IsAbsolutePath(p) {
 		p = filepath.Join(root, p)
 	}
 	return p, true
