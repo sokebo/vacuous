@@ -315,15 +315,53 @@ is itself a finding.
 > The severity of a `vacuous` verdict is **warn**, so the default
 > `--fail-on high` does not fail the run on it. The counterfactual findings
 > are experiments, and an experiment that observed no failure is not the same
-> kind of evidence as a file that is not in the hooks directory. Use
-> `--fail-on warn` to make them block.
+> kind of evidence as a file that is not in the hooks directory.
+
+**`--policy`** says what the run does about a behaviour change that no test
+watches:
+
+| Policy | Findings at or above `--fail-on` | A behaviour change no test watches | A change nobody could judge | The tool could not finish |
+|---|---|---|---|---|
+| `warn` (default) | blocks | reported, does not block | does not block | **exit 2** |
+| `block` | blocks | **blocks** | does not block | **exit 2** |
+| `off` | does not block | does not block | does not block | **exit 2** |
+
+★ It is a separate knob because **severity cannot tell the two apart**: the
+"nobody is watching it" finding (`vacuous`, warn) and the "nobody could judge
+it" finding (`coupled`, warn) are **the same severity for two different
+facts**. `--fail-on warn` blocks on both — and a team that wants the first to
+block does not want the second to. A repository whose tests cannot be
+separated from its fix is not a repository with no tests, and it must not be
+treated like one.
+
+The gaps are two kinds (the kind names are the ones the JSON output uses):
+
+| Gap kind | What it says | Severity |
+|---|---|---|
+| `vacuous-test` | The commit changed code **and** tests, and the experiment showed the test guards nothing | `warn` |
+| `no-test-for-fix` | The commit changed code and brought no test at all | `warn` for a small change, `high` for a large one |
+
+So a severity threshold catches them **sometimes** — `no-test-for-fix` only
+crosses `high` when the change is big enough to shout about. `--policy
+block` catches every gap, whatever the threshold is set to.
+
+A gap kind at **info** severity is never a gap. "This change only added
+tests and changed no code" carries the `no-test-for-fix` kind, but a commit
+that only adds a test is the best kind of commit there is — the policy will
+not block it.
+
+`off` turns the whole run into a report — it also stops `--fail-on` from
+blocking. The three policies are a ladder: `off` blocks nothing, `warn` lets
+the severity threshold block, `block` blocks on a proven gap as well. A run
+the tool could not finish is **exit 2** under all three: a report with a hole
+in it is not a clean bill of health.
 
 **Exit codes:**
 
 | Code | Meaning |
 |---|---|
-| `0` | No findings at or above `--fail-on` |
-| `1` | Findings at or above `--fail-on` (default `high`) |
+| `0` | Nothing the policy blocks on |
+| `1` | The policy blocked: findings at or above `--fail-on`, or — with `--policy block` — a behaviour change no test watches |
 | `2` | The tool itself could not finish — **fails closed**, never passes silently |
 
 ---
@@ -349,7 +387,12 @@ not finish.
   with:
     mode: all
     fail-on: high
+    policy: warn
 ```
+
+`policy: block` is the setting for a repository that wants a behaviour change
+with no test watching it to block the merge — without also blocking the
+changes the tool could not judge.
 
 `action.yml` is a composite action: it builds the tool in its own directory
 and then audits **the calling** repository.

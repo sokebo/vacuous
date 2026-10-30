@@ -531,6 +531,54 @@ type Report struct {
 	Judgements []Judgement
 }
 
+// gapKinds are the kinds that say a behaviour changed and nothing watches
+// it.
+//
+// They are the findings a maintainer can act on today, and the only ones
+// the "block" policy blocks on.
+//
+// The kinds that mean "could not be judged" are deliberately NOT in here:
+// a change nobody could judge is not a change nobody is watching. Filing
+// them together would make a repository whose tests cannot be separated
+// from its fix look like a repository with no tests.
+//
+// The two do not carry the same severity - "vacuous-test" is a warning
+// and "no-test-for-fix" is high - but the policy treats them alike,
+// because they say the same thing: a behaviour changed and nothing
+// watches it.
+var gapKinds = map[Kind]bool{
+	KindVacuousTest:  true,
+	KindNoTestForFix: true,
+}
+
+// HasProvenGap reports whether the report contains a proven gap.
+//
+// A proven gap is a behaviour change that no test watches, and the report
+// knows it by experiment rather than by assumption.
+//
+// The severity matters, and the kind alone is not enough to decide. Two
+// findings carry a gap kind and are not gaps:
+//
+//   - "This change only added tests and changed no code - there is no fix
+//     to remove". A commit that only adds a test is the best kind of
+//     commit there is, and it must never block a merge.
+//   - "The test really does catch this fix". That is the good outcome, and
+//     it reuses the kind because there is one gap-shaped question to ask.
+//
+// So a gap is a gap KIND at warning severity or above. Everything below
+// that is a note, not an accusation.
+//
+// A finding that was suppressed on purpose is not in the list, so it does
+// not count: the author silenced it, and silencing it is a decision.
+func (r *Report) HasProvenGap() bool {
+	for _, f := range r.Findings {
+		if gapKinds[f.Kind] && f.Severity >= SevWarn {
+			return true
+		}
+	}
+	return false
+}
+
 // Add appends a finding.
 func (r *Report) Add(f Finding) {
 	r.Findings = append(r.Findings, f)
