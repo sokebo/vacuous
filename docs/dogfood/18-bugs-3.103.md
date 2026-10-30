@@ -130,7 +130,7 @@ the file git does run:
 Evidence: …\.git\hooks\pre-commit.exe → not this guard
 ```
 
-**Verification**: six tests in `internal/detect/hook_exe_test.go`.
+**Verification**: seven tests in `internal/detect/hook_exe_test.go`.
 
 - `TestGitRunsAHookNamedWithTheExeSuffix` asks git the question directly.
   `git hook run pre-commit` looks the hook up the way git does when it runs
@@ -143,9 +143,12 @@ Evidence: …\.git\hooks\pre-commit.exe → not this guard
 - `TestHookNameOfKnowsTheTwoNamesGitHas` and
   `TestInstalledHookFilesAreTheNamesGitLooksFor` pin the two rules those
   answers stand on.
+- `TestTheEvidenceNamesEveryNameGitWouldLookUnder` pins the evidence: it
+  has to name every file git would look under — not only the one that
+  happens to be there — because git consults more than one name.
 
 **Negative control**: taking the ".exe" lookup out — both the enumeration
-and the installed copy — makes four of the six fail. The tool goes back
+and the installed copy — makes five of the seven fail. The tool goes back
 to saying nothing about a native guard, and back to looking for a file that
 is not there.
 

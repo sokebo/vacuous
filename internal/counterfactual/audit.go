@@ -101,7 +101,7 @@ type Window struct {
 	Base string
 	// BaseShort is the abbreviated form of Base, for display.
 	BaseShort string
-	// BaseSHA is the resolved commit the base names, in full.
+	// BaseSHA is the resolved object the base names, in full.
 	//
 	// It is a separate field because Base is whatever the caller asked
 	// for: "HEAD", "HEAD~3", a branch name. A report that carries that
