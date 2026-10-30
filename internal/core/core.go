@@ -529,6 +529,35 @@ type Report struct {
 	// problems. Every verdict except "proven" has a finding that says
 	// what happened; this is where the one that has no finding says it.
 	Judgements []Judgement
+	// Policy is what the run does about a behaviour change that no test
+	// watches: "warn", "block" or "off".
+	//
+	// It is part of the report because the exit code depends on it. A
+	// report that says "1 warning" and a non-zero exit code, without
+	// saying which rule produced that exit, leaves the reader to guess -
+	// and a reader who has to guess cannot tell a blocked merge from a
+	// broken tool.
+	//
+	// It is empty when the report was assembled without one (a library
+	// caller, or a test), and the renderers say so rather than inventing
+	// a policy that was never chosen.
+	Policy string
+	// FailOn is the severity threshold the run used: "info", "warn",
+	// "high" or "critical".
+	//
+	// It belongs here for the same reason Policy does: the threshold is
+	// half of the exit-code contract, and a report that omits it cannot
+	// explain its own exit code.
+	FailOn string
+	// BlockedBy names the rule that produced the run's exit code.
+	//
+	// It is "" when nothing blocked the run, "audit-failed" when the run
+	// did not finish, "severity" when a finding reached the threshold,
+	// and "gap-policy" when the policy blocked on a proven gap.
+	//
+	// The exit code alone does not say which of these happened, and the
+	// report is where a CI consumer looks for the answer.
+	BlockedBy string
 }
 
 // gapKinds are the kinds that say a behaviour changed and nothing watches
@@ -542,10 +571,10 @@ type Report struct {
 // them together would make a repository whose tests cannot be separated
 // from its fix look like a repository with no tests.
 //
-// The two do not carry the same severity - "vacuous-test" is a warning
-// and "no-test-for-fix" is high - but the policy treats them alike,
-// because they say the same thing: a behaviour changed and nothing
-// watches it.
+// The two do not carry the same severity - "vacuous-test" is a warning,
+// and "no-test-for-fix" is a warning for a small change and high for a
+// large one - but the policy treats them alike, because they say the
+// same thing: a behaviour changed and nothing watches it.
 var gapKinds = map[Kind]bool{
 	KindVacuousTest:  true,
 	KindNoTestForFix: true,
@@ -594,6 +623,23 @@ func (r *Report) MaxSeverity() Severity {
 		}
 	}
 	return best
+}
+
+// WorstFinding returns the severity of the worst finding, and whether
+// there is a finding at all.
+//
+// MaxSeverity answers "how bad is the worst thing in this report", and it
+// says "info" for an empty report. That "info" is a sentinel, not a
+// finding - so a threshold of "info" would match it, and a run that found
+// nothing would block itself for finding nothing.
+//
+// The exit code needs both halves: the severity, and whether there is
+// anything to be severe about.
+func (r *Report) WorstFinding() (Severity, bool) {
+	if len(r.Findings) == 0 {
+		return SevInfo, false
+	}
+	return r.MaxSeverity(), true
 }
 
 // ByKind counts findings per kind.

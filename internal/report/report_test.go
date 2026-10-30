@@ -601,3 +601,96 @@ func reportFromJSON(t *testing.T, doc jsonReport) *core.Report {
 	}
 	return r
 }
+
+// The decision the run made about its findings.
+//
+// The exit code is the tool's contract with CI, and the code alone does
+// not say which rule produced it. With two knobs in play - the severity
+// threshold and the gap policy - a report that lists findings without
+// saying why it blocked leaves the reader to guess.
+
+// flatText collapses the report's line wrapping, so that an assertion
+// about a sentence is not broken by where the renderer happened to wrap
+// it. The renderer breaks on spaces, so a phrase can straddle two lines;
+// the assertion is about the sentence, not about the layout.
+func flatText(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// TestRenderJSONCarriesTheDecision checks that the machine-readable report
+// says what the run did about its findings.
+//
+// A CI consumer reads the JSON, and the exit code does not say which rule
+// produced it. Without these fields, a consumer that sees exit code 1 and
+// a "warn" in the report cannot tell a blocked merge from a broken tool.
+func TestRenderJSONCarriesTheDecision(t *testing.T) {
+	r := &core.Report{Project: "demo", Policy: "block", FailOn: "high", BlockedBy: "gap-policy"}
+	out := jsonOf(t, r)
+
+	for _, want := range []string{
+		`"policy": "block"`,
+		`"fail_on": "high"`,
+		`"blocked_by": "gap-policy"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderJSONAlwaysCarriesTheDecisionFields checks the empty case.
+//
+// The fields are present even when the report was assembled without them,
+// so a consumer never has to guess whether a missing key means "nothing
+// blocked" or "not checked".
+func TestRenderJSONAlwaysCarriesTheDecisionFields(t *testing.T) {
+	out := jsonOf(t, &core.Report{Project: "demo"})
+
+	for _, want := range []string{
+		`"policy": ""`,
+		`"fail_on": ""`,
+		`"blocked_by": ""`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderTextSaysWhatTheRunDid checks that every outcome is stated in
+// words, because each of them means something different to the reader.
+func TestRenderTextSaysWhatTheRunDid(t *testing.T) {
+	cases := []struct {
+		blockedBy string
+		want      string
+	}{
+		{"gap-policy", "a behaviour changed and nothing watches it"},
+		{"severity", "a finding reached the severity threshold"},
+		{"audit-failed", "the audit did not finish"},
+		{"", "nothing blocked this run"},
+	}
+	for _, c := range cases {
+		r := &core.Report{Project: "demo", Policy: "block", FailOn: "high", BlockedBy: c.blockedBy}
+		out := flatText(textOf(t, r))
+
+		if !strings.Contains(out, "Decision:") {
+			t.Errorf("blocked_by %q: the report says nothing about the decision:\n%s", c.blockedBy, out)
+		}
+		if !strings.Contains(out, c.want) {
+			t.Errorf("blocked_by %q: the report does not say %q:\n%s", c.blockedBy, c.want, out)
+		}
+	}
+}
+
+// TestRenderTextSaysNothingWhenThereWasNoDecision checks the other side.
+//
+// A report assembled by a library caller had no decision to report, and
+// saying "nothing blocked this run" about a run that was never gated
+// would be a claim the report cannot back.
+func TestRenderTextSaysNothingWhenThereWasNoDecision(t *testing.T) {
+	out := textOf(t, &core.Report{Project: "demo"})
+
+	if strings.Contains(out, "Decision:") {
+		t.Errorf("a report with no knobs made no decision, and must not claim one:\n%s", out)
+	}
+}
