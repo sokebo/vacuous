@@ -340,3 +340,10 @@ a decision.
 
 `--policy off` still exits 2 on an unfinished run. "Report only" means "do
 not block on findings", not "do not block on a report with a hole in it".
+
+**The report carries the decision.** The text report has a `Decision:` line,
+and the JSON report has `policy`, `fail_on` and `blocked_by` (`"severity"`,
+`"gap-policy"`, `"audit-failed"`, or empty when nothing blocked). Two knobs
+means two possible reasons for a non-zero exit, and the exit code alone says
+neither — so the report says which one fired, instead of leaving a reader to
+work it out from the findings.

@@ -159,12 +159,33 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return ExitError
 	}
 
+	// The threshold is read before the run, not after the report.
+	//
+	// A run with an unusable threshold has not happened, and writing the
+	// report first would put a complete-looking document in front of the
+	// reader and only then say the run was invalid.
+	failOn, err := core.ParseSeverity(opts.FailOn)
+	if err != nil {
+		fmt.Fprintf(stderr, "vacuous: %v\n", err)
+		return ExitError
+	}
+
 	ctx := context.Background()
 	rep, err := execute(ctx, opts)
 	if err != nil {
 		fmt.Fprintf(stderr, "vacuous: %v\n", err)
 		return ExitError
 	}
+
+	// The decision is made before the report is written, because the
+	// report has to carry it. An exit code that the report cannot
+	// explain is a verdict the reader has to take on faith - and with two
+	// knobs in play, "which one fired" is no longer something a reader
+	// can work out from the findings alone.
+	dec := decide(rep, failOn, opts.Policy)
+	rep.Policy = opts.Policy
+	rep.FailOn = failOn.String()
+	rep.BlockedBy = dec.reason
 
 	if opts.JSON {
 		if err := report.RenderJSON(stdout, rep); err != nil {
@@ -178,23 +199,30 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	failOn, err := core.ParseSeverity(opts.FailOn)
-	if err != nil {
-		fmt.Fprintf(stderr, "vacuous: %v\n", err)
-		return ExitError
-	}
-	return exitCode(rep, failOn, opts.Policy)
+	return dec.code
 }
 
-// exitCode decides what the run says to the CI system.
-//
-// It is a pure function of the report and the two knobs, so the whole
-// exit-code contract lives in one place and can be tested without
-// running an audit.
+// exitDecision is what the run says to the CI system, and why.
+type exitDecision struct {
+	// code is the process exit code.
+	code int
+	// reason names the rule that produced it:
+	//
+	//   - ""            nothing blocked the run
+	//   - "audit-failed" the run did not finish
+	//   - "severity"     a finding reached the severity threshold
+	//   - "gap-policy"   the policy blocked on a proven gap
+	//
+	// The code alone does not say which of these happened, so the reason
+	// travels with it into the report.
+	reason string
+}
+
+// decide works out the exit code and the rule behind it.
 //
 // The order matters. A run that could not finish is the loudest answer,
 // then the severity threshold, then the policy.
-func exitCode(rep *core.Report, failOn core.Severity, policy string) int {
+func decide(rep *core.Report, failOn core.Severity, policy string) exitDecision {
 	if rep.AuditFailed > 0 {
 		// A run that could not look at one of its commits has not judged
 		// that commit. "There were no findings" and "we could not look"
@@ -209,7 +237,7 @@ func exitCode(rep *core.Report, failOn core.Severity, policy string) int {
 		// It also takes precedence over the policy. "Report only" means
 		// "do not block on findings", not "do not block on a report with
 		// a hole in it".
-		return ExitError
+		return exitDecision{code: ExitError, reason: "audit-failed"}
 	}
 	if policy == PolicyOff {
 		// The run is a report and nothing else. The tool finished, so
@@ -218,10 +246,16 @@ func exitCode(rep *core.Report, failOn core.Severity, policy string) int {
 		// This also stops the severity threshold from blocking. "off"
 		// means the whole run is a report, not "the gap policy is off" -
 		// the three policies are a ladder, and `off` is its bottom rung.
-		return ExitOK
+		return exitDecision{code: ExitOK}
 	}
-	if rep.MaxSeverity() >= failOn {
-		return ExitFindings
+	// The threshold is checked against the findings that exist.
+	//
+	// A report with no findings has nothing that can reach a threshold,
+	// so it never blocks - not even at "info", where the empty report's
+	// sentinel severity would otherwise match the threshold and make a
+	// clean run fail for finding nothing.
+	if worst, ok := rep.WorstFinding(); ok && worst >= failOn {
+		return exitDecision{code: ExitFindings, reason: "severity"}
 	}
 	if policy == PolicyBlock && rep.HasProvenGap() {
 		// A behaviour changed and nothing watches it, and the report
@@ -231,9 +265,18 @@ func exitCode(rep *core.Report, failOn core.Severity, policy string) int {
 		// "warn" too, and they are not gaps. A repository whose tests
 		// cannot be separated from its fix does not become a repository
 		// with no tests because the policy asked for strictness.
-		return ExitFindings
+		return exitDecision{code: ExitFindings, reason: "gap-policy"}
 	}
-	return ExitOK
+	return exitDecision{code: ExitOK}
+}
+
+// exitCode decides what the run says to the CI system.
+//
+// It is a pure function of the report and the two knobs, so the whole
+// exit-code contract lives in one place and can be tested without
+// running an audit.
+func exitCode(rep *core.Report, failOn core.Severity, policy string) int {
+	return decide(rep, failOn, policy).code
 }
 
 // parse reads the command line.

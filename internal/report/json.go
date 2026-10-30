@@ -95,6 +95,22 @@ type jsonSummary struct {
 	AuditedCommits int `json:"audited_commits"`
 	// AuditedWindows is how many change windows the run judged.
 	AuditedWindows int `json:"audited_windows"`
+	// Policy is what the run does about a behaviour change that no test
+	// watches: "warn", "block" or "off". Empty when the report was
+	// assembled without one.
+	Policy string `json:"policy"`
+	// FailOn is the severity threshold the run used: "info", "warn",
+	// "high" or "critical". Empty when the report was assembled without
+	// one.
+	FailOn string `json:"fail_on"`
+	// BlockedBy names the rule that produced the run's exit code:
+	// "" (nothing blocked), "audit-failed" (the run did not finish),
+	// "severity" (a finding reached the threshold) or "gap-policy" (the
+	// policy blocked on a proven gap).
+	//
+	// A consumer that only has the exit code cannot tell these apart,
+	// and a consumer that has to guess cannot act on the answer.
+	BlockedBy string `json:"blocked_by"`
 }
 
 // jsonFinding is one finding, flattened for consumption.
@@ -161,6 +177,9 @@ func buildJSON(r *core.Report) jsonReport {
 			Silenced:       r.Silenced,
 			AuditedCommits: r.AuditedCommits,
 			AuditedWindows: r.AuditedWindows,
+			Policy:         r.Policy,
+			FailOn:         r.FailOn,
+			BlockedBy:      r.BlockedBy,
 		},
 		Findings:   make([]jsonFinding, 0, len(findings)),
 		Judgements: make([]jsonJudgement, 0, len(r.Judgements)),

@@ -41,6 +41,11 @@ func renderText(w io.Writer, r *core.Report) error {
 	if err := writeLine(w, headline(r, findings)); err != nil {
 		return err
 	}
+	if decision := decisionLine(r); decision != "" {
+		if err := writeField(w, "Decision", decision); err != nil {
+			return err
+		}
+	}
 	if r.Project != "" {
 		if err := writeLine(w, "Project: "+r.Project); err != nil {
 			return err
@@ -208,6 +213,34 @@ func headline(r *core.Report, findings []core.Finding) string {
 	return fmt.Sprintf("vacuous — found %s (%s %d · %s %d · unwatched %d; %s)",
 		noun(len(findings), "problem", "problems"), severityLabel(core.SevCritical), critical,
 		severityLabel(core.SevHigh), high, r.Vacuous, scope)
+}
+
+// decisionLine says what the run did about its findings.
+//
+// The exit code is the tool's contract with CI, and the code alone does
+// not say which rule produced it. With two knobs in play - the severity
+// threshold and the gap policy - a report that lists findings without
+// saying why it blocked leaves the reader to guess, and a reader who has
+// to guess cannot tell a blocked merge from a broken tool.
+//
+// The line is written only when the report carries a knob. A report
+// assembled by a library caller had no decision to report, and saying
+// "nothing blocked this run" about a run that was never gated would be a
+// claim the report cannot back.
+func decisionLine(r *core.Report) string {
+	if r.Policy == "" && r.FailOn == "" {
+		return ""
+	}
+	switch r.BlockedBy {
+	case "audit-failed":
+		return "the audit did not finish — the report has a hole in it, so the run fails (exit 2)"
+	case "severity":
+		return fmt.Sprintf("blocked — a finding reached the severity threshold (--fail-on %s)", r.FailOn)
+	case "gap-policy":
+		return "blocked — a behaviour changed and nothing watches it (--policy block)"
+	default:
+		return fmt.Sprintf("nothing blocked this run (--fail-on %s · --policy %s)", r.FailOn, r.Policy)
+	}
 }
 
 // scopeLine says how much ground the run covered.
