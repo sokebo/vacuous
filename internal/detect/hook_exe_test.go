@@ -124,7 +124,42 @@ func TestANativeGuardWithAnUnrelatedInstalledCopyIsReported(t *testing.T) {
 	}
 }
 
-// TestHookNameOfKnowsTheTwoNamesGitHas pins the mapping the two rules
+// TestTheEvidenceNamesEveryNameGitWouldLookUnder is the evidence half.
+//
+// The point of the evidence is that a reader can look in the same place.
+// On Windows that is two places, and naming only one of them hides where
+// git looked.
+func TestTheEvidenceNamesEveryNameGitWouldLookUnder(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("this platform has one name for a hook: POSIX looks it up by the plain name only")
+	}
+	dir := newRepo(t)
+	write(t, dir, filepath.Join(".githooks", "pre-commit.exe"), "native guard\n")
+	commit(t, dir)
+
+	findings, err := GuardLiveness(dir, trackedScope(t, dir))
+	if err != nil {
+		t.Fatalf("GuardLiveness: %v", err)
+	}
+	f := findingOf(findings, string(core.KindGuardNotInstalled))
+	if f == nil {
+		t.Fatalf("a native guard that is not installed must be reported, got %+v", findings)
+	}
+	var sawPlain, sawExe bool
+	for _, line := range strings.Split(f.Evidence, "\n") {
+		if strings.HasSuffix(line, "pre-commit → does not exist") {
+			sawPlain = true
+		}
+		if strings.HasSuffix(line, "pre-commit.exe → does not exist") {
+			sawExe = true
+		}
+	}
+	if !sawPlain || !sawExe {
+		t.Errorf("the evidence must name every file git would look under:\n%s", f.Evidence)
+	}
+}
+
+// hookNameOfKnowsTheTwoNamesGitHas pins the mapping the two rules
 // above stand on.
 func TestHookNameOfKnowsTheTwoNamesGitHas(t *testing.T) {
 	if hook, ok := hookNameOf("pre-push"); !ok || hook != "pre-push" {
