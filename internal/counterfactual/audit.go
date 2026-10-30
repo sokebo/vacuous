@@ -217,6 +217,23 @@ const (
 	// it never watched. That is the most expensive mistake available to
 	// it: the reader's next move is to delete a test that was fine.
 	VerdictPreExistingFailure Verdict = "pre-existing-failure"
+	// VerdictUnverified means the test went red when the fix was removed,
+	// but the same test was never seen passing with the fix in place.
+	//
+	// It was skipped, or the runner never reported it at all.
+	//
+	// The verdict the tool used to reach here was "proven", and that was
+	// wrong in the most expensive direction available to it. "Proven" is
+	// the strongest thing this tool says: it tells a maintainer that the
+	// behaviour they changed is watched, and a maintainer who believes it
+	// stops checking. The evidence for it is a test that failed once -
+	// and was never seen passing once.
+	//
+	// A witness has to be seen twice. Red without the fix, green with it.
+	// A test that was only ever seen red witnessed nothing, and the
+	// honest answer is that this change is neither proven guarded nor
+	// proven unguarded: the experiment cannot tell.
+	VerdictUnverified Verdict = "unverified"
 	// VerdictNotApplicable means there was nothing to judge, e.g. a commit
 	// that only touched docs.
 	VerdictNotApplicable Verdict = "n/a"
@@ -1090,6 +1107,66 @@ type runOutcome struct {
 	// test to watch, so "this test is vacuous" is not a finding about the
 	// test; it is a finding about nothing.
 	deduplicated bool
+	// witnesses are the tests that the counterfactual turned red and the
+	// baseline saw PASSING.
+	//
+	// These, and only these, are the witnesses. A witness has to be seen
+	// twice - red without the fix, green with it - and the second half of
+	// that is an observation, not an absence. "The baseline did not report
+	// this test as red" is not the same thing as "the baseline saw it
+	// pass", and the tool used to read it as the same thing: a test that
+	// was skipped in the baseline was counted as a witness, and the tool
+	// said "this fix is guarded by a test" about an observation it had
+	// never made.
+	witnesses []string
+	// unverified are the tests that the counterfactual turned red and the
+	// baseline never saw passing.
+	//
+	// They were skipped, or the runner never reported them at all. Each
+	// one carries what the baseline said about it, because "skipped" and
+	// "not collected" send the reader to different places.
+	unverified []unverifiedWitness
+}
+
+// unverifiedWitness is one test the counterfactual turned red, which the
+// baseline never saw pass.
+type unverifiedWitness struct {
+	// name is the test's name, exactly as the runner reported it.
+	name string
+	// status is what the baseline said about it: skipped, or unknown -
+	// which is what the core vocabulary calls a test the runner did not
+	// report.
+	status core.TestStatus
+}
+
+// witnessVerdict returns the verdict for a counterfactual that turned
+// something red.
+//
+// The baseline decides whether that red is evidence. A test the baseline
+// saw passing is a witness. A test the baseline never saw passing - it was
+// skipped, or the runner never reported it - is not, and saying so is the
+// difference between "this fix is guarded by a test" and "nobody has shown
+// me that anything guards this fix".
+//
+// The two empty slices mean the baseline comparison never ran, which only
+// happens when the run was assembled by hand. There is nothing to hold
+// against the verdict then, so it stands.
+func (o *runOutcome) witnessVerdict() Verdict {
+	if len(o.witnesses) == 0 && len(o.unverified) > 0 {
+		return VerdictUnverified
+	}
+	return VerdictProven
+}
+
+// witnessCount is how many tests the baseline confirmed as witnesses.
+//
+// It falls back to the number of failures when the baseline comparison
+// never ran, so that a run assembled by hand still reports a count.
+func (o *runOutcome) witnessCount() int {
+	if len(o.witnesses) > 0 || len(o.unverified) > 0 {
+		return len(o.witnesses)
+	}
+	return countFail(o)
 }
 
 // runCounterfactual builds the "fix removed, test kept" tree and runs the
@@ -1264,7 +1341,7 @@ func (a *Auditor) runCounterfactual(ctx context.Context, base, head string, res 
 	}
 
 	if countFailures(result) > 0 {
-		baseline := a.newFailuresWithoutFix(ctx, head, target, plan, result)
+		baseline := a.compareWithBaseline(ctx, head, target, result)
 		switch {
 		case !baseline.ran:
 			// The baseline never ran. It cannot say whether the red was
@@ -1273,9 +1350,16 @@ func (a *Auditor) runCounterfactual(ctx context.Context, base, head string, res 
 			// was never set up.
 			out.baselineUnknown = true
 			out.baselineUnknownDetail = baseline.detail
-		case len(baseline.newFailures) == 0:
+		case len(baseline.witnesses) == 0 && len(baseline.unverified) == 0:
+			// Every red in the counterfactual was already red in the
+			// baseline. Nothing this fix's removal did shows up.
 			out.preExisting = true
 			out.preExistingDetail = baseline.detail
+		default:
+			// The baseline ran and it has something to say about the
+			// tests the counterfactual turned red.
+			out.witnesses = baseline.witnesses
+			out.unverified = baseline.unverified
 		}
 	}
 
@@ -1284,20 +1368,33 @@ func (a *Auditor) runCounterfactual(ctx context.Context, base, head string, res 
 
 // baselineOutcome is what the baseline run had to say.
 //
-// The baseline answers one question: "was the red already there?". Three
-// answers are possible, and they are not the same answer:
+// The baseline answers one question: "was the red already there, and what
+// did the test itself do?". The answers are not the same answer:
 //
-//   - the baseline ran and the red was there too -> pre-existing
-//   - the baseline ran and the red was not there -> the red is the fix's
+//   - the baseline ran and saw the test pass -> the test is a witness
+//   - the baseline ran and saw the test red -> pre-existing
+//   - the baseline ran and skipped the test, or never reported it -> the
+//     test was never seen passing, so it is not a witness
 //   - the baseline never ran -> nobody knows
 //
-// The third one used to be folded into the first. That was wrong: it made
-// the tool say "this red was already there" about a suite it had never
-// seen run, and the reader's next move was to go and fix a green suite.
+// The third one used to be folded into the second, and the second used to
+// be folded into the first. That is where the false "proven" came from:
+// "the baseline did not report this test as red" was read as "the baseline
+// saw this test pass", and a test that skipped itself while the fix was in
+// place was reported as guarding the fix.
+//
+// The last answer used to be folded into the first as well. That was wrong:
+// it made the tool say "this red was already there" about a suite it had
+// never seen run, and the reader's next move was to go and fix a green
+// suite.
 type baselineOutcome struct {
-	// newFailures are the tests that fail in the counterfactual and not in
-	// the baseline - the witnesses the fix's removal broke.
-	newFailures []string
+	// witnesses are the tests that fail in the counterfactual and were
+	// seen PASSING in the baseline - the witnesses the fix's removal
+	// broke.
+	witnesses []string
+	// unverified are the tests that fail in the counterfactual and were
+	// never seen passing in the baseline: skipped, or not reported at all.
+	unverified []unverifiedWitness
 	// ran says the baseline actually ran. When it did not, the question it
 	// was asked has no answer, and the tool must not pretend otherwise.
 	ran bool
@@ -1305,17 +1402,37 @@ type baselineOutcome struct {
 	detail string
 }
 
-// newFailuresWithoutFix runs the same scope with the fix in place and
-// returns the tests that fail in the counterfactual but not there.
+// compareWithBaseline runs the same scope with the fix in place and says
+// what the baseline made of every test the counterfactual turned red.
 //
-// Those are the tests the fix's removal broke - the witnesses. An empty
-// result means every red in the counterfactual was already there.
+// The answer is per test, and it is the only place where the tool decides
+// whether it is allowed to say "proven".
+//
+// Three things can be true about a test that failed without the fix:
+//
+//   - the baseline saw it PASS -> it is a witness. Red without the fix,
+//     green with it: that is the whole experiment.
+//   - the baseline saw it RED -> it was already broken. Nothing this fix's
+//     removal did.
+//   - the baseline SKIPPED it, or never reported it -> it was never seen
+//     passing at all, so it cannot be a witness. It went red once, and
+//     that is the only observation there is.
+//
+// The third case is the one this function used to get wrong. It read "the
+// baseline did not report this test as red" as "the baseline saw this test
+// pass", and a test that skipped itself while the fix was in place was
+// reported as guarding the fix. That is the strongest claim this tool
+// makes, resting on an observation that was never made.
 //
 // It returns ran=false when the baseline cannot be run at all. The question
 // is "was the suite already red", and a baseline that did not run cannot
 // answer it. That direction is the safe one: the tool says "cannot tell"
 // instead of claiming a test guards something it never saw.
-func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target core.TestTarget, plan core.Plan, counterfactual core.RunResult) baselineOutcome {
+//
+// The baseline builds its own plan, from the baseline tree. The
+// counterfactual's plan is not reused: it was resolved against a different
+// tree, and the two have to talk about the same tests.
+func (a *Auditor) compareWithBaseline(ctx context.Context, sha string, target core.TestTarget, counterfactual core.RunResult) baselineOutcome {
 	wt, err := a.worktree.Create(ctx, sha)
 	if err != nil {
 		return baselineOutcome{detail: "the baseline could not run (" + err.Error() + "), so it cannot be confirmed whether this red was caused by this fix"}
@@ -1339,6 +1456,27 @@ func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target 
 	}
 	basePlan.Dir = wt.Path()
 
+	// The baseline has to cover the same tests the counterfactual did.
+	//
+	// An adapter may narrow a run to the tests next to the changed file,
+	// and widen it only when the narrow run comes back red. The
+	// counterfactual went red, so what it holds is the WIDE result - and
+	// a baseline run the same way would hold the NARROW one, because with
+	// the fix in place everything is green.
+	//
+	// Comparing the two would then read "the baseline did not report this
+	// test" as "the baseline never saw this test pass" - about a test the
+	// baseline never ran. The experiment would be comparing two different
+	// sets of tests and calling the difference a fact about the fix.
+	//
+	// So the baseline runs the whole suite whenever the plan knows how to
+	// run it. That is the only way the two sides of the experiment talk
+	// about the same tests.
+	if len(basePlan.FullArgs) > 0 {
+		basePlan.Args = basePlan.FullArgs
+		basePlan.FullArgs = nil
+	}
+
 	runCtx := ctx
 	if a.runTimeout != nil {
 		runCtx = a.runTimeout()
@@ -1353,19 +1491,9 @@ func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target 
 			"), so it cannot be confirmed whether this red was caused by this fix"}
 	}
 
-	alreadyRed := failingTestNames(result)
-	var newOnes []string
-	for _, o := range counterfactual.Outcomes {
-		if o.Status != core.StatusFail {
-			continue
-		}
-		if !alreadyRed[o.Name] {
-			newOnes = append(newOnes, o.Name)
-		}
-	}
-	sort.Strings(newOnes)
-	if len(newOnes) > 0 {
-		return baselineOutcome{newFailures: newOnes, ran: true}
+	witnesses, unverified := splitWitnesses(counterfactual, result)
+	if len(witnesses) > 0 || len(unverified) > 0 {
+		return baselineOutcome{witnesses: witnesses, unverified: unverified, ran: true}
 	}
 
 	return baselineOutcome{ran: true, detail: fmt.Sprintf(
@@ -1374,15 +1502,96 @@ func (a *Auditor) newFailuresWithoutFix(ctx context.Context, sha string, target 
 		shortSHA(sha), countFailures(result))}
 }
 
-// failingTestNames collects the names of the failing tests in a run.
-func failingTestNames(res core.RunResult) map[string]bool {
-	out := map[string]bool{}
-	for _, o := range res.Outcomes {
-		if o.Status == core.StatusFail {
-			out[o.Name] = true
+// splitWitnesses sorts the tests the counterfactual turned red into the
+// ones the baseline confirmed and the ones it never saw pass.
+//
+// The first list is the witnesses: red without the fix, green with it.
+//
+// The second list is everything else that went red without the fix and was
+// never seen green: skipped, or never collected. Those tests are NOT
+// witnesses, and the difference is the whole point - "the baseline did not
+// report this test as red" is not "the baseline saw this test pass".
+//
+// A test that was already red in the baseline belongs to neither list: it
+// was broken before this fix's removal had anything to do with it.
+func splitWitnesses(counterfactual, baseline core.RunResult) ([]string, []unverifiedWitness) {
+	baseStatus := baselineStatusOf(baseline)
+	var witnesses []string
+	var unverified []unverifiedWitness
+	seen := map[string]bool{}
+	for _, o := range counterfactual.Outcomes {
+		if o.Status != core.StatusFail {
+			continue
+		}
+		if seen[o.Name] {
+			continue
+		}
+		seen[o.Name] = true
+		status, reported := baseStatus[o.Name]
+		switch {
+		case !reported:
+			// The baseline never mentioned this test. It was not
+			// collected, or it was not run - either way it was never
+			// seen passing, so it is not a witness.
+			unverified = append(unverified, unverifiedWitness{name: o.Name, status: core.StatusUnknown})
+		case status == core.StatusFail:
+			// Already red with the fix in place. Whatever broke it, it
+			// was not this fix's removal.
+		case status == core.StatusPass:
+			witnesses = append(witnesses, o.Name)
+		default:
+			// Skipped, or a status the runner did not fill in.
+			unverified = append(unverified, unverifiedWitness{name: o.Name, status: status})
 		}
 	}
+	sort.Strings(witnesses)
+	sort.Slice(unverified, func(i, j int) bool { return unverified[i].name < unverified[j].name })
+	return witnesses, unverified
+}
+
+// baselineStatusOf records what the baseline run reported about each test.
+//
+// A name that appears more than once - a subtest and its parent, or a
+// retried test - keeps the least favourable reading. A test that both
+// passed and failed is not a clean witness, and a witness that has to be
+// argued for is not a witness.
+func baselineStatusOf(res core.RunResult) map[string]core.TestStatus {
+	out := map[string]core.TestStatus{}
+	for _, o := range res.Outcomes {
+		cur, seen := out[o.Name]
+		if !seen {
+			out[o.Name] = o.Status
+			continue
+		}
+		out[o.Name] = lessFavourable(cur, o.Status)
+	}
 	return out
+}
+
+// lessFavourable picks the reading of a test that disqualifies it as a
+// witness.
+//
+// The order is deliberate: a test the baseline saw RED is the most
+// disqualifying - it was already broken. A test it SKIPPED never ran. A
+// test it did not report was never collected. A test it saw PASS is the
+// only reading that can make a witness.
+func lessFavourable(a, b core.TestStatus) core.TestStatus {
+	rank := func(s core.TestStatus) int {
+		switch s {
+		case core.StatusFail:
+			return 3
+		case core.StatusSkip:
+			return 2
+		case core.StatusUnknown:
+			return 1
+		default:
+			return 0
+		}
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	return a
 }
 
 // countFailures counts the failing tests in a run.
@@ -1517,8 +1726,9 @@ func verdictFrom(run *runOutcome, isTest func(string) bool, changed []string) Ve
 		}
 		if fail > 0 {
 			// Other suites went red. The crash belongs to one file and
-			// the red light to another, and the red light is evidence.
-			return VerdictProven
+			// the red light to another, and the red light is evidence -
+			// but only the part of it the baseline confirms.
+			return run.witnessVerdict()
 		}
 		return VerdictSuiteCrash
 	}
@@ -1534,9 +1744,18 @@ func verdictFrom(run *runOutcome, isTest func(string) bool, changed []string) Ve
 	}
 
 	// Tests failed with the fix removed: the test catches the bug. This is
-	// the only positive result.
+	// the only positive result - and it is only the positive result when
+	// the baseline confirms it.
+	//
+	// The counterfactual alone says "something is red without the fix".
+	// The baseline says whether that something is a witness, and a
+	// witness has to be seen twice: red without the fix, green with it.
+	// A test the baseline skipped, or never reported, was never seen
+	// green - so it is not a witness, and saying that it is one would be
+	// the strongest claim this tool makes resting on an observation that
+	// was never made.
 	if fail > 0 {
-		return VerdictProven
+		return run.witnessVerdict()
 	}
 
 	// Everything passed with the fix removed: the test never depended on
@@ -1579,7 +1798,7 @@ func checkConsistency(run *runOutcome, verdict Verdict) string {
 	mentionsFailure := run.result.RawFailed
 
 	switch verdict {
-	case VerdictProven:
+	case VerdictProven, VerdictUnverified:
 		if !mentionsFailure {
 			return "the verdict says a test went red, but the runner's own output contains no failure"
 		}
@@ -1726,8 +1945,8 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			Kind:     core.KindVacuousTest, // placeholder replaced below
 			Severity: core.SevInfo,
 			Summary:  "The test really does catch this fix",
-			Detail: fmt.Sprintf("Removing the fix made %d tests red — they really are guarding that behavior.",
-				countFail(run)),
+			Detail: fmt.Sprintf("Removing the fix made %d tests red — they really are guarding that behavior.%s",
+				run.witnessCount(), witnessNames(run)),
 			File:     testFile,
 			Evidence: run.command,
 			Repro:    reproFor(res, run),
@@ -1735,6 +1954,43 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 		// A proven test is not a finding at all. Mark it and let the
 		// caller filter it out; the report layer counts it as proven.
 		out[len(out)-1].Kind = "proven-test"
+
+	case VerdictUnverified:
+		// The counterfactual turned something red, and the baseline never
+		// saw that test pass.
+		//
+		// This is the case the tool used to call "proven", and it was
+		// wrong in the direction that costs the most. "Proven" tells a
+		// maintainer that the behaviour they changed is watched, and a
+		// maintainer who believes it stops checking. The evidence for it
+		// was a test that failed once and was never seen passing.
+		//
+		// What is actually known is narrower, and the report has to say
+		// the narrower thing: without the fix these tests go red. What
+		// is NOT known is whether they go green with it - they were
+		// skipped, or never collected, so nobody has seen them pass.
+		//
+		// The honest answer is neither "guarded" nor "unguarded". The
+		// experiment cannot tell, and the finding says so.
+		summary := "Cannot be judged: the test that went red without the fix was never seen passing with it"
+		detail := fmt.Sprintf(
+			"Removing the fix made %d tests red, and the run with the fix in place says this about them:\n%s\n"+
+				"A witness has to be seen twice — red without the fix, green with it. These tests were only ever seen red, "+
+				"so they did not witness anything.\n"+
+				"So this change is not shown to be guarded by a test, and it is not shown to be unguarded either: "+
+				"the experiment cannot tell, and this report does not claim that it can.",
+			len(run.unverified), unverifiedList(run.unverified))
+		out = append(out, core.Finding{
+			Kind:     core.KindUnverifiedWitness,
+			Severity: core.SevWarn,
+			Summary:  summary,
+			Detail:   detail,
+			File:     testFile,
+			Evidence: evidenceFor(run),
+			Repro:    reproFor(res, run),
+			Hint: "If the test skips itself while the fix is in place, the skip condition is doing the guarding rather than the assertions.\n" +
+				"A test that only runs in the broken state cannot witness the fix — let it run in both states, and let it pass in both.",
+		})
 
 	case VerdictVacuous:
 		// What this verdict really says: "removing the fix did not make
@@ -2030,6 +2286,42 @@ func countSkip(run *runOutcome) int {
 	}
 	_, _, s, _ := run.result.Counts()
 	return s
+}
+
+// witnessNames names the tests the baseline confirmed as witnesses.
+//
+// It is the evidence half of the "proven" verdict: the tests that were red
+// without the fix and green with it. A reader who wants to check the claim
+// needs to know WHICH tests it is about - a count alone does not say.
+func witnessNames(run *runOutcome) string {
+	if run == nil || len(run.witnesses) == 0 {
+		return ""
+	}
+	return "\nThe baseline saw these tests pass with the fix in place, and they are the witnesses: " +
+		strings.Join(run.witnesses, ", ") + "."
+}
+
+// unverifiedList renders the tests the counterfactual turned red and the
+// baseline never saw passing, one per line, with what the baseline said
+// about each of them.
+//
+// The two readings send the reader to different places: a skipped test
+// points at a skip condition, and a test the runner never reported points
+// at collection. One sentence that blurred them would send the reader to
+// the wrong one.
+func unverifiedList(unverified []unverifiedWitness) string {
+	var b strings.Builder
+	for _, u := range unverified {
+		switch u.status {
+		case core.StatusSkip:
+			b.WriteString("  - " + u.name + " — skipped in the run with the fix in place, so it never ran\n")
+		case core.StatusFail:
+			b.WriteString("  - " + u.name + " — already red in the run with the fix in place\n")
+		default:
+			b.WriteString("  - " + u.name + " — not reported by the runner in the run with the fix in place, so it was never collected\n")
+		}
+	}
+	return b.String()
 }
 
 // tailOf returns the tail of a run's output, for evidence.
