@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **97 bugs the tool had in itself** that dogfooding uncovered.
+the **99 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -64,6 +64,7 @@ in the tables below are the record of that run.
 | [`13-bugs-3.95.md`](./13-bugs-3.95.md) | Tool bug 3.95 — "this fix is guarded by a test", said about a test that was never seen passing |
 | [`14-bugs-3.96.md`](./14-bugs-3.96.md) | Tool bug 3.96 — the report made its strongest claim and offered nothing to check it against |
 | [`15-bugs-3.97.md`](./15-bugs-3.97.md) | Tool bug 3.97 — "this repository's CI runs no tests at all", said about a CI that was running them |
+| [`16-bugs-3.98-3.99.md`](./16-bugs-3.98-3.99.md) | Tool bugs 3.98 – 3.99 — a run that found nothing exited 1, and a run that blocked said why |
 
 ---
 
@@ -97,7 +98,7 @@ history is public anyway.
 
 ## The catalog
 
-97 entries. The number in front is a stable identifier: it is referenced from
+99 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
 The log was written over many rounds, and three of its numbers were used
@@ -206,6 +207,8 @@ themselves.
 | **3.95** | "This fix is guarded by a test" — said about a test that was never seen passing | Verdict |
 | **3.96** | The report made its strongest claim and offered nothing to check it against | Report |
 | **3.97** | "This repository's CI runs no tests at all" — said about a CI that was running them | CI detection |
+| **3.98** | A run that found nothing exited 1 — the empty report's sentinel severity reached the threshold | Exit codes |
+| **3.99** | The run had two reasons to exit 1 that look exactly alike, and the report named neither | Report |
 
 ---
 
@@ -219,9 +222,11 @@ distributed. They cluster in three places:
   a place where the tool substituted an assumption for the code's actual
   meaning.
 - **Places where "I could not tell" was dressed up as an answer** — 3.1, 3.13,
-  3.33, 3.41, 3.43, 3.55, 3.60, 3.81. This is the cluster that matters most,
-  because those are the bugs that produce confident, specific, wrong
-  accusations.
+  3.33, 3.41, 3.43, 3.55, 3.60, 3.81, 3.98. This is the cluster that matters
+  most, because those are the bugs that produce confident, specific, wrong
+  accusations. 3.98 belongs here in its own way: an empty report's sentinel
+  severity was read as a finding, and the run accused the repository of
+  failing a threshold it had nothing to fail.
 - **Places where the scope of the evidence was not pinned** — 3.68, 3.70, 3.19,
   3.9, 3.10. The conclusion depended on something the repository does not
   contain.

@@ -356,6 +356,12 @@ the severity threshold block, `block` blocks on a proven gap as well. A run
 the tool could not finish is **exit 2** under all three: a report with a hole
 in it is not a clean bill of health.
 
+**The report says which rule it used**, so the exit code is never a puzzle.
+The text report carries a `Decision:` line, and the JSON report carries
+`policy`, `fail_on` and `blocked_by` (`"severity"`, `"gap-policy"` or
+`"audit-failed"`). A CI consumer that sees exit code 1 next to a `warn` in
+the report can tell a blocked merge from a broken tool instead of guessing.
+
 **Exit codes:**
 
 | Code | Meaning |
