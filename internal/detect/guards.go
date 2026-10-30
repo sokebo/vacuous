@@ -113,7 +113,7 @@ func hookFindings(repo gitRepo, repoRoot string, scope core.FileScope, opts Opti
 		// A configured path that does not exist. git silently ignores it.
 		if isSet {
 			resolved := configured
-			if !filepath.IsAbs(resolved) {
+			if !isAbsolutePath(resolved) {
 				resolved = filepath.Join(repoRoot, resolved)
 			}
 			if _, err := os.Stat(resolved); err != nil {
@@ -287,7 +287,7 @@ func containsString(list []string, value string) bool {
 func effectiveHooksDir(repoRoot, configured string, isSet bool) (string, bool) {
 	if isSet {
 		resolved := configured
-		if !filepath.IsAbs(resolved) {
+		if !isAbsolutePath(resolved) {
 			resolved = filepath.Join(repoRoot, resolved)
 		}
 		return resolved, true
@@ -300,7 +300,7 @@ func effectiveHooksDir(repoRoot, configured string, isSet bool) (string, bool) {
 	if p == "" {
 		return "", false
 	}
-	if !filepath.IsAbs(p) {
+	if !isAbsolutePath(p) {
 		p = filepath.Join(repoRoot, p)
 	}
 	return p, true
