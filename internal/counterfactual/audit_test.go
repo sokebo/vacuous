@@ -515,6 +515,36 @@ func TestAuditDoesNotExcuseAFileItCouldNotRead(t *testing.T) {
 	}
 }
 
+// TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead pins the size
+// that survives a failed measurement.
+//
+// The commit moves one line from one file into another, so the diff-level
+// reading says "the two sides are the same" while the diff-level count says
+// one line moved. One of the two files holds a quote that never closes, so
+// the file-level reading cannot be made.
+//
+// The tool is left with the number the diff measured. Dropping it would put
+// "the largest of them changed 0 lines" into a report about a change whose
+// size was measured - a number nobody earned. And the count here is 1, not
+// the 2 the file-level reading would have produced, so the assertion also
+// says which of the two readings the report is standing on.
+func TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead(t *testing.T) {
+	m := testfixtures.SizeOnUnreadableFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict == VerdictNotApplicable {
+		t.Fatalf("a change in a file the tool could not read was left alone\nfindings: %+v", res.Findings)
+	}
+	if res.SourceChange.biggestFile != 1 {
+		t.Errorf("the report does not stand on the size the diff measured (want 1): %+v", res.SourceChange)
+	}
+}
+
 // TestAuditSaysWhatItsReadingActuallyRemoves pins the wording of the
 // cosmetic finding.
 //
