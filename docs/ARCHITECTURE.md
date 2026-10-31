@@ -460,9 +460,10 @@ For a change window `(B, H]` — the commits after `B` up to and including
 1. **Classify the window.** Merge commits and the repository's first commit
    have nothing to judge and leave the experiment early. Windows that only
    touch documentation, and windows that only added tests, have nothing to
-   judge either. Cosmetic changes (only comments and whitespace) are detected
-   by comparing the source before and after the diff is stripped of comments
-   and blanks.
+   judge either. Cosmetic changes (only comments, and whitespace that cannot
+   be part of a value) are detected by reducing the files at both ends of the
+   range: the comments go, the whitespace goes, and the string literals stay
+   as they are.
 2. **Build the counterfactual tree.** Check out `B`, apply **only** the test
    side of the window's diff (`B..H`). The fixes stay out.
 3. **Narrow the scope.** The run is limited to the packages the change
