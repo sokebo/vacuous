@@ -694,11 +694,11 @@ func (a *Auditor) auditRange(ctx context.Context, base, head string, res *Result
 			Severity: core.SevInfo,
 			Summary:  "This change did not alter the behavior of the code — it needs no new test",
 			Detail: fmt.Sprintf(
-				"%s changed %d source files, but the changes are only comments and whitespace.\n"+
+				"%s changed %d source files, but the changes are only comments and whitespace that cannot be part of a value.\n"+
 					"It did not change any behavior, so no test needs to come with it.",
 				res.subject(), len(res.SourceFiles)),
 			File:     firstPath(res.SourceFiles),
-			Evidence: "Line-by-line comparison: once comments and whitespace are removed, the two sides are identical",
+			Evidence: "The files at both ends of the range reduce to the same text: the comments are removed, the whitespace that cannot be part of a value is removed, and the string literals are kept as they are",
 			Hint:     "If this commit does change behavior, then it needs a test",
 		})
 		return res, nil

@@ -403,6 +403,47 @@ func TestAuditLeavesCosmeticChangesAloneWhenTestsWereTouched(t *testing.T) {
 	}
 }
 
+// TestAuditSeesAWhitespaceChangeInsideATemplate proves the tool does not
+// call a change cosmetic when the whitespace is inside a string literal.
+//
+// The commit reindents one line of a raw string. That line looks like
+// ordinary code on its own, and a reading that compares lines one at a time
+// calls it a reindent - which is what the tool used to say, in a sentence
+// with no way out: "this change did not alter the behavior of the code".
+//
+// The change is real: the template's output changes. So the tool must not
+// say the change altered nothing. It has to run the experiment and report
+// what the experiment shows, which is that nothing in the repository watches
+// this behaviour - and that answer is backed by a run, not by an
+// assumption.
+func TestAuditSeesAWhitespaceChangeInsideATemplate(t *testing.T) {
+	m := testfixtures.TemplateWhitespaceFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	const want = "This change altered behavior and nothing in the repository is watching it"
+	found := false
+	for _, f := range res.Findings {
+		if strings.Contains(f.Summary, "did not alter the behavior") {
+			t.Fatalf("a change inside a template was called cosmetic: %+v", f)
+		}
+		if f.Summary == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the tool did not report what the experiment showed\nfindings: %+v", res.Findings)
+	}
+	if res.Verdict != VerdictNoTest {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictNoTest, res.Verdict, res.Findings)
+	}
+}
+
 // TestAuditSaysSoWhenTheCommitChangedCodeItCannotRun proves the tool does
 // not file a code change it cannot judge under "nothing to judge".
 //
