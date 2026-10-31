@@ -19,10 +19,15 @@ import (
 // reading.
 //
 // The test is deliberately conservative. A change is called cosmetic only
-// when the code it leaves behind is the same once comments are removed and
-// the whitespace outside the string literals is removed too. Anything else
+// when the code it leaves behind is the same once the comments are gone and
+// the whitespace outside the string literals is gone too. Anything else
 // counts as a real change, because missing a real finding is far worse than
 // reporting a cosmetic one.
+//
+// "The comments are gone" means what the rule does with comments, and the
+// rule is not thorough about it: a "//" comment is removed wherever it
+// starts, a "#" comment only when it starts the line. A trailing "#" comment
+// is left in place, so a change there looks bigger than it is.
 //
 // The whitespace rule is the sharp edge of that. Whitespace outside a string
 // literal is formatting in the languages this rule covers, and whitespace

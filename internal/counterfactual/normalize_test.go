@@ -67,10 +67,10 @@ func TestNormalizeFileKeepsWhitespaceInsideALiteral(t *testing.T) {
 // TestNormalizeFileDropsWhitespaceOutsideALiteral is the other half of the
 // rule, and it is the half that keeps the tool quiet.
 //
-// Whitespace between tokens cannot be part of a value, so it goes away. If it
-// did not, every reindent and every gofmt realignment would look like a
-// behaviour change, and the tool would ask for a test for a reformat - the
-// noise that teaches people to ignore it.
+// Whitespace between tokens goes away: outside a string literal the rule
+// reads it as formatting. If it did not, every reindent and every gofmt
+// realignment would look like a behaviour change, and the tool would ask
+// for a test for a reformat - the noise that teaches people to ignore it.
 func TestNormalizeFileDropsWhitespaceOutsideALiteral(t *testing.T) {
 	cases := []struct {
 		name string
