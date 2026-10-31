@@ -680,13 +680,16 @@ func (a *Auditor) auditRange(ctx context.Context, base, head string, res *Result
 	// is a real change and is judged below; this is only about changes
 	// that leave the code exactly as it was.
 	change, err := a.sourceChangeRange(ctx, base, head, res.SourceFiles)
-	if err == nil {
-		// How much the commit changed is what decides how loudly the
-		// report says things about it. It is recorded here, once, so
-		// that every path out of this function can use it - including
-		// the one that returns before the ordinary bookkeeping runs.
-		res.SourceChange = change
-	}
+	// How much the commit changed is what decides how loudly the report
+	// says things about it. It is recorded here, once, so that every path
+	// out of this function can use it - including the one that returns
+	// before the ordinary bookkeeping runs.
+	//
+	// It is recorded even when the file-level measurement failed. "We
+	// could not read the file" is not "the file did not change", and a
+	// finding that says "the largest of them changed 0 lines" next to a
+	// behaviour change would be a number nobody earned.
+	res.SourceChange = change
 	if err == nil && change.cosmetic {
 		res.Verdict = VerdictNotApplicable
 		res.Findings = append(res.Findings, core.Finding{

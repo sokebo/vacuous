@@ -479,6 +479,42 @@ func TestAuditLeavesACommentAloneInsideAFileWithARawString(t *testing.T) {
 	}
 }
 
+// TestAuditDoesNotExcuseAFileItCouldNotRead is the rule about the reader's
+// own limits, end to end.
+//
+// The file holds a quote that never closes, so the tool cannot tell which
+// bytes are inside a string literal and which are outside it. The commit
+// changes whitespace in front of that quote.
+//
+// The old rule read the rest of the file as one long literal, found the two
+// sides identical, and said the change altered nothing - a sentence with no
+// way out, about a file it had not read.
+//
+// The tool must not say that. It cannot say the change is cosmetic either,
+// because it does not know what the file means. What it can do is judge the
+// change by the experiment, and say what the experiment found.
+func TestAuditDoesNotExcuseAFileItCouldNotRead(t *testing.T) {
+	m := testfixtures.UnreadableSourceFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	for _, f := range res.Findings {
+		if strings.Contains(f.Summary, "did not alter the behavior") {
+			t.Fatalf("a file the tool could not read was called cosmetic: %+v", f)
+		}
+	}
+	if res.Verdict == VerdictNotApplicable {
+		t.Fatalf("a change in a file the tool could not read was left alone\nfindings: %+v", res.Findings)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatal("the change was judged by nothing at all: no finding and no answer")
+	}
+}
+
 // TestAuditSaysSoWhenTheCommitChangedCodeItCannotRun proves the tool does
 // not file a code change it cannot judge under "nothing to judge".
 //
