@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **106 bugs the tool had in itself** that dogfooding uncovered.
+the **107 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -70,6 +70,7 @@ in the tables below are the record of that run.
 | [19-bugs-3.104.md](./19-bugs-3.104.md) | Tool bug 3.104 — the report's base revision was not verified, and a file on disk could have been reported as a commit |
 | [20-bugs-3.105.md](./20-bugs-3.105.md) | Tool bug 3.105 — the rule about rooted paths was fixed in one place and missed in three others |
 | [21-bugs-3.106.md](./21-bugs-3.106.md) | Tool bug 3.106 — the gate kept its own copy of two rules the checker had already changed |
+| [22-bugs-3.107.md](./22-bugs-3.107.md) | Tool bug 3.107 — the rule read the wording of an error, and the wording is the platform's: on Windows the audit half of the tool did not work at all |
 
 ---
 
@@ -103,7 +104,7 @@ history is public anyway.
 
 ## The catalog
 
-106 entries. The number in front is a stable identifier: it is referenced from
+107 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
 The log was written over many rounds, and three of its numbers were used
@@ -221,6 +222,7 @@ themselves.
 | **3.104** | The report's base revision was not verified — a file on disk could have been reported as a commit | Report |
 | **3.105** | The rule about rooted paths was fixed in one place and missed in three others — and the finding named a path that cannot exist | Static detection |
 | **3.106** | The gate kept its own copy of two rules the checker had already changed — on Windows it was blind to a native guard | Gate / static detection |
+| **3.107** | The rule read the wording of an error — on Windows the audit half of the tool produced no witness for any commit | Go adapter |
 
 ---
 
@@ -238,9 +240,12 @@ distributed. They cluster in three places:
   here as well: the rule about rooted paths was written down and then asked in
   only one of the four places that had to ask it. 3.106 is the same shape one
   level out: both of those rules existed twice — once in the checker and once
-  in the gate — and the gate's copy was the older one.
+  in the gate — and the gate's copy was the older one. 3.107 is the same
+  shape once more: the rule that decides whether a nested module holds the
+  packages a pattern names was decided by reading the wording of `go list`'s
+  error, and the wording belongs to the platform.
 - **Places where "I could not tell" was dressed up as an answer** — 3.1, 3.13,
-  3.33, 3.41, 3.43, 3.55, 3.60, 3.81, 3.98, 3.100, 3.103, 3.104, 3.106. This is the cluster that matters
+  3.33, 3.41, 3.43, 3.55, 3.60, 3.81, 3.98, 3.100, 3.103, 3.104, 3.106, 3.107. This is the cluster that matters
   most, because those are the bugs that produce confident, specific, wrong
   accusations. 3.98 belongs here in its own way: an empty report's sentinel
   severity was read as a finding, and the run accused the repository of
@@ -252,7 +257,10 @@ distributed. They cluster in three places:
   in the smallest way there is: the report carried the name of a file on
   disk in the field that exists to carry a commit id. 3.106 belongs here in
   the gate's direction: the gate could not see a native guard, so it reported
-  NO CHANGE at the exact moment the checker's conclusion moved.
+  NO CHANGE at the exact moment the checker's conclusion moved. 3.107 belongs
+  here in the loudest way there is: on Windows the audit produced **no
+  witness at all** for any commit, and dressed that up as `environment` — the
+  environment, rather than the platform the rule was written for.
 - **Places where the scope of the evidence was not pinned** — 3.68, 3.70, 3.19,
   3.9, 3.10. The conclusion depended on something the repository does not
   contain.
