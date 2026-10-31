@@ -18,10 +18,19 @@ import (
 // reading.
 //
 // The test is deliberately conservative. A change is called cosmetic only
-// when the code it leaves behind is character-for-character the same once
-// comments and whitespace are removed. Anything else counts as a real
-// change, because missing a real finding is far worse than reporting a
-// cosmetic one.
+// when the code it leaves behind is the same once comments are removed and
+// the whitespace that cannot be part of a value is removed too. Anything
+// else counts as a real change, because missing a real finding is far worse
+// than reporting a cosmetic one.
+//
+// The whitespace rule is the sharp edge of that. Whitespace is formatting
+// where the language says whitespace cannot be part of a value, and it is
+// data everywhere else: "a b" and "ab" are different strings, and the
+// indentation inside a template is part of what the template produces. So
+// the reduction keeps the string literals exactly as they are, and it has to
+// read the file to do that - a line inside a literal that opened earlier
+// looks like ordinary code until you know the literal opened before it.
+// That is what measureFiles is for.
 
 // sourceChange summarises what a commit did to its source files.
 type sourceChange struct {
@@ -74,11 +83,79 @@ func (a *Auditor) sourceChangeRange(ctx context.Context, base, head string, file
 			biggest = n
 		}
 	}
-	return sourceChange{
+	change := sourceChange{
 		cosmetic:    removed == added,
 		lines:       lines,
 		biggestFile: biggest,
-	}, nil
+	}
+
+	// The diff says the two sides are the same code. That is a reading of
+	// the changed lines, and a reading of changed lines cannot see a
+	// literal that opened twenty lines earlier: every line of a raw string
+	// looks like ordinary code until you know the string opened before it.
+	//
+	// So when the diff says "the same", the files themselves are asked.
+	// A template, an embedded query or a raw string is exactly where the
+	// two answers come apart, and the answer that decides the verdict has
+	// to be the exact one.
+	if change.cosmetic {
+		same, size, err := a.measureFiles(ctx, base, head, files)
+		if err != nil {
+			// "Could not tell" is not "the same". The caller treats an
+			// error as "no cosmetic claim", which is the only safe
+			// direction: a claim that no behaviour changed is a claim
+			// that there is nothing to test.
+			return sourceChange{}, err
+		}
+		change.cosmetic = same
+		if size > change.biggestFile {
+			change.biggestFile = size
+		}
+	}
+	return change, nil
+}
+
+// measureFiles reads the changed files at both ends of the range and
+// reports whether they hold the same behaviour, and how many lines really
+// changed.
+//
+// The answer comes from the files, not from the diff, because the diff
+// reads each changed line on its own. A line inside a literal is data
+// wherever it sits, and only the file knows where the literal began.
+//
+// The size is the multiset difference of the two sides' normalized lines,
+// measured the same way the diff measures it - so a line that moved counts
+// zero, and a line that was rewritten counts two.
+func (a *Auditor) measureFiles(ctx context.Context, base, head string, files []core.FileChange) (bool, int, error) {
+	same := true
+	biggest := 0
+	for _, f := range files {
+		before, err := a.repo.FileAt(ctx, base, pathBefore(f))
+		if err != nil {
+			return false, 0, err
+		}
+		after, err := a.repo.FileAt(ctx, head, f.Path)
+		if err != nil {
+			return false, 0, err
+		}
+		beforeWhole, beforeLines := normalizeFile(before)
+		afterWhole, afterLines := normalizeFile(after)
+		if beforeWhole != afterWhole {
+			same = false
+		}
+		if n := multisetDifference(beforeLines, afterLines) + multisetDifference(afterLines, beforeLines); n > biggest {
+			biggest = n
+		}
+	}
+	return same, biggest, nil
+}
+
+// pathBefore is where a file lived before the change. A rename has two.
+func pathBefore(f core.FileChange) string {
+	if f.OldPath != "" {
+		return f.OldPath
+	}
+	return f.Path
 }
 
 // semanticChangePerFile counts, for each file in a unified diff, how many
@@ -117,11 +194,11 @@ func semanticChangePerFile(patch string) map[string]int {
 			}
 			continue
 		case strings.HasPrefix(line, "-"):
-			if code := normalizeCode(line[1:]); code != "" {
+			if code := normalizeLine(line[1:]); code != "" {
 				removed[file] = append(removed[file], code)
 			}
 		case strings.HasPrefix(line, "+"):
-			if code := normalizeCode(line[1:]); code != "" {
+			if code := normalizeLine(line[1:]); code != "" {
 				added[file] = append(added[file], code)
 			}
 		}
@@ -183,74 +260,17 @@ func splitPatch(patch string) (removed, added string, lines int, perFile map[str
 			}
 			continue
 		case strings.HasPrefix(line, "-"):
-			r.WriteString(normalizeCode(line[1:]))
+			r.WriteString(normalizeLine(line[1:]))
 			lines++
 			perFile[file]++
 		case strings.HasPrefix(line, "+"):
-			a.WriteString(normalizeCode(line[1:]))
+			a.WriteString(normalizeLine(line[1:]))
 			lines++
 			perFile[file]++
 		}
 	}
 
 	return r.String(), a.String(), lines, perFile
-}
-
-// normalizeCode reduces a source line to the code it contains: no comments,
-// no whitespace. Two lines with the same normalized form are the same code.
-func normalizeCode(line string) string {
-	return strings.Join(strings.Fields(stripComment(line)), "")
-}
-
-// stripComment removes a trailing comment from a line of code.
-//
-// The rules are chosen to be safe rather than clever:
-//
-//   - A "//" comment is removed only when it is not inside a string, so a
-//     URL like "http://example.com" does not lose half of itself.
-//   - A "#" comment is removed only when the whole line is a comment.
-//     Trailing "#" comments in Python or shell are left in place: leaving
-//     them in can only make a change look bigger than it is, never smaller.
-//
-// Getting this wrong in the "hide a real change" direction would lose a
-// finding. So every rule here errs towards keeping the text.
-func stripComment(line string) string {
-	if i := indexOfLineComment(line); i >= 0 {
-		line = line[:i]
-	}
-	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "#") {
-		return ""
-	}
-	return line
-}
-
-// indexOfLineComment returns the index of a "//" comment that is not inside a
-// string literal, or -1 when there is none.
-func indexOfLineComment(line string) int {
-	var quote byte
-	escaped := false
-
-	for i := 0; i < len(line); i++ {
-		c := line[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		switch {
-		case c == '\\':
-			escaped = true
-		case quote != 0:
-			if c == quote {
-				quote = 0
-			}
-		case c == '"' || c == '\'' || c == '`':
-			quote = c
-		case c == '/' && i+1 < len(line) && line[i+1] == '/':
-			return i
-		}
-	}
-	return -1
 }
 
 // removedFuncNames lists the functions a patch removes.

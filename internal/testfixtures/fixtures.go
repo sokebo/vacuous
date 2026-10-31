@@ -623,6 +623,63 @@ func Greet(name string) string {
 	return m
 }
 
+// TemplateWhitespaceFixture builds the case where the whitespace is the
+// change.
+//
+// The file holds a template: a raw string whose indentation is part of what
+// the program produces. The second commit reindents one line of it and
+// changes nothing else.
+//
+// The change is real - the output of the template changes - and the only
+// way to see that is to read the file. On its own, the changed line looks
+// like ordinary code, and a reading that compares lines one at a time calls
+// it a reindent.
+//
+// The test in the tree is deliberately blind to the change: it checks that
+// the render produced something, not what it produced. That is what makes
+// the second commit's verdict a question with an answer - the answer is
+// "nothing in the repository is watching this", and it is backed by an
+// experiment rather than by an assumption.
+func TemplateWhitespaceFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/template")
+	m.Write(t, "render.go", `package fixture
+
+import "fmt"
+
+// Render produces the report body.
+func Render(name string) string {
+	return fmt.Sprintf(`+"`"+`
+  <p>hello, %s</p>
+`+"`"+`, name)
+}
+`)
+	m.Write(t, "render_test.go", `package fixture
+
+import "testing"
+
+func TestRenderProducesSomething(t *testing.T) {
+	if Render("bob") == "" {
+		t.Fatal("Render returned nothing")
+	}
+}
+`)
+	m.Init(t)
+	m.Write(t, "render.go", `package fixture
+
+import "fmt"
+
+// Render produces the report body.
+func Render(name string) string {
+	return fmt.Sprintf(`+"`"+`
+    <p>hello, %s</p>
+`+"`"+`, name)
+}
+`)
+	m.Commit(t, "style(ui): align the report template")
+	return m
+}
+
 // VetRejectedFixture builds the case the report used to get wrong.
 //
 // The first commit carries a file that COMPILES PERFECTLY WELL and is
