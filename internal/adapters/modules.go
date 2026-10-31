@@ -3,6 +3,7 @@ package adapters
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,10 +111,11 @@ func (g *Go) runInModules(ctx context.Context, plan core.Plan) (core.RunResult, 
 			continue
 		}
 		// A pattern that names packages in the root module says nothing
-		// about the others. Running it there produces "matched no
-		// packages" - an error this tool caused itself, which would then
-		// be read as "the checkout was incomplete" and drown out the
-		// verdict the root module did produce.
+		// about the others. Handing it to a module that does not have
+		// those packages would produce an error this tool caused itself,
+		// which would then be read as "the checkout was incomplete" and
+		// drown out the verdict the root module did produce. So that
+		// module is skipped.
 		if !g.moduleHasScope(ctx, dir, plan.PkgPattern) {
 			continue
 		}
@@ -132,9 +134,27 @@ func (g *Go) runInModules(ctx context.Context, plan core.Plan) (core.RunResult, 
 // packages the pattern names.
 //
 // The pattern is relative to the module it was computed for. In a module
-// that holds none of those packages, go fails with "lstat ...: no such file
-// or directory" - which says nothing about the code under review, only
-// that the pattern does not apply here.
+// that holds none of those packages, the pattern does not resolve - and
+// running the suite there anyway produces an error this tool caused
+// itself, which would then be read as "the checkout was incomplete" and
+// drown out the verdict the root module did produce.
+//
+// ★ The answer is read from the LIST of packages, not from the wording of
+// an error. The wording is the platform's: POSIX says "no such file or
+// directory", Windows says "GetFileAttributesEx ...: The system cannot
+// find the file specified" - and a rule that reads the error text is a
+// rule that changes with the platform.
+//
+// The change is not a detail. The old check missed on Windows, so every
+// nested module ran with a pattern that does not apply to it, the error
+// that came back was merged into the result as a build error, and the
+// BASELINE looked like it did not compile. Every audit of a repository
+// with nested Go modules then answered "I could not tell" - not about the
+// code under review, but about the platform the tool was running on.
+//
+// "go list -e" is what makes the answer a list: with -e the command
+// succeeds even when the pattern matches nothing, so the question is
+// "which packages came back", and that is the same question everywhere.
 //
 // Any other failure is left alone: a module whose own go.mod is broken is
 // a real problem, and the run that follows will say so.
@@ -144,19 +164,61 @@ func (g *Go) moduleHasScope(ctx context.Context, dir, pattern string) bool {
 		// No narrowing: every module runs the whole suite.
 		return true
 	}
-	args := append([]string{"list"}, fields...)
+	args := append([]string{"list", "-e", "-f", scopeListFormat}, fields...)
 	cmd := goCommand(ctx, dir, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
-		msg := stderr.String()
-		if strings.Contains(msg, "no such file or directory") ||
-			strings.Contains(msg, "matched no packages") {
-			return false
-		}
+		// The module cannot even be listed. That is its own problem, and
+		// the run that follows will say so.
 		return true
 	}
-	return true
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if isUnresolvedPattern(line, fields) {
+			// The pattern, echoed back because it matched nothing here.
+			continue
+		}
+		// A package this module really holds.
+		return true
+	}
+	return false
+}
+
+// scopeListFormat asks `go list` for the packages a pattern names.
+//
+// "-e" makes the command succeed even when the pattern matches nothing, so
+// the answer is the list rather than the wording of an error - and the
+// wording is the platform's.
+const scopeListFormat = "{{.ImportPath}}"
+
+// isUnresolvedPattern reports whether a line of `go list -e` output is a
+// pattern that matched nothing, rather than a package this module holds.
+//
+// Two signals, and neither of them is a shape test on the package name:
+//
+//   - the line is one of the patterns that were asked for, echoed back.
+//     `go list` repeats a pattern it could not resolve exactly as it was
+//     written - measured, for a single pattern and for several at once.
+//   - the line is relative, and an import path never is.
+//
+// The "..." test that used to be here was wrong. A package in a directory
+// named "a...b" has an import path that contains "...", and the test
+// mistook that package for an echo - and skipped a module that really
+// holds the package, so its suite never ran and its breakage was never
+// reported.
+func isUnresolvedPattern(line string, fields []string) bool {
+	for _, f := range fields {
+		if line == f {
+			return true
+		}
+	}
+	return strings.HasPrefix(line, "./") ||
+		strings.HasPrefix(line, "../")
 }
 
 // mergeRunResult folds one module's result into the merged one.
