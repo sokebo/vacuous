@@ -70,7 +70,7 @@ in the tables below are the record of that run.
 | [19-bugs-3.104.md](./19-bugs-3.104.md) | Tool bug 3.104 — the report's base revision was not verified, and a file on disk could have been reported as a commit |
 | [20-bugs-3.105.md](./20-bugs-3.105.md) | Tool bug 3.105 — the rule about rooted paths was fixed in one place and missed in three others |
 | [21-bugs-3.106.md](./21-bugs-3.106.md) | Tool bug 3.106 — the gate kept its own copy of two rules the checker had already changed |
-| [22-bugs-3.107.md](./22-bugs-3.107.md) | Tool bug 3.107 — the rule read the wording of an error, and the wording is the platform's: on Windows the audit produced no witness at all |
+| [22-bugs-3.107.md](./22-bugs-3.107.md) | Tool bug 3.107 — the rule read the wording of an error, and the wording is the platform's: on Windows the audit produced no witness for any narrowed commit in a repository with nested Go modules |
 
 ---
 
@@ -222,7 +222,7 @@ themselves.
 | **3.104** | The report's base revision was not verified — a file on disk could have been reported as a commit | Report |
 | **3.105** | The rule about rooted paths was fixed in one place and missed in three others — and the finding named a path that cannot exist | Static detection |
 | **3.106** | The gate kept its own copy of two rules the checker had already changed — on Windows it was blind to a native guard | Gate / static detection |
-| **3.107** | The rule read the wording of an error — on Windows the audit produced no witness for any commit that shipped a test | Go adapter |
+| **3.107** | The rule read the wording of an error — on Windows the audit produced no witness for any narrowed commit in a repository with nested modules | Go adapter |
 
 ---
 
@@ -259,9 +259,10 @@ distributed. They cluster in three places:
   the gate's direction: the gate could not see a native guard, so it reported
   NO CHANGE at the exact moment the checker's conclusion moved. 3.107 belongs
   here in the loudest way there is: on Windows the audit produced **no
-  witness at all** for any commit that shipped a test, in any repository that
-  holds nested Go modules, and dressed that up as `environment` — the
-  environment, rather than the platform the rule was written for.
+  witness at all** for any commit that shipped a test and whose scope
+  narrowed to a package, in any repository that holds nested Go modules, and
+  dressed that up as `environment` — the environment, rather than the
+  platform the rule was written for.
 - **Places where the scope of the evidence was not pinned** — 3.68, 3.70, 3.19,
   3.9, 3.10. The conclusion depended on something the repository does not
   contain.

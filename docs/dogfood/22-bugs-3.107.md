@@ -108,8 +108,8 @@ separated. What changes is that the tool can now **say which five tests watch
 the change**, and name the two that were already red.
 
 ★ **What this does not affect** — measured, because a blast radius that is
-wrong is a claim that was not earned. Two preconditions have to hold, and
-neither holds in every repository:
+wrong is a claim that was not earned. Three preconditions have to hold, and
+none of them holds in every repository:
 
 - *The repository must hold a nested Go module.* `findModuleRoots` skips the
   root module itself, so a repository with one module and no nested ones has
@@ -126,11 +126,19 @@ neither holds in every repository:
 - *The commit must have shipped a test of its own.* When it did not, the
   engine empties the pattern for it (`internal/counterfactual/audit.go`), so
   every module runs the whole suite and the rule is never asked.
+- *The scope must actually narrow to a package.* `packagesForFiles` skips
+  `vendor`, `node_modules`, `dist`, `build`, `examples` and `testdata`, and
+  skips any directory that holds no Go file — so a commit whose changed
+  files all live in one of those gets an **empty** pattern. With an empty
+  pattern the rule is never asked either: `moduleHasScope` returns at its
+  first branch, before any `go list` runs. Measured on such a commit, the
+  audit's test command is `go test -json -count=1 ./...` — no narrowing at
+  all — and the old and the new binary answer it identically.
 
 ★ What is left is: every repository with nested Go modules — this one holds
-five — auditing every commit that shipped a test. That is still a large
-slice of the Go world, and on that slice the tool answered "I could not tell"
-about everything.
+five — auditing every commit that shipped a test **and whose scope narrowed
+to a package**. That is still a large slice of the Go world, and on that
+slice the tool answered "I could not tell" about everything.
 
 **The fix**: ask `go list` for the **list** of packages, and read the answer
 instead of the wording of an error.
@@ -150,17 +158,28 @@ Measured, same fixture:
 ./internal/detect/...
 ```
 
-★ The pattern comes back **as it was written** when it resolved to nothing,
-and a real package comes back as an **import path**. That is the whole
-discriminator, and it is a property of the answer rather than of the
-platform's phrasing.
+★ The pattern comes back **as it was written** when it resolved to nothing
+(for the patterns this tool produces), and a real package comes back as an
+**import path**. That is the whole discriminator, and it is a property of the
+answer rather than of the platform's phrasing.
 
-★ The echo is **verbatim** — measured for a single pattern and for several at
-once (`./internal/core/... ./internal/detect/...` comes back as exactly those
-two lines). So the rule compares each line against the patterns that were
-asked for, and treats a line as an echo when it equals one of them. The
-second signal is that the line is **relative**: an import path never starts
-with `./` or `../`.
+★ The echo is **verbatim for the patterns the tool produces** — measured for
+a single pattern and for several at once (`./internal/core/... ./internal/detect/...`
+comes back as exactly those two lines) — but `go list` normalises in general,
+and the second signal exists for that reason:
+
+```
+./internal/nope/...          →  ./internal/nope/...     (verbatim)
+./internal/nope/             →  ./internal/nope          (trailing slash dropped)
+././internal/nope/...        →  ./internal/nope/...      (redundant ./ collapsed)
+./internal/../internal/...   →  ./internal/...           (.. cleaned)
+```
+
+★ So the rule uses **two** signals, and neither of them is a shape test on
+the package name: the line equals one of the patterns that were asked for, or
+the line is relative — and an import path never is. A normalised echo does
+not equal the field it came from, so the first signal alone would read it as
+a package and bug 3.107 would come back in that shape.
 
 ★ **The first version of this fix used a shape test and it was wrong** — and
 the review caught it, which is why it is written down here. The shape test
@@ -230,10 +249,13 @@ no verdict.
   one-module repository takes.
 - `TestAPackageWhoseImportPathHoldsDotsClaimsTheScope` — the package whose
   import path contains `...`, which is the case the shape test got wrong.
+- `TestANormalisedPatternIsStillAPattern` — the relative half of the rule,
+  on its own.
+- `TestThePatternItselfIsAPattern` — the exact half of the rule, on its own.
 
 ★ `internal/adapters` fails 15 tests on this platform, before and after the
 fix, with the **same 15 names** — measured on `main` and on this branch. None
-of them is one of the four above, and the fix adds no failure.
+of them is one of the six above, and the fix adds no failure.
 
 ★ And the repository already held the negative control for this bug — and it
 was **red on Windows**. `internal/counterfactual/audit_test.go` says:
@@ -265,10 +287,12 @@ failing tests to three. The bug had a negative control in the repository all
 along — it was the *control* that was platform-bound, and the same platform
 that made it red made it useless.
 
-**Negative control**, two of them, both measured on Windows:
+**Negative control**, four of them, all measured on Windows. Each one puts
+back exactly one wrong version of the rule, and each one makes exactly one
+test red.
 
 *Putting the error-text check back* — the exact five lines of the old
-implementation — makes exactly one of the four tests red:
+implementation — makes exactly one of the six tests red:
 
 ```
 --- FAIL: TestAModuleWithoutThePackagesDoesNotClaimTheScope (0.06s)
@@ -276,7 +300,7 @@ implementation — makes exactly one of the four tests red:
       running the pattern there produces an error this tool caused itself
 ```
 
-★ The other three stay green, and that is the point of the second one: it
+★ The other five stay green, and that is the point of the second one: it
 pins the fix to the **right** answer rather than to "not the old answer".
 
 *Putting the shape test back* — the `...` in it — makes exactly one red, and
@@ -287,6 +311,30 @@ it is the other one:
     modules_test.go:91: a module that holds the package must claim the scope:
       an import path may contain dots, and a package is not an echo
 ```
+
+*Dropping the exact comparison* — leaving only the relative test — makes
+exactly one red:
+
+```
+--- FAIL: TestThePatternItselfIsAPattern (0.00s)
+    modules_test.go:142: the pattern that was asked for is not a package
+```
+
+*Dropping the relative fallback* — leaving only the exact comparison — makes
+exactly one red:
+
+```
+--- FAIL: TestANormalisedPatternIsStillAPattern (0.00s)
+    modules_test.go:123: a relative line is a pattern, not a package: "./internal/nope" against [./internal/nope/]
+    modules_test.go:123: a relative line is a pattern, not a package: "./internal/nope/..." against [././internal/nope/...]
+    modules_test.go:123: a relative line is a pattern, not a package: "./internal/nope/..." against [./internal/../internal/nope/...]
+```
+
+★ The last two were added because the review asked a question the rule could
+not answer: is the relative fallback still needed, given the exact
+comparison? Yes — and before these two tests, **nothing pinned it**. A signal
+inside a rule that no control can catch is the shape of 3.106: the rule
+existed, and nothing stopped it from changing.
 
 ---
 
@@ -303,8 +351,9 @@ module holds a package.
 guard. 3.105 named a directory that does not exist. This one turned off the
 **audit** — the half of the tool that answers "is this fix watched" — on one
 platform, for every repository with nested Go modules, for every commit that
-shipped a test. A tool that cannot say "I could not tell" honestly is a tool
-that says "I could not tell" as `environment`.
+shipped a test and whose scope narrowed to a package. A tool that cannot say
+"I could not tell" honestly is a tool that says "I could not tell" as
+`environment`.
 
 ★ And the fix is the same shape as 3.106's: **ask the thing that has one
 answer everywhere.** `go list -e` answers "which packages did the pattern
@@ -328,3 +377,14 @@ the POSIX wording is classified as an environment failure, the Windows
 wording is not). That is the same defect with a different question attached,
 it is pre-existing, and it belongs in its own entry — `CONTRIBUTING.md` asks
 for one change at a time.
+
+★ And one more neighbour is **not** fixed here either, and it is closer: a
+nested Go module whose packages hold **no test files** poisons the merged
+baseline. `go test -json ./...` in such a module emits a package-level
+`"Action":"skip"` and no test records, and the adapter reads that as "go
+test reported no test cases" — a build error, merged into the baseline, so
+the report says *"the baseline (the same commit, with the fix in place) does
+not compile"*. The code compiles fine; the module simply has no tests. It is
+the same shape as 3.107 — a nested module's own result drowning out the root
+module's verdict — but a different cause, pre-existing, and it needs its own
+entry.
