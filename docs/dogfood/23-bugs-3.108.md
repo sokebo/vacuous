@@ -122,7 +122,8 @@ that had already thrown the answer away.
 *The reduction* (`internal/counterfactual/normalize.go`). A new scanner walks
 the source once and keeps everything that can be data:
 
-- comments go — a comment has no behaviour;
+- comments go — a `//` comment wherever it starts, a `#` comment only when it
+  starts the line; a comment has no behaviour;
 - whitespace goes — but only **outside** a string literal;
 - a string literal is kept **exactly as it is**, whitespace and all.
 
@@ -230,6 +231,10 @@ severity, no finding kind. The verdict vocabulary is unchanged.
   `testfixtures.CommentInTemplateFixture`) — the wording of the cosmetic
   finding, pinned: it must not claim more than the rule does, and it must
   name the blind spot rather than hide it.
+- `TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead` (fixture
+  `testfixtures.SizeOnUnreadableFixture`) — the size that survives a failed
+  measurement: it has to be the number the diff measured, and not a zero
+  nobody earned.
 
 ★ The end-to-end test pins the **right** answer, not merely "not the old
 one". After the fix the tool answers:
@@ -284,22 +289,36 @@ this branch: adapters 15 · counterfactual 3 · dogfood/gate 2
 
 None of them is one of the tests above, and the fix adds no failure.
 
-**Negative control**, three of them here and a fourth below, each one putting
-back exactly one wrong version of the rule, and each one measured.
+**Negative control**, eight of them — four here and four in the review section
+below — each one putting back exactly one wrong version of the rule, and each
+one measured on the tree this entry ends on.
 
 *Taking the files out of the decision* — the diff-level reading alone, with
-the file-level confirmation switched off — makes exactly one test red, and it
-is the end-to-end one, reporting the old sentence:
+the file-level confirmation switched off — makes three tests red, and all
+three are about the file-level confirmation being load-bearing:
 
 ```
---- FAIL: TestAuditSeesAWhitespaceChangeInsideATemplate (0.73s)
+--- FAIL: TestAuditSeesAWhitespaceChangeInsideATemplate (0.59s)
     audit_test.go:432: a change inside a template was called cosmetic:
     {Kind:no-test-for-fix Severity:info Summary:This change did not alter
      the behavior of the code — it needs no new test
+--- FAIL: TestAuditDoesNotExcuseAFileItCouldNotRead (0.60s)
+    audit_test.go:507: a file the tool could not read was called cosmetic:
+    {Kind:no-test-for-fix Severity:info Summary:This change did not alter
+     the behavior of the code — it needs no new test
+--- FAIL: TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead (0.60s)
+    audit_test.go:541: a change in a file the tool could not read was left alone
 ```
 
-★ The other five stay green, and that is the point of the second one: it
-pins the fix to the **right** answer rather than to "not the old answer".
+★ ★ The second and the third are the tests the review rounds added, and they
+go red for the same reason the first one does: without the file-level
+confirmation, the tool believes the two sides are the same.
+
+★ ★ This list was measured before those two tests existed, and the second
+review caught it: a list of what goes red is only worth what the tree it was
+measured on is worth. **Every control in this volume was measured again on
+the tree this entry ends on**, and two of the lists came out different — see
+the third one below, which turned over completely.
 
 *Stripping the whitespace inside the literals again* — the old lossy
 reduction, applied to the literal's content as well — makes the rule's own
@@ -327,10 +346,11 @@ tests red and the end-to-end test with them:
 
 *Letting a literal close only on its own line* — the cross-line state
 removed, which is the mechanism that makes a raw string visible at all —
-makes exactly the cross-line tests red:
+makes five tests red:
 
 ```
---- FAIL: TestAuditSeesAWhitespaceChangeInsideATemplate (0.67s)
+--- FAIL: TestAuditLeavesACommentAloneInsideAFileWithARawString (1.94s)
+--- FAIL: TestAuditSaysWhatItsReadingActuallyRemoves (1.85s)
 --- FAIL: TestNormalizeFileKeepsWhitespaceInsideALiteral (0.00s)
     --- FAIL: .../indentation_inside_a_raw_string
 --- FAIL: TestNormalizeFileSeesALiteralThatSpansLines (0.00s)
@@ -338,8 +358,25 @@ makes exactly the cross-line tests red:
     --- FAIL: .../an_indentation_inside_a_raw_string
 ```
 
-★ The single-line literal tests stay green, so the cross-line state is
-pinned by a control of its own and not by accident of the first one.
+★ ★ This list **turned over** when the rule learned to say "I could not read
+this file". It used to be four tests, and the end-to-end one for the template
+was among them; today that one is **green** and the two "a comment inside a
+file with a template" ones are red instead. The mechanism is worth writing
+down, because it is the difference between a rule and a habit:
+
+- A cross-line literal that stops being a literal leaves the raw string's
+  **closing** backtick dangling — and that backtick now opens a literal that
+  never closes.
+- So the file cannot be read, the file-level measurement refuses to conclude,
+  and the change is judged by the experiment instead of being called
+  cosmetic.
+- The end-to-end test for the template asserts that the change is **not**
+  cosmetic — and it no longer is, so it is green.
+- The two tests that assert a comment-only change **is** left alone now fail:
+  the change is no longer left alone, because the file cannot be read.
+
+★ The single-line literal tests stay green, so the cross-line state is pinned
+by a control of its own and not by accident of the first one.
 
 ★ **A fourth control, added by the review.** The three above pin the rule
 about the whitespace. The rule has a second half — the comments — and that
@@ -477,14 +514,17 @@ looked at.
 not an answer.** The scanner now says "I could not read this file", the
 file-level measurement returns an error, and the change is judged by the
 experiment instead of being excused. The control for it — reading an open
-quote as a closed one, which is what the rule did before — makes exactly the
-two tests of this half red:
+quote as a closed one, which is what the rule did before — makes three tests
+red, and the third one is the size test the second review asked for:
 
 ```
---- FAIL: TestAuditDoesNotExcuseAFileItCouldNotRead (0.68s)
-    a file the tool could not read was called cosmetic:
+--- FAIL: TestAuditDoesNotExcuseAFileItCouldNotRead (0.74s)
+    audit_test.go:507: a file the tool could not read was called cosmetic:
     {Kind:no-test-for-fix Severity:info Summary:This change did not alter
      the behavior of the code — it needs no new test}
+--- FAIL: TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead (0.88s)
+    audit_test.go:544: the report does not stand on the size the diff
+    measured (want 1): {cosmetic:false lines:3 biggestFile:2}
 --- FAIL: TestNormalizeFileSaysWhenItCouldNotReadTheFile (0.00s)
     --- FAIL: .../a_backtick_that_never_closes
     --- FAIL: .../a_triple_quote_that_never_closes
@@ -495,12 +535,81 @@ two tests of this half red:
 that says "the largest of them changed 0 lines" next to a behaviour change
 would be a number nobody earned.
 
+★ ★ And that number is not only a number in a report — it decides three
+things, and the second review pointed out that the first round had written
+none of them down:
+
+```
+audit.go:2116   "The change is small and nothing is watching it" (≤ 2 lines)
+audit.go:2584   the severity of noTestAtAllFinding
+audit.go:2618   changeSeverity (≥ 10 lines → high)
+```
+
+So on the path where a file could not be read, those three findings now say
+what the diff measured, instead of saying "0 lines" — which is a number
+nobody earned, standing next to a sentence about behaviour. It is pinned by a
+test of its own now
+(`TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead`), and the
+control for it is the eighth one below.
+
 **5. The Rust lifetime is read as the start of a string — and it is left
 alone.** `fn f<'a, 'b>(x: T)`: the first `'` pairs with the second one, and
 the whitespace between them is kept as data. The change is noise, the other
 direction. It is not fixed here on purpose: this repository has no Rust
 adapter, and tightening the `'` rule would break the Python strings the rule
 does handle. It is in the neighbours list with its measurement.
+
+★ **The eighth control** — the one the second review asked for, because the
+change it pins had none. Recording the size only when the measurement
+succeeded — which is what the code did before — makes exactly one test red,
+and it is the size test:
+
+```
+--- FAIL: TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead (0.84s)
+    audit_test.go:544: the report does not stand on the size the diff
+    measured (want 1): {cosmetic:false lines:0 biggestFile:0}
+```
+
+---
+
+### The second review of this entry
+
+★ The branch went through a second review before it was merged. It found four
+things, and one of the four was about this volume: **the list of what goes red
+under each negative control had been measured on an older tree and carried
+over**. A list of what goes red is only worth what the tree it was measured on
+is worth — so every control in this volume was measured again on the tree this
+entry ends on, and two of the lists came out different.
+
+**1. Two of the control lists had gone stale.** The first control's list
+claimed one red test; it is three now, because the two tests the review rounds
+added are red for the same reason. The third control's list **turned over
+completely**: the end-to-end test for the template is green today, and the two
+"a comment inside a file with a template" ones are red. The mechanism is
+written down next to that control — it is the same rule ("could not tell" is
+not "the same") turning a mutation that used to hide a change into one that
+makes the file unreadable. Both lists are corrected above.
+
+**2. The sentence this entry set out to kill was still alive in three more
+places.** The finding's own wording was narrowed in the first round; the same
+over-broad sentence was still in `docs/ARCHITECTURE.md`, in this volume's own
+description of the reduction, and in the comment at the top of the file the
+rule lives in — and one of them, `normalize.go`'s "whitespace that cannot be
+part of a value", was the exact claim about the language that this entry
+exists to stop making. All of them are narrowed now.
+
+**3. One stray quote in a comment makes a file permanently unreadable.** That
+is the noise direction, and it is the direct price of the rule above. It is
+written down as a neighbour below.
+
+**4. The size that survives a failed measurement had no test at all.** The
+second review found that the change was **zero-covered**, and that it can move
+the severity of three findings. It has a test now, and the control for it is
+the eighth one above.
+
+★ What the second review did **not** find: a problem with the three code
+fixes. It measured each of them on its own — the file that cannot be read, the
+two counts, the wording — and each one does what it says.
 
 ---
 
@@ -588,3 +697,29 @@ branch, and the measurement is what says which way it fails.
   That is **noise**, the other direction, and it is left alone on purpose:
   this repository has no Rust adapter, and tightening the `'` rule would
   break the Python strings this rule does handle.
+- **One stray quote in a comment makes the whole file unreadable — for good.**
+  The `#` rule removes a `#` comment only when the whole line is one, and a
+  *trailing* `#` comment is left in place, so its text is scanned as code. A
+  Python file with one unpaired backtick in a trailing comment therefore
+  cannot be read at all. Measured on this branch:
+
+  ```
+  PROBE|a trailing # comment with one backtick|complete=false
+  PROBE|a trailing # comment with two backticks|complete=true
+  PROBE|a whole-line # comment with one backtick|complete=true
+  PROBE|a // comment with one backtick|complete=true
+  ```
+
+  ★ And the price is measured too. The reduction still says the two sides are
+  the same — the whitespace it changed is outside the literal — but the file
+  cannot be read, so the tool refuses to conclude, and the change is judged
+  by the experiment:
+
+  ```
+  PROBE|whitespace change BEFORE the stray backtick|same=true|complete=false/false
+  ```
+
+  That is the **noise** direction — the direction this project tolerates on
+  purpose — and it is the direct price of "could not tell" is not "the same".
+  It is a neighbour, not a fix: telling a trailing comment apart from code is
+  a question about where a comment ends, and the answer is per language.
