@@ -729,6 +729,47 @@ func Render(name string) string {
 	return m
 }
 
+// UnreadableSourceFixture builds the case where the file cannot be read to
+// the end.
+//
+// The file holds a quote that never closes, so a reader cannot tell which
+// bytes are inside a string literal and which are outside it. The commit
+// changes whitespace in front of that quote - a change the line-at-a-time
+// reading calls a reindent, and that the old rule called a reindent too.
+//
+// The tool must not excuse the change on the strength of a reading it could
+// not make. "I could not read this file" is not "this changed nothing".
+//
+// The module does not compile - a raw string that never closes cannot - so
+// the experiment has no answer to give either. What it must not do is reach
+// the answer "nothing to test here".
+func UnreadableSourceFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/unreadable")
+	m.Write(t, "greet.go", `package fixture
+
+// Greet greets.
+func Greet() string {
+	return "hi"
+}
+`)
+	m.Write(t, "greet_test.go", `package fixture
+
+import "testing"
+
+func TestGreetSaysSomething(t *testing.T) {
+	if Greet() == "" {
+		t.Fatal("Greet returned nothing")
+	}
+}
+`)
+	m.Write(t, "template.go", "package fixture\n\nconst Template = `never closed\n")
+	m.Init(t)
+	m.Write(t, "template.go", "package fixture\n\nconst  Template = `never closed\n")
+	m.Commit(t, "style(ui): align the constant")
+	return m
+}
+
 // VetRejectedFixture builds the case the report used to get wrong.
 //
 // The first commit carries a file that COMPILES PERFECTLY WELL and is

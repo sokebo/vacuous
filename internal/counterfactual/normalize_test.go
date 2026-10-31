@@ -54,8 +54,8 @@ func TestNormalizeFileKeepsWhitespaceInsideALiteral(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			aWhole, _ := normalizeFile(c.a)
-			bWhole, _ := normalizeFile(c.b)
+			aWhole, _, _ := normalizeFile(c.a)
+			bWhole, _, _ := normalizeFile(c.b)
 			if aWhole == bWhole {
 				t.Errorf("two different values reduced to the same text:\n%q\n%q\ngot %q",
 					c.a, c.b, aWhole)
@@ -116,8 +116,8 @@ func TestNormalizeFileDropsWhitespaceOutsideALiteral(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			aWhole, _ := normalizeFile(c.a)
-			bWhole, _ := normalizeFile(c.b)
+			aWhole, _, _ := normalizeFile(c.a)
+			bWhole, _, _ := normalizeFile(c.b)
 			if aWhole != bWhole {
 				t.Errorf("the same code reduced to two different texts:\n%q\n%q\ngot %q and %q",
 					c.a, c.b, aWhole, bWhole)
@@ -137,15 +137,15 @@ func TestNormalizeFileSeesALiteralThatSpansLines(t *testing.T) {
 	base := "package fixture\n\nimport \"fmt\"\n\nfunc Render() string {\n\treturn fmt.Sprintf(`\n\t<p>hello</p>\n`, 1)\n}\n"
 	head := "package fixture\n\nimport \"fmt\"\n\nfunc Render() string {\n\treturn fmt.Sprintf(`\n\t\t<p>hello</p>\n`, 1)\n}\n"
 
-	baseWhole, _ := normalizeFile(base)
-	headWhole, _ := normalizeFile(head)
+	baseWhole, _, _ := normalizeFile(base)
+	headWhole, _, _ := normalizeFile(head)
 	if baseWhole == headWhole {
 		t.Error("a change inside a literal that spans lines reduced to the same text")
 	}
 
 	// And the other direction: the same file, unchanged, must reduce to
 	// the same text as itself.
-	again, _ := normalizeFile(base)
+	again, _, _ := normalizeFile(base)
 	if again != baseWhole {
 		t.Errorf("the same file reduced to two different texts:\n%q\n%q", baseWhole, again)
 	}
@@ -201,8 +201,8 @@ func TestNormalizeFileCountsTheLinesThatReallyChanged(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, aLines := normalizeFile(c.a)
-			_, bLines := normalizeFile(c.b)
+			_, aLines, _ := normalizeFile(c.a)
+			_, bLines, _ := normalizeFile(c.b)
 			got := multisetDifference(aLines, bLines) + multisetDifference(bLines, aLines)
 			if got != c.want {
 				t.Errorf("the change measured %d lines, want %d", got, c.want)
@@ -225,9 +225,77 @@ func TestNormalizeFileCountsTheLinesThatReallyChanged(t *testing.T) {
 func TestNormalizeFileDoesNotLetAQuoteSwallowTheFile(t *testing.T) {
 	a := "x = 1  # don't change this\ny = 2\n"
 	b := "x = 1  # don't change this\ny   =   2\n"
-	aWhole, _ := normalizeFile(a)
-	bWhole, _ := normalizeFile(b)
+	aWhole, _, _ := normalizeFile(a)
+	bWhole, _, _ := normalizeFile(b)
 	if aWhole != bWhole {
 		t.Errorf("a quote in a comment swallowed the file:\n%q\n%q", aWhole, bWhole)
 	}
+}
+
+// TestNormalizeFileSaysWhenItCouldNotReadTheFile is the rule about the
+// reader's own limits.
+//
+// A quote that never closes leaves the reader unable to tell which bytes are
+// inside a string literal and which are outside it. The old rule read the
+// rest of the file as one long literal and called that a reading - so a file
+// that cannot be parsed produced a confident answer, and the answer was
+// about bytes nobody had looked at.
+//
+// The honest answer is "I could not read this", and it has to be an answer
+// the caller can act on: the tool must not conclude "the same" about a file
+// it could not get through.
+//
+// A quote that cannot span lines - a plain " or ', left unclosed - is not in
+// this case. Those are ordinary text, and the file is read as usual.
+func TestNormalizeFileSaysWhenItCouldNotReadTheFile(t *testing.T) {
+	cases := []struct {
+		name         string
+		text         string
+		wantComplete bool
+	}{
+		{
+			name:         "a backtick that never closes",
+			text:         "x := `abc\ny := 2\n",
+			wantComplete: false,
+		},
+		{
+			name:         "a triple quote that never closes",
+			text:         "x := \"\"\"abc\ny := 2\n",
+			wantComplete: false,
+		},
+		{
+			name:         "a backtick that closes",
+			text:         "x := `abc`\ny := 2\n",
+			wantComplete: true,
+		},
+		{
+			name:         "a triple quote that closes",
+			text:         "x := \"\"\"abc\"\"\"\ny := 2\n",
+			wantComplete: true,
+		},
+		{
+			name:         "an apostrophe in a comment",
+			text:         "x := 1  # don't change this\ny := 2\n",
+			wantComplete: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, complete := normalizeFile(c.text)
+			if complete != c.wantComplete {
+				t.Errorf("the file was reported as %s, want %s: %q",
+					readable(complete), readable(c.wantComplete), c.text)
+			}
+		})
+	}
+}
+
+// readable says what a completeness flag means in words, for the failure
+// message.
+func readable(complete bool) string {
+	if complete {
+		return "read"
+	}
+	return "not read"
 }

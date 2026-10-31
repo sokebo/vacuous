@@ -2,6 +2,7 @@ package counterfactual
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,18 +20,24 @@ import (
 //
 // The test is deliberately conservative. A change is called cosmetic only
 // when the code it leaves behind is the same once comments are removed and
-// the whitespace that cannot be part of a value is removed too. Anything
-// else counts as a real change, because missing a real finding is far worse
-// than reporting a cosmetic one.
+// the whitespace outside the string literals is removed too. Anything else
+// counts as a real change, because missing a real finding is far worse than
+// reporting a cosmetic one.
 //
-// The whitespace rule is the sharp edge of that. Whitespace is formatting
-// where the language says whitespace cannot be part of a value, and it is
-// data everywhere else: "a b" and "ab" are different strings, and the
+// The whitespace rule is the sharp edge of that. Whitespace outside a string
+// literal is formatting in the languages this rule covers, and whitespace
+// inside one is data: "a b" and "ab" are different strings, and the
 // indentation inside a template is part of what the template produces. So
 // the reduction keeps the string literals exactly as they are, and it has to
 // read the file to do that - a line inside a literal that opened earlier
 // looks like ordinary code until you know the literal opened before it.
 // That is what measureFiles is for.
+//
+// The rule is narrower than "whitespace is never the value". Where the layout
+// is the syntax - the indentation of a Python block, the body of a heredoc -
+// the whitespace outside a literal is the value too, and this rule does not
+// see it. That limit is named in the finding the rule produces, so the
+// reader is told what the sentence rests on.
 
 // sourceChange summarises what a commit did to its source files.
 type sourceChange struct {
@@ -105,7 +112,13 @@ func (a *Auditor) sourceChangeRange(ctx context.Context, base, head string, file
 			// error as "no cosmetic claim", which is the only safe
 			// direction: a claim that no behaviour changed is a claim
 			// that there is nothing to test.
-			return sourceChange{}, err
+			//
+			// The size the diff could see is kept. "We could not read
+			// the file" is not "the file did not change", and a report
+			// that says "the largest of them changed 0 lines" next to a
+			// behaviour change would be a number nobody earned.
+			change.cosmetic = false
+			return change, err
 		}
 		change.cosmetic = same
 		if size > change.biggestFile {
@@ -125,7 +138,9 @@ func (a *Auditor) sourceChangeRange(ctx context.Context, base, head string, file
 //
 // The size is the multiset difference of the two sides' normalized lines,
 // measured the same way the diff measures it - so a line that moved counts
-// zero, and a line that was rewritten counts two.
+// zero, a line that was rewritten counts two, and a line that holds nothing
+// but a comment counts nothing at all, because the diff-level count skips
+// those too.
 func (a *Auditor) measureFiles(ctx context.Context, base, head string, files []core.FileChange) (bool, int, error) {
 	same := true
 	biggest := 0
@@ -138,8 +153,14 @@ func (a *Auditor) measureFiles(ctx context.Context, base, head string, files []c
 		if err != nil {
 			return false, 0, err
 		}
-		beforeWhole, beforeLines := normalizeFile(before)
-		afterWhole, afterLines := normalizeFile(after)
+		beforeWhole, beforeLines, beforeComplete := normalizeFile(before)
+		if !beforeComplete {
+			return false, 0, unreadableSource(pathBefore(f))
+		}
+		afterWhole, afterLines, afterComplete := normalizeFile(after)
+		if !afterComplete {
+			return false, 0, unreadableSource(f.Path)
+		}
 		if beforeWhole != afterWhole {
 			same = false
 		}
@@ -148,6 +169,17 @@ func (a *Auditor) measureFiles(ctx context.Context, base, head string, files []c
 		}
 	}
 	return same, biggest, nil
+}
+
+// unreadableSource says that a file could not be read to the end.
+//
+// The file holds a quote that never closes, so the reader cannot tell which
+// bytes are inside a string literal and which are outside it. That is not a
+// difference between the two sides of the range - it is the absence of an
+// answer, and it is reported as an error so that the caller refuses to
+// conclude rather than concluding from a reading that never happened.
+func unreadableSource(path string) error {
+	return fmt.Errorf("could not read %s: the file holds a quote that never closes", path)
 }
 
 // pathBefore is where a file lived before the change. A rename has two.
