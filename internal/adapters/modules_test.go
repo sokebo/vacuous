@@ -92,3 +92,53 @@ func TestAPackageWhoseImportPathHoldsDotsClaimsTheScope(t *testing.T) {
 			"an import path may contain dots, and a package is not an echo")
 	}
 }
+
+// The relative half of the rule has to hold on its own.
+//
+// `go list` does not always echo the pattern byte for byte: it normalises.
+// Measured on Windows:
+//
+//	./internal/nope/...          ->  ./internal/nope/...    (verbatim)
+//	./internal/nope/             ->  ./internal/nope         (trailing slash dropped)
+//	././internal/nope/...        ->  ./internal/nope/...     (redundant ./ collapsed)
+//	./internal/../internal/...   ->  ./internal/...          (.. cleaned)
+//
+// So a normalised echo does not equal the field that was asked for. With the
+// exact comparison alone it would be read as a package, the module would
+// claim the scope, and bug 3.107 would come back in that shape.
+//
+// Negative control: dropping the relative test makes this test fail.
+func TestANormalisedPatternIsStillAPattern(t *testing.T) {
+	cases := []struct {
+		line   string
+		fields []string
+	}{
+		{"./internal/nope", []string{"./internal/nope/"}},
+		{"./internal/nope/...", []string{"././internal/nope/..."}},
+		{"./internal/nope/...", []string{"./internal/../internal/nope/..."}},
+		{"../sibling/...", []string{"../sibling/..."}},
+	}
+	for _, c := range cases {
+		if !isUnresolvedPattern(c.line, c.fields) {
+			t.Errorf("a relative line is a pattern, not a package: %q against %v",
+				c.line, c.fields)
+		}
+	}
+}
+
+// The exact half of the rule has to hold on its own.
+//
+// A pattern that was asked for is not a package, even when it does not look
+// like a filesystem path. `go list` echoes it back unchanged, and the only
+// thing that says "this is the pattern" is that it is the pattern.
+//
+// The tool asks for relative patterns today, so this case is not reachable
+// yet - and that is exactly why it needs a test: a rule with no control is a
+// rule that can be lost.
+//
+// Negative control: dropping the exact comparison makes this test fail.
+func TestThePatternItselfIsAPattern(t *testing.T) {
+	if !isUnresolvedPattern("example.com/other/...", []string{"example.com/other/..."}) {
+		t.Error("the pattern that was asked for is not a package")
+	}
+}
