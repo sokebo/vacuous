@@ -490,7 +490,7 @@ the code first.
 
 ## Results on real repositories
 
-The full record — every run, every finding, and the **105 bugs dogfooding found
+The full record — every run, every finding, and the **107 bugs dogfooding found
 in the tool itself** — is in [`docs/dogfood/`](./docs/dogfood/), with the
 repository names and paths sanitized.
 
@@ -568,7 +568,7 @@ The full list, with the reasoning behind each edge, is in
 |---|---|
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How the tool is put together, and the contracts it holds to |
 | [`docs/BOUNDARIES.md`](./docs/BOUNDARIES.md) | What the method cannot do, and what every finding kind means |
-| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 105 bugs dogfooding found in the tool itself |
+| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 107 bugs dogfooding found in the tool itself |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | How to build, test, and contribute — and the six rules the design holds to |
 | [`SECURITY.md`](./SECURITY.md) | What this tool does to your repository, and how to audit a repository you do not trust |
 | [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) | The behavior expected from everyone taking part |
