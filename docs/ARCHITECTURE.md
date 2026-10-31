@@ -460,10 +460,15 @@ For a change window `(B, H]` — the commits after `B` up to and including
 1. **Classify the window.** Merge commits and the repository's first commit
    have nothing to judge and leave the experiment early. Windows that only
    touch documentation, and windows that only added tests, have nothing to
-   judge either. Cosmetic changes (only comments, and whitespace that cannot
-   be part of a value) are detected by reducing the files at both ends of the
-   range: the comments go, the whitespace goes, and the string literals stay
-   as they are.
+   judge either. Cosmetic changes (only comments, and whitespace outside the
+   string literals) are detected by reducing the files at both ends of the
+   range: the comments go, the whitespace outside the literals goes, and the
+   string literals stay as they are. That last clause is narrower than
+   "whitespace is never the value" — where the layout is the syntax, as in
+   Python or in a heredoc, the whitespace outside a literal is the value too,
+   and this rule does not see it. A file that cannot be read to the end — a
+   quote that never closes — is not reduced at all: the tool reports that it
+   could not tell, and the change is judged by the experiment instead.
 2. **Build the counterfactual tree.** Check out `B`, apply **only** the test
    side of the window's diff (`B..H`). The fixes stay out.
 3. **Narrow the scope.** The run is limited to the packages the change
