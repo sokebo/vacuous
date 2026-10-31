@@ -515,6 +515,57 @@ func TestAuditDoesNotExcuseAFileItCouldNotRead(t *testing.T) {
 	}
 }
 
+// TestAuditSaysWhatItsReadingActuallyRemoves pins the wording of the
+// cosmetic finding.
+//
+// The finding is a claim about a reduction, and the reduction has limits: a
+// trailing "#" comment is not removed, and the whitespace outside a string
+// literal is only formatting in the languages whose layout is not the
+// syntax. A finding that says "the comments are removed" describes a
+// reduction this rule does not perform, and a reader who checks it finds the
+// difference.
+//
+// So the wording has to say what the rule does - and what it does not see.
+func TestAuditSaysWhatItsReadingActuallyRemoves(t *testing.T) {
+	m := testfixtures.CommentInTemplateFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	var found *core.Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Summary, "did not alter the behavior") {
+			found = &res.Findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("the comment-only change was not left alone\nfindings: %+v", res.Findings)
+	}
+
+	// The claim must not be broader than the rule behind it.
+	if strings.Contains(found.Detail, "cannot be part of a value") {
+		t.Errorf("the finding claims a property of the language, which this rule does not establish: %q", found.Detail)
+	}
+	if !strings.Contains(found.Detail, "outside the string literals") {
+		t.Errorf("the finding must say which whitespace it removed: %q", found.Detail)
+	}
+	// And it must name the blind spot rather than hide it.
+	if !strings.Contains(found.Detail, "heredoc") {
+		t.Errorf("the finding must name the whitespace this reading cannot see: %q", found.Detail)
+	}
+	// The evidence has to be checkable: "the comments are removed" is not
+	// true of a trailing "#" comment, and this rule does not remove it.
+	if strings.Contains(found.Evidence, "the comments are removed") {
+		t.Errorf("the evidence claims a reduction this rule does not perform: %q", found.Evidence)
+	}
+	if !strings.Contains(found.Evidence, "# comment is removed only when it starts the line") {
+		t.Errorf("the evidence must say how the '#' rule works: %q", found.Evidence)
+	}
+}
+
 // TestAuditSaysSoWhenTheCommitChangedCodeItCannotRun proves the tool does
 // not file a code change it cannot judge under "nothing to judge".
 //
