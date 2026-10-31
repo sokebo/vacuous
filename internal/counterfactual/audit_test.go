@@ -444,6 +444,41 @@ func TestAuditSeesAWhitespaceChangeInsideATemplate(t *testing.T) {
 	}
 }
 
+// TestAuditLeavesACommentAloneInsideAFileWithARawString is the other half
+// of the rule, and it is the half that keeps the tool quiet.
+//
+// The file holds a template - whitespace that is data - and the commit
+// changes nothing but a comment in it. A comment has no behaviour, so the
+// commit must still be left alone.
+//
+// This is the case the fix could have broken: the file is full of
+// whitespace that must be kept, and if the rule kept it without also
+// dropping the comment, every comment-only commit in a file with a template
+// would suddenly look like a behaviour change.
+func TestAuditLeavesACommentAloneInsideAFileWithARawString(t *testing.T) {
+	m := testfixtures.CommentInTemplateFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	found := false
+	for _, f := range res.Findings {
+		if strings.Contains(f.Summary, "did not alter the behavior") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a comment-only change in a file with a template was not left alone\nfindings: %+v", res.Findings)
+	}
+	if res.Verdict != VerdictNotApplicable {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictNotApplicable, res.Verdict, res.Findings)
+	}
+}
+
 // TestAuditSaysSoWhenTheCommitChangedCodeItCannotRun proves the tool does
 // not file a code change it cannot judge under "nothing to judge".
 //

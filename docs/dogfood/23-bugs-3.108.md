@@ -1,10 +1,10 @@
 # Dogfood: Tool Bug 3.108
 
 Found by running the tool on a real repository and then checking its answers
-by hand, the way every entry in this directory is found. It is the same shape
-as 3.4 — a change that altered nothing was asked for a test — but the loss is
-in a different place, and this one is the first in this log that made the tool
-state something **false about a real change**: not "no test watches this" but
+by hand, the way every entry in this directory is found. It is the **other
+end** of 3.4, and it is the end nobody checked: 3.4 was the same projection
+accusing a commit of needing a test when it needed none, and this one is the
+same projection **missing a real change** — not "no test watches this" but
 "this change did not alter the behavior of the code".
 
 ---
@@ -27,10 +27,16 @@ as a change that altered nothing. The tool's own words, verbatim:
       How to fix: If this commit does change behavior, then it needs a test
 ```
 
-★ The commit changed **one line**, from eight spaces of indentation to
-twelve. That line sits inside a raw string: it is the body of the HTML mail
-the program sends, and the rendered mail gains four spaces. Measured on the
-file itself, before and after:
+★ The commit is a **constructed one** — put into a read-only clone of Repo G
+on purpose, so that the answer is known before the tool is asked. That is
+how this project tests a checker: put a sample in that should be caught, and
+confirm it is caught. The sample here is the simplest shape of the defect: a
+commit whose only content is whitespace, inside a literal.
+
+★ It changed **one line**, from eight spaces of indentation to twelve. That
+line sits inside a raw string: it is the body of the HTML mail the program
+sends, and the rendered mail gains four spaces. Measured on the file itself,
+before and after:
 
 ```
 before: [        <div style="color: #555; font-size: 16px;">]
@@ -59,6 +65,11 @@ func normalizeCode(line string) string {
 	return strings.Join(strings.Fields(stripComment(line)), "")
 }
 ```
+
+★ That comparison is 3.4's. It was written there to stop the tool asking for
+a test for a commit that only changed comments and whitespace, and it did
+that job — it made the rule lean towards not accusing. What it did not do is
+stop hiding changes on the other side, and that is what this entry is.
 
 ★ `strings.Fields` splits on every run of whitespace and `strings.Join("", …)`
 puts the pieces back together without them. That removes **all** whitespace —
@@ -198,6 +209,14 @@ every test already in the repository still passed. The test asserts that
 verdict, that sentence, and that no finding says "did not alter the
 behavior".
 
+★ The other half of the rule is pinned end to end as well
+(`TestAuditLeavesACommentAloneInsideAFileWithARawString`, fixture
+`testfixtures.CommentInTemplateFixture`): a commit that changes nothing but
+a comment in a file that holds a template is **still left alone**. That is
+the case the fix could have broken — had the rule kept the whitespace
+without also dropping the comment, every comment-only commit in a file with
+a template would suddenly have looked like a behaviour change.
+
 ★ On Repo G, the six source files that hold a multi-line raw string are
 where the old rule could not see:
 
@@ -220,7 +239,16 @@ this branch:
 --- FAIL: TestAuditReportsAVetRejectionAsAVetRejection
 ```
 
-None of them is one of the six above, and the fix adds no failure.
+★ `internal/adapters` fails **fifteen** on this platform, before and after,
+with the same fifteen names, and `internal/dogfood/gate` fails **two** —
+also the same two. The whole suite was run on both ends:
+
+```
+main:      adapters 15 · counterfactual 3 · dogfood/gate 2
+this branch: adapters 15 · counterfactual 3 · dogfood/gate 2
+```
+
+None of them is one of the tests above, and the fix adds no failure.
 
 **Negative control**, three of them, each one putting back exactly one wrong
 version of the rule, and each one measured.
@@ -285,20 +313,30 @@ pinned by a control of its own and not by accident of the first one.
 
 ★ 3.4 asked for a test for a commit that only changed comments and
 whitespace. The fix was a comparison that removed comments and whitespace
-first. This entry is the other end of that comparison: the comparison removed
-whitespace it should have kept.
+first. This entry is the **other end of that same comparison**: the comparison
+removed whitespace it should have kept.
+
+★ The two errors point in opposite directions, and that is what makes them
+one story rather than two:
+
+| | the projection said | the truth was | the reader was told |
+|---|---|---|---|
+| 3.4 | "this changed" | nothing changed | *write a test* |
+| 3.108 | "this changed nothing" | something changed | *nothing to test here* |
+
+★ 3.4 was fixed in the direction the project had already chosen — "missing a
+finding beats falsely accusing one" — and the rule was made to lean towards
+*not* accusing. **Nobody then checked the other end.** The same projection
+that was fixed so it would stop accusing was never asked whether it was also
+hiding something. That is the shape of this entry: a rule tuned in one
+direction, and the other direction left untested because the first one had
+just been fixed.
 
 ★ The rule both entries share is the one that generalises:
 
 > **A claim that something did not change must be made on the thing itself,
 > not on a projection of it — and every projection loses something. Name the
 > loss, and refuse to conclude where the loss could be hiding the answer.**
-
-★ 3.4's projection lost the difference between "no behaviour" and "a
-behaviour nobody wrote down". This one's projection lost the difference
-between "no behaviour" and "a behaviour that was whitespace". Same shape, one
-layer down: a projection is a tool for asking a question, and it cannot be
-the answer to a question it was never built to answer.
 
 ★ And the general form of the whitespace rule is worth writing down, because
 it applies to every rule this tool will ever write that has to decide
@@ -308,8 +346,8 @@ whether a file changed:
 > whitespace cannot be part of a value. Once the scanner is inside a string
 > literal, whitespace is data — and data is never removed.**
 
-★ Two neighbours of this rule are **not** fixed here, and they should not be:
-each is a different question.
+★ Three neighbours of this rule are **not** fixed here, and they should not
+be: each is a different question.
 
 - A commit that only changed **test files** is judged "this change only added
   tests and changed no code", and that branch does not look at whether the
@@ -322,3 +360,9 @@ each is a different question.
   one — is unchanged, and it stays conservative: a trailing `#` comment in
   Python or shell is left in place, so a change there looks bigger than it
   is. Leaving it in can only make a change look bigger, never smaller.
+- A comment is **not always** free of behaviour. A build tag — `//go:build
+  linux` becoming `//go:build windows` — is a comment, and it decides which
+  builds include the file. The rule removes comments, so it calls that
+  cosmetic, and it did so before this entry too. "Which comments are
+  directives?" is a different question, it is language-specific, and it
+  belongs in its own entry.

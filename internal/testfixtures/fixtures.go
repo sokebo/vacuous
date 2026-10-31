@@ -680,6 +680,55 @@ func Render(name string) string {
 	return m
 }
 
+// CommentInTemplateFixture builds the other half of the template case.
+//
+// The file holds a template, and the second commit changes nothing but a
+// comment in it. The comment is the whole change, and a comment has no
+// behaviour - so the tool must still leave this commit alone, even though
+// the file it changed is full of whitespace that is data.
+//
+// The two fixtures together are the rule: a comment is not a change, and a
+// template is not a comment.
+func CommentInTemplateFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/comment")
+	m.Write(t, "render.go", `package fixture
+
+import "fmt"
+
+// Render produces the report body.
+func Render(name string) string {
+	return fmt.Sprintf(`+"`"+`
+  <p>hello, %s</p>
+`+"`"+`, name)
+}
+`)
+	m.Write(t, "render_test.go", `package fixture
+
+import "testing"
+
+func TestRenderProducesSomething(t *testing.T) {
+	if Render("bob") == "" {
+		t.Fatal("Render returned nothing")
+	}
+}
+`)
+	m.Init(t)
+	m.Write(t, "render.go", `package fixture
+
+import "fmt"
+
+// Render produces the report body. It never fails.
+func Render(name string) string {
+	return fmt.Sprintf(`+"`"+`
+  <p>hello, %s</p>
+`+"`"+`, name)
+}
+`)
+	m.Commit(t, "docs: explain that Render never fails")
+	return m
+}
+
 // VetRejectedFixture builds the case the report used to get wrong.
 //
 // The first commit carries a file that COMPILES PERFECTLY WELL and is
