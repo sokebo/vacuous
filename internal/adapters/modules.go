@@ -3,6 +3,7 @@ package adapters
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,9 +133,27 @@ func (g *Go) runInModules(ctx context.Context, plan core.Plan) (core.RunResult, 
 // packages the pattern names.
 //
 // The pattern is relative to the module it was computed for. In a module
-// that holds none of those packages, go fails with "lstat ...: no such file
-// or directory" - which says nothing about the code under review, only
-// that the pattern does not apply here.
+// that holds none of those packages, the pattern does not resolve - and
+// running the suite there anyway produces an error this tool caused
+// itself, which would then be read as "the checkout was incomplete" and
+// drown out the verdict the root module did produce.
+//
+// ★ The answer is read from the LIST of packages, not from the wording of
+// an error. The wording is the platform's: POSIX says "no such file or
+// directory", Windows says "GetFileAttributesEx ...: The system cannot
+// find the file specified" - and a rule that reads the error text is a
+// rule that changes with the platform.
+//
+// The change is not a detail. The old check missed on Windows, so every
+// nested module ran with a pattern that does not apply to it, the error
+// that came back was merged into the result as a build error, and the
+// BASELINE looked like it did not compile. Every audit on that platform
+// then answered "I could not tell" - not about the code under review, but
+// about the platform the tool was running on.
+//
+// "go list -e" is what makes the answer a list: with -e the command
+// succeeds even when the pattern matches nothing, so the question is
+// "which packages came back", and that is the same question everywhere.
 //
 // Any other failure is left alone: a module whose own go.mod is broken is
 // a real problem, and the run that follows will say so.
@@ -144,19 +163,54 @@ func (g *Go) moduleHasScope(ctx context.Context, dir, pattern string) bool {
 		// No narrowing: every module runs the whole suite.
 		return true
 	}
-	args := append([]string{"list"}, fields...)
+	args := append([]string{"list", "-e", "-f", scopeListFormat}, fields...)
 	cmd := goCommand(ctx, dir, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = io.Discard
 	if err := cmd.Run(); err != nil {
-		msg := stderr.String()
-		if strings.Contains(msg, "no such file or directory") ||
-			strings.Contains(msg, "matched no packages") {
-			return false
-		}
+		// The module cannot even be listed. That is its own problem, and
+		// the run that follows will say so.
 		return true
 	}
-	return true
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		path, _, _ := strings.Cut(line, scopeUnloadableMark)
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if isUnresolvedPattern(path) {
+			// The pattern, echoed back because it matched nothing here.
+			continue
+		}
+		// A package this module really holds.
+		return true
+	}
+	return false
+}
+
+// scopeListFormat asks `go list` for the packages a pattern names, and
+// marks the ones it could not load.
+//
+// "-e" makes the command succeed even when the pattern matches nothing, so
+// the answer is the list rather than the wording of an error - and the
+// wording is the platform's.
+const scopeListFormat = "{{.ImportPath}}{{if .Error}}" + scopeUnloadableMark + "{{end}}"
+
+// scopeUnloadableMark is what the list format puts after a package that
+// could not be loaded.
+const scopeUnloadableMark = " #unloadable"
+
+// isUnresolvedPattern reports whether a line of `go list -e` output is the
+// pattern itself rather than a package.
+//
+// An unresolved pattern comes back as it was written - "./internal/detect/..."
+// or "example.com/x/..." - while a package comes back as an import path,
+// which names no "..." and is not relative.
+func isUnresolvedPattern(line string) bool {
+	return strings.Contains(line, "...") ||
+		strings.HasPrefix(line, "./") ||
+		strings.HasPrefix(line, "../")
 }
 
 // mergeRunResult folds one module's result into the merged one.
