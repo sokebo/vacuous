@@ -98,10 +98,10 @@ func TestAPackageWhoseImportPathHoldsDotsClaimsTheScope(t *testing.T) {
 // `go list` does not always echo the pattern byte for byte: it normalises.
 // Measured on Windows:
 //
-//	./internal/nope/...          ->  ./internal/nope/...    (verbatim)
-//	./internal/nope/             ->  ./internal/nope         (trailing slash dropped)
-//	././internal/nope/...        ->  ./internal/nope/...     (redundant ./ collapsed)
-//	./internal/../internal/...   ->  ./internal/...          (.. cleaned)
+//	./internal/nope/...             ->  ./internal/nope/...     (verbatim)
+//	./internal/nope/                ->  ./internal/nope         (trailing slash dropped)
+//	././internal/nope/...           ->  ./internal/nope/...     (redundant ./ collapsed)
+//	./internal/../internal/nope/... ->  ./internal/nope/...     (.. cleaned)
 //
 // So a normalised echo does not equal the field that was asked for. With the
 // exact comparison alone it would be read as a package, the module would
@@ -116,7 +116,7 @@ func TestANormalisedPatternIsStillAPattern(t *testing.T) {
 		{"./internal/nope", []string{"./internal/nope/"}},
 		{"./internal/nope/...", []string{"././internal/nope/..."}},
 		{"./internal/nope/...", []string{"./internal/../internal/nope/..."}},
-		{"../sibling/...", []string{"../sibling/..."}},
+		{"../sibling", []string{"../sibling/"}},
 	}
 	for _, c := range cases {
 		if !isUnresolvedPattern(c.line, c.fields) {

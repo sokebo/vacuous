@@ -169,10 +169,10 @@ comes back as exactly those two lines) — but `go list` normalises in general,
 and the second signal exists for that reason:
 
 ```
-./internal/nope/...          →  ./internal/nope/...     (verbatim)
-./internal/nope/             →  ./internal/nope          (trailing slash dropped)
-././internal/nope/...        →  ./internal/nope/...      (redundant ./ collapsed)
-./internal/../internal/...   →  ./internal/...           (.. cleaned)
+./internal/nope/...             →  ./internal/nope/...     (verbatim)
+./internal/nope/                →  ./internal/nope          (trailing slash dropped)
+././internal/nope/...           →  ./internal/nope/...      (redundant ./ collapsed)
+./internal/../internal/nope/... →  ./internal/nope/...      (.. cleaned)
 ```
 
 ★ So the rule uses **two** signals, and neither of them is a shape test on
@@ -328,6 +328,14 @@ exactly one red:
     modules_test.go:123: a relative line is a pattern, not a package: "./internal/nope" against [./internal/nope/]
     modules_test.go:123: a relative line is a pattern, not a package: "./internal/nope/..." against [././internal/nope/...]
     modules_test.go:123: a relative line is a pattern, not a package: "./internal/nope/..." against [./internal/../internal/nope/...]
+```
+
+*Dropping the `../` branch of the fallback* — leaving only `./` — makes the
+same one red:
+
+```
+--- FAIL: TestANormalisedPatternIsStillAPattern (0.00s)
+    modules_test.go:123: a relative line is a pattern, not a package: "../sibling" against [../sibling/]
 ```
 
 ★ The last two were added because the review asked a question the rule could
