@@ -2,8 +2,9 @@
 
 Found by running the tool on its own repository, on Windows — the platform it
 was not written on. It is the same shape as 3.100, 3.101, 3.103, 3.105 and
-3.106, and it is the largest of them: on that platform, **the audit half of
-the tool did not work at all**.
+3.106, and it is the largest of them: on that platform, **the audit produced
+no witness at all for any commit that shipped a test, in any repository that
+holds nested Go modules**.
 
 ---
 
@@ -30,7 +31,8 @@ build, and stopped there.
 ★ And the verdict is not the important part. The important part is that
 `witnesses` was **0**. The audit half of the tool answers exactly one
 question — "if the fix is removed, does the test go red" — and on Windows it
-produced no answer at all, for any commit, in any repository.
+produced no answer for any commit that shipped a test, in any repository that
+holds nested Go modules.
 
 **Why this happens**
 
@@ -105,6 +107,31 @@ exported functions that PR #16 introduced, so the fix and its test cannot be
 separated. What changes is that the tool can now **say which five tests watch
 the change**, and name the two that were already red.
 
+★ **What this does not affect** — measured, because a blast radius that is
+wrong is a claim that was not earned. Two preconditions have to hold, and
+neither holds in every repository:
+
+- *The repository must hold a nested Go module.* `findModuleRoots` skips the
+  root module itself, so a repository with one module and no nested ones has
+  an empty module list and never asks this rule at all. Measured with the
+  `before` binary on a single-module fixture (two commits; the second changes
+  the code and adds the test):
+
+  ```
+  verdict=proven  witnesses=1
+  main_test.go::TestAnswer  [pass -> fail]
+  ```
+
+  So the old code audited a single-module repository on Windows just fine.
+- *The commit must have shipped a test of its own.* When it did not, the
+  engine empties the pattern for it (`internal/counterfactual/audit.go`), so
+  every module runs the whole suite and the rule is never asked.
+
+★ What is left is: every repository with nested Go modules — this one holds
+five — auditing every commit that shipped a test. That is still a large
+slice of the Go world, and on that slice the tool answered "I could not tell"
+about everything.
+
 **The fix**: ask `go list` for the **list** of packages, and read the answer
 instead of the wording of an error.
 
@@ -119,16 +146,38 @@ back", and that is the same question on every platform.
 Measured, same fixture:
 
 ```
-> go list -e -f '{{.ImportPath}}{{if .Error}} #unloadable{{end}}' ./internal/detect/...
-./internal/detect/... #unloadable
+> go list -e -f '{{.ImportPath}}' ./internal/detect/...
+./internal/detect/...
 ```
 
 ★ The pattern comes back **as it was written** when it resolved to nothing,
 and a real package comes back as an **import path**. That is the whole
 discriminator, and it is a property of the answer rather than of the
-platform's phrasing. `isUnresolvedPattern` draws the line: a line that
-contains `...`, or that starts with `./` or `../`, is the pattern echoed
-back; a line that is none of those is a package this module really holds.
+platform's phrasing.
+
+★ The echo is **verbatim** — measured for a single pattern and for several at
+once (`./internal/core/... ./internal/detect/...` comes back as exactly those
+two lines). So the rule compares each line against the patterns that were
+asked for, and treats a line as an echo when it equals one of them. The
+second signal is that the line is **relative**: an import path never starts
+with `./` or `../`.
+
+★ **The first version of this fix used a shape test and it was wrong** — and
+the review caught it, which is why it is written down here. The shape test
+recognised an unresolved pattern by the `...` in it. But a directory may be
+named `a...b`, and then the package it holds has an import path with `...` in
+it:
+
+```
+> go list -e -f '{{.ImportPath}}' ./a...b/...
+example.com/dots/a...b
+```
+
+★ The shape test mistook that package for an echo and skipped a module that
+really holds the package — so its suite would never run and its breakage
+would never be reported. The direction is the safe one (a miss, not a false
+accusation), but it is still a miss, and the rule is now exact instead of
+approximate.
 
 ★ A module whose own `go.mod` is broken is deliberately **not** skipped. There
 `go list -e` fails outright (measured: `go: errors parsing go.mod: go.mod:5:
@@ -179,10 +228,12 @@ no verdict.
   running every nested module.
 - `TestAModuleWithNoPatternClaimsTheScope` — the branch the audit of a
   one-module repository takes.
+- `TestAPackageWhoseImportPathHoldsDotsClaimsTheScope` — the package whose
+  import path contains `...`, which is the case the shape test got wrong.
 
 ★ `internal/adapters` fails 15 tests on this platform, before and after the
 fix, with the **same 15 names** — measured on `main` and on this branch. None
-of them is one of the three above, and the fix adds no failure.
+of them is one of the four above, and the fix adds no failure.
 
 ★ And the repository already held the negative control for this bug — and it
 was **red on Windows**. `internal/counterfactual/audit_test.go` says:
@@ -214,8 +265,10 @@ failing tests to three. The bug had a negative control in the repository all
 along — it was the *control* that was platform-bound, and the same platform
 that made it red made it useless.
 
-**Negative control**: putting the error-text check back — the exact five
-lines of the old implementation — makes exactly one of the three tests red:
+**Negative control**, two of them, both measured on Windows:
+
+*Putting the error-text check back* — the exact five lines of the old
+implementation — makes exactly one of the four tests red:
 
 ```
 --- FAIL: TestAModuleWithoutThePackagesDoesNotClaimTheScope (0.06s)
@@ -223,8 +276,17 @@ lines of the old implementation — makes exactly one of the three tests red:
       running the pattern there produces an error this tool caused itself
 ```
 
-★ The other two stay green, and that is the point of the second one: it pins
-the fix to the **right** answer rather than to "not the old answer".
+★ The other three stay green, and that is the point of the second one: it
+pins the fix to the **right** answer rather than to "not the old answer".
+
+*Putting the shape test back* — the `...` in it — makes exactly one red, and
+it is the other one:
+
+```
+--- FAIL: TestAPackageWhoseImportPathHoldsDotsClaimsTheScope (0.06s)
+    modules_test.go:91: a module that holds the package must claim the scope:
+      an import path may contain dots, and a package is not an echo
+```
 
 ---
 
@@ -240,9 +302,9 @@ module holds a package.
 ★ The difference between those and this one is the size of it. 3.103 hid a
 guard. 3.105 named a directory that does not exist. This one turned off the
 **audit** — the half of the tool that answers "is this fix watched" — on one
-platform, for every repository, for every commit. A tool that cannot say "I
-could not tell" honestly is a tool that says "I could not tell" as
-`environment`.
+platform, for every repository with nested Go modules, for every commit that
+shipped a test. A tool that cannot say "I could not tell" honestly is a tool
+that says "I could not tell" as `environment`.
 
 ★ And the fix is the same shape as 3.106's: **ask the thing that has one
 answer everywhere.** `go list -e` answers "which packages did the pattern
@@ -257,3 +319,12 @@ rule is broken". `TestAuditNarrowsToTheModuleThatHoldsTheCode` had been
 sitting in `internal/counterfactual` as one of four known failures, saying
 nothing, because it was failing for exactly the reason it was written to
 catch. A control that cannot run where the bug lives cannot catch the bug.
+
+★ One sibling of this rule is **not** fixed here, and it should not be: it is
+a different question. `internal/counterfactual/audit.go` decides "is this
+build error an environment problem or a coupling?" from a list of message
+shapes, and on Windows a message of that shape is not recognised (measured:
+the POSIX wording is classified as an environment failure, the Windows
+wording is not). That is the same defect with a different question attached,
+it is pre-existing, and it belongs in its own entry — `CONTRIBUTING.md` asks
+for one change at a time.

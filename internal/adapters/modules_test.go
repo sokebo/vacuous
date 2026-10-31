@@ -66,3 +66,29 @@ func TestAModuleWithNoPatternClaimsTheScope(t *testing.T) {
 		t.Error("a run with no pattern asks every module to run its whole suite")
 	}
 }
+
+// A package whose import path contains "..." is still a package.
+//
+// The rule used to recognise an unresolved pattern by the "..." in it, and
+// that is wrong: a directory may be named "a...b", and then the package it
+// holds has an import path with "..." in it. The rule would mistake it for
+// an echo of the pattern and skip a module that really holds the package -
+// its suite would never run, and its breakage would never be reported.
+//
+// A miss is the safe direction to fail in, but it is still a miss, and the
+// fix is exact rather than approximate: `go list` echoes an unresolved
+// pattern exactly as it was written, and a real package comes back as an
+// import path, which is never one of the patterns.
+//
+// Negative control: putting the "..." test back makes this test fail.
+func TestAPackageWhoseImportPathHoldsDotsClaimsTheScope(t *testing.T) {
+	dir := writeProbeModule(t, map[string]string{
+		"go.mod":         "module example.com/other\n\ngo 1.21\n",
+		"a...b/thing.go": "package thing\n",
+	})
+	g := NewGo()
+	if !g.moduleHasScope(context.Background(), dir, "./a...b/...") {
+		t.Error("a module that holds the package must claim the scope: " +
+			"an import path may contain dots, and a package is not an echo")
+	}
+}
