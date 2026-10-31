@@ -231,7 +231,13 @@ func skipToLineEnd(content string, i int) int {
 	return i + j
 }
 
-// isSpace reports whether c is whitespace that cannot be part of a value.
+// isSpace reports whether c is whitespace.
+//
+// The caller only reaches it outside a string literal, where the rule reads
+// whitespace as formatting. That is a rule this project applies, not a fact
+// about every language: where the layout is the syntax - the indentation of
+// a Python block, the body of a heredoc - the whitespace outside a literal
+// is the value too, and this rule does not see it.
 //
 // Only ASCII whitespace counts. Anything else is left alone: a byte that is
 // not whitespace is kept, and a byte that is whitespace outside a literal is
