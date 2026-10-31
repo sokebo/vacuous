@@ -135,6 +135,9 @@ func normalizeFile(content string) (whole string, pieces []string, complete bool
 // the two measure the same thing, and a count that says "one line changed"
 // for a comment that was added is a number nobody earned.
 func appendPiece(pieces []string, piece string) []string {
+	if piece == "" {
+		return pieces
+	}
 	return append(pieces, piece)
 }
 

@@ -177,6 +177,17 @@ func TestNormalizeFileCountsTheLinesThatReallyChanged(t *testing.T) {
 			want: 0,
 		},
 		{
+			// The case the two counts disagreed on. The diff-level
+			// count skips a line that holds nothing but a comment, so
+			// the file-level count has to skip it too - otherwise the
+			// same change is measured as 0 lines by one and 1 line by
+			// the other, and the report quotes whichever it got.
+			name: "a comment added",
+			a:    "func Greet() {}",
+			b:    "// Greet greets.\nfunc Greet() {}",
+			want: 0,
+		},
+		{
 			name: "a line replaced",
 			a:    "func Greet() string { return \"hi\" }",
 			b:    "func Greet() string { return \"hello\" }",
