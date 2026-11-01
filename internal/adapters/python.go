@@ -776,6 +776,13 @@ type unittestSuiteResult struct {
 	suiteErrors []string
 	exitCode    int
 	durationMS  int64
+	// failed says whether this suite reported a red test.
+	//
+	// It is decided per suite, from that suite's own exit code and report,
+	// and the suites are merged with an OR. Deciding it from the merged
+	// output instead would let one suite's failures section turn every
+	// suite after it into a red one.
+	failed bool
 	// command is the command line that ran the suite.
 	command string
 	// raw is the runner's complete output. The failure check needs all of
@@ -806,6 +813,9 @@ func (p *Python) runUnittest(ctx context.Context, plan core.Plan) (core.RunResul
 			if res.exitCode != 0 {
 				merged.ExitCode = res.exitCode
 			}
+			if res.failed {
+				merged.RawFailed = true
+			}
 			merged.DurationMS += res.durationMS
 			raw.WriteString(res.raw)
 			commands = append(commands, res.command)
@@ -820,7 +830,6 @@ func (p *Python) runUnittest(ctx context.Context, plan core.Plan) (core.RunResul
 	}
 
 	merged.RawOutput = tailOf([]byte(raw.String()), 4000)
-	merged.RawFailed = UnittestFailed(raw.String())
 
 	merged.Outcomes = dedupeOutcomes(merged.Outcomes)
 
@@ -913,6 +922,11 @@ func (p *Python) runUnittestCommand(ctx context.Context, plan core.Plan, suite s
 		output = stdout.String()
 	}
 	out.raw = output
+
+	// The failure flag is this suite's own answer: its exit code says
+	// whether a test did not pass, and the report says whether it was a
+	// test that went red or a module that could not be imported.
+	out.failed = UnittestFailed(out.exitCode, output)
 
 	parsed := parseUnittestOutput(plan.Dir, unittestTopDir(plan.Dir, suite), output)
 	out.outcomes = parsed.outcomes

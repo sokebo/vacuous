@@ -165,8 +165,8 @@ func TestUnittestFailedSeesAFailedTest(t *testing.T) {
 		[]string{"FAIL: test_beta (test_mod.TestThing.test_beta)"},
 	)
 
-	if !UnittestFailed(report) {
-		t.Error("UnittestFailed() = false, want true: the report says a test failed")
+	if !UnittestFailed(1, report) {
+		t.Error("UnittestFailed() = false, want true: the runner says a test failed")
 	}
 }
 
@@ -177,8 +177,8 @@ func TestUnittestFailedSeesAnErroredTest(t *testing.T) {
 		[]string{"ERROR: test_beta (test_mod.TestThing.test_beta)"},
 	)
 
-	if !UnittestFailed(report) {
-		t.Error("UnittestFailed() = false, want true: the report says a test errored")
+	if !UnittestFailed(1, report) {
+		t.Error("UnittestFailed() = false, want true: the runner says a test errored")
 	}
 }
 
@@ -198,9 +198,35 @@ func TestUnittestFailedIgnoresAGreenSuiteThatMentionsAFailure(t *testing.T) {
 	)
 	report += "FAILED is what a green run looks like\n"
 
-	if UnittestFailed(report) {
+	if UnittestFailed(0, report) {
 		t.Error("UnittestFailed() = true, want false: a passing test named " +
 			"\"test_FAILED\" is not a red test")
+	}
+}
+
+// TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection is the case
+// that made the exit code part of the rule.
+//
+// A green test that prints a line of equals signs and then a line that looks
+// like a failure header writes the *shape* of a failures section into the
+// output. The text alone cannot tell that from a real one - and the parse
+// stops at the first equals line, so the parse says "everything passed" while
+// the text says "a test went red", which is a critical contradiction on a run
+// that was perfectly green.
+//
+// The exit code closes it: a green run exits 0, and no text can talk the
+// runner out of that.
+func TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection(t *testing.T) {
+	report := unittestReport(
+		[]string{"test_prints (test_mod.TestThing.test_prints) ... ok"},
+		nil,
+	)
+	report += strings.Repeat("=", 70) + "\n"
+	report += "FAIL: this line was printed by a green test\n"
+
+	if UnittestFailed(0, report) {
+		t.Error("UnittestFailed() = true, want false: the run exited 0, so " +
+			"no test went red - whatever the output says")
 	}
 }
 
@@ -210,13 +236,17 @@ func TestUnittestFailedIgnoresAGreenSuiteThatMentionsAFailure(t *testing.T) {
 // unittest reports an unloadable module with a placeholder test. That test
 // never ran, so it is a crashed suite and not a red test - the same
 // distinction parseUnittestOutput makes.
+//
+// The exit code is 1 here, because unittest exits 1 when a test did not pass,
+// and a module that could not be imported counts as one. The report is what
+// says which one it was.
 func TestUnittestFailedIgnoresALoadError(t *testing.T) {
 	report := unittestReport(
 		[]string{"test_import (unittest.loader._FailedTest.test_import) ... ERROR"},
 		[]string{"ERROR: test_import (unittest.loader._FailedTest.test_import)"},
 	)
 
-	if UnittestFailed(report) {
+	if UnittestFailed(1, report) {
 		t.Error("UnittestFailed() = true, want false: a module that could not " +
 			"be imported never ran a test")
 	}
@@ -230,7 +260,7 @@ func TestUnittestFailedIgnoresACleanRun(t *testing.T) {
 	)
 	report += "OK\n"
 
-	if UnittestFailed(report) {
+	if UnittestFailed(0, report) {
 		t.Error("UnittestFailed() = true, want false: the run was green")
 	}
 }
