@@ -773,11 +773,12 @@ func TestGreetSaysSomething(t *testing.T) {
 // SizeOnUnreadableFixture builds the case where the diff measured a size
 // and the files could not be read.
 //
-// The commit moves one line from one file into another. The two sides of the
-// diff reduce to the same text - the diff-level reading says "the same" -
-// but the lines are not in the same file, so the diff-level count is not
-// zero either. One of the two files holds a quote that never closes, so the
-// file-level reading cannot be made at all.
+// The commit moves one line from one file into another, and takes the blank
+// line that was around it along. The two sides of the diff reduce to the same
+// text - the diff-level reading says "the same" - but the lines are not in
+// the same file, so the diff-level count is not zero either: one line
+// changed in each of the two files. One of the two files holds a quote that
+// never closes, so the file-level reading cannot be made at all.
 //
 // The size the diff measured is then the only number the tool has, and it is
 // a number it earned. The report must not say "changed 0 lines" for a change

@@ -518,16 +518,23 @@ func TestAuditDoesNotExcuseAFileItCouldNotRead(t *testing.T) {
 // TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead pins the size
 // that survives a failed measurement.
 //
-// The commit moves one line from one file into another, so the diff-level
+// The commit takes the constant out of one file and puts it in another - and
+// takes the blank line that was around it with it - so the diff-level
 // reading says "the two sides are the same" while the diff-level count says
-// one line moved. One of the two files holds a quote that never closes, so
-// the file-level reading cannot be made.
+// one line changed in each of the two files. One of the two files holds a
+// quote that never closes, so the file-level reading cannot be made.
 //
-// The tool is left with the number the diff measured. Dropping it would put
-// "the largest of them changed 0 lines" into a report about a change whose
-// size was measured - a number nobody earned. And the count here is 1, not
-// the 2 the file-level reading would have produced, so the assertion also
-// says which of the two readings the report is standing on.
+// The tool is left with the number the diff measured: one line in a.go, one
+// in b.go, so the biggest file changed 1 line. Dropping it would put "the
+// largest of them changed 0 lines" into a report about a change whose size
+// was measured - a number nobody earned.
+//
+// The count here is 1, and it is the only number on offer: the file-level
+// reading cannot be made on this fixture at all, so it has no number to
+// disagree with. (It is 2 when the unclosed quote is read as a closed one -
+// the sixth control in the volume - because then the file-level reading
+// swallows the line that moved. That is what makes that control worth
+// running.)
 func TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead(t *testing.T) {
 	m := testfixtures.SizeOnUnreadableFixture(t)
 	a := newAuditor(t, m.Dir)
