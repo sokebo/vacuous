@@ -7,8 +7,8 @@ a **passing** subtest named ".../FAILED" made a green suite look red — so the
 tool answered "my verdict contradicts my own output", a `critical` finding
 that says the tool is broken.
 
-**Tool under test**: `v0.1.7-0.20261101170138-7a15c6eeecaf`, built from
-`fix/3109-failure-criterion` at `7a15c6e`.
+**Tool under test**: `v0.1.7-0.20261101173836-6619d7c4abae`, built from
+`fix/3109-failure-criterion` at `6619d7c`.
 
 **Repository under test**: `example/admin-service` — the same read-only
 scratch clone volume 24 used, with the sibling checkout of
@@ -160,12 +160,15 @@ internal/adapters/failure.go（新增）
         读 `go test -json` 的事件流：存在一条 Action=="fail" 且带 Test
         字段的事件 → 有红测试。
 
-    UnittestFailed(output string) bool
-        读 unittest 报告的 failures section：分隔线之后有一行以 "FAIL: "
-        或 "ERROR: " 开头的头 → 有红测试。
+    UnittestFailed(exitCode int, output string) bool
+        先看退出码：unittest 退出 1 才是「有测试没有通过」，0 是全过，
+        >1 是命令根本没跑起来 → 只有 1 才继续。
+        再读报告的 failures section：分隔线之后有一行以 "FAIL: " 或
+        "ERROR: " 开头的头（且不是 _FailedTest 占位符）→ 有红测试。
 
 internal/adapters/go_run.go     RawFailed: GoTestFailed(stdout.String())
-internal/adapters/python.go    merged.RawFailed = UnittestFailed(raw.String())
+internal/adapters/python.go    每个 suite 各自判 UnittestFailed(exitCode, report)，
+                               再 OR 起来
 internal/core/core.go          删掉 failureMarkers 与 MentionsFailure
 ```
 
@@ -189,7 +192,23 @@ at all":
   contradict the parser over a tree that simply did not compile — and
   `RawFailed` now says TEST failure, in words, in the contract.
 
-★ Why the Python rule reads the failures section: the unittest parser decides
+★ Why the Python rule starts with the exit code. unittest's own vocabulary is
+already written down in this repository (`unittestExitErrors`):
+
+```
+	0  everything passed
+	1  a test did not pass
+	>1 the command could not be run
+```
+
+So the exit code **is** the runner's answer to "did a test go red", and it is
+an answer that no amount of printed text can talk it out of: a green run
+exits 0. The report then says which of the two "a test did not pass" cases it
+was — a test that went red, or a module that could not be imported (the
+placeholder `_FailedTest`, which the parse also treats as a suite error
+rather than a red test).
+
+★ Why the rule still reads the failures section. The unittest parser decides
 every test's state from the **result lines** (one per test, `... ok` / `... FAIL`
 / `... ERROR`), and it stops at the `=====` separator, so it never decides
 anything from the failures section. (It does read the `ERROR:` headers there,
@@ -198,8 +217,14 @@ decision about the suite, not about a test.) The criterion reads that other
 half of the report. Two views on different parts of the output can disagree —
 and the whole value of a consistency check is that they can.
 
-Measured on this machine (Python 3.12.10), the three shapes the criterion has
-to tell apart.
+★ And why the flag is decided **per suite**. `runUnittest` runs every suite
+the plan names and merges the results. Deciding the flag from the merged
+output would let one suite's failures section turn every suite after it into
+a red one. Each suite is judged from its own exit code and its own report,
+and the suites are merged with an OR.
+
+Measured on this machine (Python 3.12.10), the shapes the criterion has to
+tell apart.
 
 A green run whose test name says FAIL — there is no failures section at all:
 
@@ -251,7 +276,7 @@ a **breaking** change to it:
 **Verification**
 
 ★ The acceptance round's three rows, re-run with the tool under test
-(`v0.1.7-0.20261101170138-7a15c6eeecaf`, built from `7a15c6e`):
+(`v0.1.7-0.20261101173836-6619d7c4abae`, built from `6619d7c`):
 
 | row | tree | before the fix | after the fix | volume 24 said it should be |
 |---|---|---|---|---|
@@ -315,13 +340,13 @@ this round.
 
 **Negative control**
 
-★ 13 new tests, plus one existing test rewired, and every one of them has a
+★ 14 new tests, plus one existing test rewired, and every one of them has a
 measured break point. The convention this project follows is "remove the
 logic under test, and the test must fail", so the break points were
 **measured**, not argued:
 
 ```
-internal/adapters/failure_test.go              11 个：6 个 Go 判据 + 5 个 Python 判据
+internal/adapters/failure_test.go              12 个：6 个 Go 判据 + 6 个 Python 判据
 internal/adapters/adapters_test.go             1 个：适配器级（真跑一次 Go 套件）
 internal/counterfactual/consistency_test.go    1 个新的 + 1 个改写的
 internal/adapters/testdata/goproj-failnames/   夹具：一个全绿、但输出里提到失败的 Go 模块
@@ -332,6 +357,9 @@ used to feed the check a made-up text report and the shared word list; it now
 feeds it a real `go test -json` event stream and the Go criterion. Its
 subject did not change — a failure that sits outside the tail window must not
 make the tool contradict itself.
+
+★ One test was deleted rather than rewired: `TestMentionsFailureSeesTheWholeOutput`
+tested `core.MentionsFailure`, and that function is gone.
 
 ★ The fixture is the shape of the bug, not a description of it:
 
@@ -371,25 +399,27 @@ func TestPrintsAPanic(t *testing.T) {
 ```
 
 ★ Four mutations, each measured, each of which turns a specific set of tests
-red:
+red. They were run with `go test -overlay`, so the mutants never touched the
+working tree:
 
 | mutation | what it does | tests that go red |
 |---|---|---|
-| A | the criterion goes back to the old word search | 8 |
-| B | a package-level `fail` counts as a red test, and so does a load error | 3 |
+| A | the criterion goes back to the old word search | 9 |
+| B | a package-level `fail` counts as a red test, and so does a load error | 4 |
 | D | the criterion never reports a failure | 5 |
-| E | the criterion always reports a failure | 9 |
+| E | the criterion always reports a failure | 10 |
 
 ★ Mutation A, the one that matters most, is the old code verbatim:
 
 ```
---- FAIL: TestGoAdapterDoesNotCallAGreenSuiteRed (1.01s)
+--- FAIL: TestGoAdapterDoesNotCallAGreenSuiteRed (0.98s)
     RawFailed = true, want false: the runner reported no red test
 --- FAIL: TestGoTestFailedSeesAFailingTest (0.00s)
 --- FAIL: TestGoTestFailedIgnoresAGreenSuiteThatMentionsAFailure (0.00s)
 --- FAIL: TestGoTestFailedSeesAFailureAtTheStartOfTheStream (0.00s)
 --- FAIL: TestUnittestFailedSeesAnErroredTest (0.00s)
 --- FAIL: TestUnittestFailedIgnoresAGreenSuiteThatMentionsAFailure (0.00s)
+--- FAIL: TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection (0.00s)
 --- FAIL: TestAnInventedFailureIsCaughtEvenWhenTheOutputMentionsAFailure (0.00s)
 --- FAIL: TestAFailureOutsideTheRawTailIsNotACcontradiction (0.00s)
 ```
@@ -399,6 +429,7 @@ red:
 ```
 --- FAIL: TestGoTestFailedIgnoresABuildFailure (0.00s)
 --- FAIL: TestGoTestFailedIgnoresAPackageFailureWithoutAFailingTest (0.00s)
+--- FAIL: TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection (0.00s)
 --- FAIL: TestUnittestFailedIgnoresALoadError (0.00s)
 ```
 
@@ -416,12 +447,13 @@ red:
 fires on everything is not a checker:
 
 ```
---- FAIL: TestGoAdapterDoesNotCallAGreenSuiteRed (1.18s)
+--- FAIL: TestGoAdapterDoesNotCallAGreenSuiteRed (1.06s)
 --- FAIL: TestGoTestFailedIgnoresAGreenSuiteThatMentionsAFailure (0.00s)
 --- FAIL: TestGoTestFailedIgnoresABuildFailure (0.00s)
 --- FAIL: TestGoTestFailedIgnoresAPackageFailureWithoutAFailingTest (0.00s)
 --- FAIL: TestGoTestFailedIgnoresALineThatIsNotAnEvent (0.00s)
 --- FAIL: TestUnittestFailedIgnoresAGreenSuiteThatMentionsAFailure (0.00s)
+--- FAIL: TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection (0.00s)
 --- FAIL: TestUnittestFailedIgnoresALoadError (0.00s)
 --- FAIL: TestUnittestFailedIgnoresACleanRun (0.00s)
 --- FAIL: TestAnInventedFailureIsCaughtEvenWhenTheOutputMentionsAFailure (0.00s)
@@ -432,10 +464,11 @@ wrong set. The D and E counts in the first version of this volume were taken
 from a run that covered `./internal/adapters` only, so the two tests that live
 in `./internal/counterfactual` were not in the measurement at all — and both
 of them do go red under D and E (they call the Go criterion). Re-measured over
-all fourteen: A → 8, B → 3, **D → 5, E → 9**, and the names above are the
-ones that actually turn red. The claim the table makes — that the four
-mutations together cover all fourteen — held either way, but the numbers in
-the evidence column have to be the measured ones.
+every test of this round: **A → 9, B → 4, D → 5, E → 10**, and the names above
+are the ones that actually turn red. The claim the table makes — that the four
+mutations together cover all fifteen — held either way, but the numbers in the
+evidence column have to be the measured ones.
+
 
 ★ The lesson from this repository's own history is the one in volume 03:
 "a negative control that stays green is usually a sign that it never tested
@@ -490,13 +523,35 @@ behaviour and this change did not touch it — it is written down here because
 "the two views agree" and "the two views are right" are two different
 sentences.
 
-★ One more, on the Python side, and it is a theoretical one: `UnittestFailed`
-walks **one** report, but `runUnittest` hands it the concatenation of every
-suite's output. Once a suite's `=====` separator has been seen, the flag stays
-on for the suites after it. No combination of real unittest outputs was found
-that turns this into a false positive — a green unittest report separates its
-sections with dashes, not equals signs — but it is not proven, and a
-repository with many suites is where it would show up.
+★ And one shape on the Python side that a criterion reading only the **text**
+cannot tell from a real one. A green test that prints a line of equals signs
+and then a line that looks like a failure header writes the shape of a
+failures section into the output. Measured on this machine (Python 3.12.10),
+with the test printing both lines to stderr:
+
+```
+test_prints_a_separator (test_printsep.PrintSepTest.test_prints_a_separator) ... ======================================================================
+FAIL: this line was printed by a green test
+ok
+
+-- exit code = 0
+```
+
+★ Two things stop it from becoming a false accusation, and the first one is
+why the exit code is in the rule:
+
+1. The **exit code is 0** — the runner says everything passed, and no printed
+   text can talk it out of that. The criterion returns false.
+2. The parser stops at the first line of equals signs, so it cannot read the
+   rest of the report: `readSummary` never sees the summary, and
+   `crossCheck` records "unittest printed no summary line". The verdict is
+   `suite-crash` — "cannot tell" — not a contradiction.
+
+★ The first version of this criterion did not have the exit code, and the
+second point above was the only thing between it and a false `contradictory`.
+That is the whole reason the rule reads the exit code first: **a runner's own
+verdict is not something its output can overrule.** The negative control for
+it is `TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection`.
 
 ### Reproduction
 
@@ -527,7 +582,23 @@ go test ./internal/adapters -run 'TestGoTestFailed|TestUnittestFailed|TestGoAdap
 go test ./internal/counterfactual -run 'TestAnInventedFailureIsCaughtEvenWhenTheOutputMentionsAFailure|TestAFailureOutsideTheRawTailIsNotACcontradiction' -v
 ```
 
-The event streams the measurement rests on:
+The unittest shapes, on Python 3.12.10:
+
+```bash
+cd %TEMP%\pyjson-bf-2026-11-01
+python -m unittest discover -v                                        # a red run
+python -m unittest test_unittest_sample.SampleTest.test_ok \
+                    test_unittest_sample.SampleTest.test_named_FAIL -v   # a green run
+cd %TEMP%\pyjson-loaderr-2026-11-01
+python -m unittest discover -v                                        # a module that cannot be imported
+cd %TEMP%\pyjson-printsep-2026-11-01
+python -m unittest discover -v                                        # a green run that prints
+                                                                     # a failures section
+```
+
+The three event streams the measurement rests on are **UTF-16LE** (they carry
+a BOM), which is why a reader who pipes them into `grep` or `jq` sees
+garbage where this volume sees JSON. Read them with a BOM-aware reader.
 
 ```
 %TEMP%\vac-green-json.txt   the audited module's whole-module stream, green suite (3625 lines)
