@@ -403,6 +403,206 @@ func TestAuditLeavesCosmeticChangesAloneWhenTestsWereTouched(t *testing.T) {
 	}
 }
 
+// TestAuditSeesAWhitespaceChangeInsideATemplate proves the tool does not
+// call a change cosmetic when the whitespace is inside a string literal.
+//
+// The commit reindents one line of a raw string. That line looks like
+// ordinary code on its own, and a reading that compares lines one at a time
+// calls it a reindent - which is what the tool used to say, in a sentence
+// with no way out: "this change did not alter the behavior of the code".
+//
+// The change is real: the template's output changes. So the tool must not
+// say the change altered nothing. It has to run the experiment and report
+// what the experiment shows, which is that nothing in the repository watches
+// this behaviour - and that answer is backed by a run, not by an
+// assumption.
+func TestAuditSeesAWhitespaceChangeInsideATemplate(t *testing.T) {
+	m := testfixtures.TemplateWhitespaceFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	const want = "This change altered behavior and nothing in the repository is watching it"
+	found := false
+	for _, f := range res.Findings {
+		if strings.Contains(f.Summary, "did not alter the behavior") {
+			t.Fatalf("a change inside a template was called cosmetic: %+v", f)
+		}
+		if f.Summary == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the tool did not report what the experiment showed\nfindings: %+v", res.Findings)
+	}
+	if res.Verdict != VerdictNoTest {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictNoTest, res.Verdict, res.Findings)
+	}
+}
+
+// TestAuditLeavesACommentAloneInsideAFileWithARawString is the other half
+// of the rule, and it is the half that keeps the tool quiet.
+//
+// The file holds a template - whitespace that is data - and the commit
+// changes nothing but a comment in it. A comment has no behaviour, so the
+// commit must still be left alone.
+//
+// This is the case the fix could have broken: the file is full of
+// whitespace that must be kept, and if the rule kept it without also
+// dropping the comment, every comment-only commit in a file with a template
+// would suddenly look like a behaviour change.
+func TestAuditLeavesACommentAloneInsideAFileWithARawString(t *testing.T) {
+	m := testfixtures.CommentInTemplateFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	found := false
+	for _, f := range res.Findings {
+		if strings.Contains(f.Summary, "did not alter the behavior") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a comment-only change in a file with a template was not left alone\nfindings: %+v", res.Findings)
+	}
+	if res.Verdict != VerdictNotApplicable {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictNotApplicable, res.Verdict, res.Findings)
+	}
+}
+
+// TestAuditDoesNotExcuseAFileItCouldNotRead is the rule about the reader's
+// own limits, end to end.
+//
+// The file holds a quote that never closes, so the tool cannot tell which
+// bytes are inside a string literal and which are outside it. The commit
+// changes whitespace in front of that quote.
+//
+// The old rule read the rest of the file as one long literal, found the two
+// sides identical, and said the change altered nothing - a sentence with no
+// way out, about a file it had not read.
+//
+// The tool must not say that. It cannot say the change is cosmetic either,
+// because it does not know what the file means. What it can do is judge the
+// change by the experiment, and say what the experiment found.
+func TestAuditDoesNotExcuseAFileItCouldNotRead(t *testing.T) {
+	m := testfixtures.UnreadableSourceFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	for _, f := range res.Findings {
+		if strings.Contains(f.Summary, "did not alter the behavior") {
+			t.Fatalf("a file the tool could not read was called cosmetic: %+v", f)
+		}
+	}
+	if res.Verdict == VerdictNotApplicable {
+		t.Fatalf("a change in a file the tool could not read was left alone\nfindings: %+v", res.Findings)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatal("the change was judged by nothing at all: no finding and no answer")
+	}
+}
+
+// TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead pins the size
+// that survives a failed measurement.
+//
+// The commit takes the constant out of one file and puts it in another - and
+// takes the blank line that was around it with it - so the diff-level
+// reading says "the two sides are the same" while the diff-level count says
+// one line changed in each of the two files. One of the two files holds a
+// quote that never closes, so the file-level reading cannot be made.
+//
+// The tool is left with the number the diff measured: one line in a.go, one
+// in b.go, so the biggest file changed 1 line. Dropping it would put "the
+// largest of them changed 0 lines" into a report about a change whose size
+// was measured - a number nobody earned.
+//
+// The count here is 1, and it is the only number on offer: the file-level
+// reading cannot be made on this fixture at all, so it has no number to
+// disagree with. (It is 2 when the unclosed quote is read as a closed one -
+// the sixth control in the volume - because then the file-level reading
+// swallows the line that moved. That is what makes that control worth
+// running.)
+func TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead(t *testing.T) {
+	m := testfixtures.SizeOnUnreadableFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict == VerdictNotApplicable {
+		t.Fatalf("a change in a file the tool could not read was left alone\nfindings: %+v", res.Findings)
+	}
+	if res.SourceChange.biggestFile != 1 {
+		t.Errorf("the report does not stand on the size the diff measured (want 1): %+v", res.SourceChange)
+	}
+}
+
+// TestAuditSaysWhatItsReadingActuallyRemoves pins the wording of the
+// cosmetic finding.
+//
+// The finding is a claim about a reduction, and the reduction has limits: a
+// trailing "#" comment is not removed, and the whitespace outside a string
+// literal is only formatting in the languages whose layout is not the
+// syntax. A finding that says "the comments are removed" describes a
+// reduction this rule does not perform, and a reader who checks it finds the
+// difference.
+//
+// So the wording has to say what the rule does - and what it does not see.
+func TestAuditSaysWhatItsReadingActuallyRemoves(t *testing.T) {
+	m := testfixtures.CommentInTemplateFixture(t)
+	a := newAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), m.Head(t))
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	var found *core.Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Summary, "did not alter the behavior") {
+			found = &res.Findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("the comment-only change was not left alone\nfindings: %+v", res.Findings)
+	}
+
+	// The claim must not be broader than the rule behind it.
+	if strings.Contains(found.Detail, "cannot be part of a value") {
+		t.Errorf("the finding claims a property of the language, which this rule does not establish: %q", found.Detail)
+	}
+	if !strings.Contains(found.Detail, "outside the string literals") {
+		t.Errorf("the finding must say which whitespace it removed: %q", found.Detail)
+	}
+	// And it must name the blind spot rather than hide it.
+	if !strings.Contains(found.Detail, "heredoc") {
+		t.Errorf("the finding must name the whitespace this reading cannot see: %q", found.Detail)
+	}
+	// The evidence has to be checkable: "the comments are removed" is not
+	// true of a trailing "#" comment, and this rule does not remove it.
+	if strings.Contains(found.Evidence, "the comments are removed") {
+		t.Errorf("the evidence claims a reduction this rule does not perform: %q", found.Evidence)
+	}
+	if !strings.Contains(found.Evidence, "# comment is removed only when it starts the line") {
+		t.Errorf("the evidence must say how the '#' rule works: %q", found.Evidence)
+	}
+}
+
 // TestAuditSaysSoWhenTheCommitChangedCodeItCannotRun proves the tool does
 // not file a code change it cannot judge under "nothing to judge".
 //
