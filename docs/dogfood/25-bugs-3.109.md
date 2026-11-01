@@ -125,8 +125,12 @@ repository's own consistency check is a **passing** subtest whose name ends in
 | admin, counterfactual tree, green | 3625 | 9 | 0 | 0 |
 | this repository's own suite, red on Windows | 3239 | 30 | 20 | 3 |
 
-The old criterion read column three. The new one reads column four. On the
-green trees that is 9 against 0; on the red tree 30 against 20.
+★ The old criterion asked one yes/no question about the whole output — "does it
+contain one of those three words?" — and column three is how many lines say
+yes. The new one asks about the runner's failure channel, and column four is
+how many events are in it. On the two green trees the old answer was yes (9
+lines each) and the new answer is no red test at all; on the red tree the old
+answer was yes (30 lines) and the new answer is 20 red tests.
 
 ★ And the check had **two** directions, and the word search turned off the
 second one on exactly the repositories that needed it. The check asks:
@@ -173,9 +177,11 @@ at all":
   whose build is broken:
 
 ```
-{"Action":"build-fail","ImportPath":"example.com/bf/broken"}
+{"ImportPath":"example.com/bf/broken","Action":"build-fail"}
 {"Action":"fail","Package":"example.com/bf/broken","Elapsed":0,"FailedBuild":"example.com/bf/broken"}
 ```
+
+(the second line's `Time` field is dropped)
 
 - And a package that failed **without a single failing test** never ran its
   tests: `parseGoEvents` calls that a build error, and the engine judges it
@@ -371,8 +377,8 @@ red:
 |---|---|---|
 | A | the criterion goes back to the old word search | 8 |
 | B | a package-level `fail` counts as a red test, and so does a load error | 3 |
-| D | the criterion never reports a failure | 4 |
-| E | the criterion always reports a failure | 8 |
+| D | the criterion never reports a failure | 5 |
+| E | the criterion always reports a failure | 9 |
 
 ★ Mutation A, the one that matters most, is the old code verbatim:
 
@@ -403,13 +409,14 @@ red:
 --- FAIL: TestGoTestFailedSeesAFailureAtTheStartOfTheStream (0.00s)
 --- FAIL: TestUnittestFailedSeesAFailedTest (0.00s)
 --- FAIL: TestUnittestFailedSeesAnErroredTest (0.00s)
+--- FAIL: TestAFailureOutsideTheRawTailIsNotACcontradiction (0.00s)
 ```
 
 ★ Mutation E, the one that guards the specificity half — a checker that
 fires on everything is not a checker:
 
 ```
---- FAIL: TestGoAdapterDoesNotCallAGreenSuiteRed (0.89s)
+--- FAIL: TestGoAdapterDoesNotCallAGreenSuiteRed (1.18s)
 --- FAIL: TestGoTestFailedIgnoresAGreenSuiteThatMentionsAFailure (0.00s)
 --- FAIL: TestGoTestFailedIgnoresABuildFailure (0.00s)
 --- FAIL: TestGoTestFailedIgnoresAPackageFailureWithoutAFailingTest (0.00s)
@@ -417,7 +424,18 @@ fires on everything is not a checker:
 --- FAIL: TestUnittestFailedIgnoresAGreenSuiteThatMentionsAFailure (0.00s)
 --- FAIL: TestUnittestFailedIgnoresALoadError (0.00s)
 --- FAIL: TestUnittestFailedIgnoresACleanRun (0.00s)
+--- FAIL: TestAnInventedFailureIsCaughtEvenWhenTheOutputMentionsAFailure (0.00s)
 ```
+
+★ One correction, because the first version of this table was measured on the
+wrong set. The D and E counts in the first version of this volume were taken
+from a run that covered `./internal/adapters` only, so the two tests that live
+in `./internal/counterfactual` were not in the measurement at all — and both
+of them do go red under D and E (they call the Go criterion). Re-measured over
+all fourteen: A → 8, B → 3, **D → 5, E → 9**, and the names above are the
+ones that actually turn red. The claim the table makes — that the four
+mutations together cover all fourteen — held either way, but the numbers in
+the evidence column have to be the measured ones.
 
 ★ The lesson from this repository's own history is the one in volume 03:
 "a negative control that stays green is usually a sign that it never tested
@@ -453,6 +471,32 @@ deliberate — a second copy of the parse could never disagree with the first
 — but it means the criterion cannot see a failure the runner reported in a
 shape `go test -json` does not use. A runner that changed its event format
 would need this looked at again.
+
+★ And one shape that **neither** view can see: a test that calls `os.Exit(1)`
+ends the test binary, and Go reports that at the **package** level only:
+
+```
+{"Action":"run","Package":"example.com/osexit","Test":"TestExits"}
+{"Action":"output","Package":"example.com/osexit","Output":"FAIL\texample.com/osexit\t0.340s\n"}
+{"Action":"fail","Package":"example.com/osexit","Elapsed":0.34}
+```
+
+There is no test-level `fail` event in it, so the criterion says "no red
+test" — and `parseGoEvents` says the same thing, because a package that
+failed without a single failing test is a build error as far as it is
+concerned. The two views agree, so nothing is reported as contradictory; but
+a test that really did run red is invisible to both. That is the parser's
+behaviour and this change did not touch it — it is written down here because
+"the two views agree" and "the two views are right" are two different
+sentences.
+
+★ One more, on the Python side, and it is a theoretical one: `UnittestFailed`
+walks **one** report, but `runUnittest` hands it the concatenation of every
+suite's output. Once a suite's `=====` separator has been seen, the flag stays
+on for the suites after it. No combination of real unittest outputs was found
+that turns this into a false positive — a green unittest report separates its
+sections with dashes, not equals signs — but it is not proven, and a
+repository with many suites is where it would show up.
 
 ### Reproduction
 
