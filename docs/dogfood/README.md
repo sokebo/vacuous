@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **108 bugs the tool had in itself** that dogfooding uncovered.
+the **109 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -73,6 +73,7 @@ in the tables below are the record of that run.
 | [22-bugs-3.107.md](./22-bugs-3.107.md) | Tool bug 3.107 — the rule read the wording of an error, and the wording is the platform's: on Windows the audit produced no witness for any narrowed commit in a repository with nested Go modules |
 | [23-bugs-3.108.md](./23-bugs-3.108.md) | Tool bug 3.108 — the rule stripped the whitespace out of the string literals, and whitespace inside a literal is the value: a change to a template was reported as a change that altered nothing |
 | [24-round-2026-11-01.md](./24-round-2026-11-01.md) | The 2026-11-01 acceptance round on `admin-service` — a real TDD-shaped change judged end to end, the suite made green first, and a `contradictory` verdict that turned out to be the consistency check reading the test names |
+| [25-bugs-3.109.md](./25-bugs-3.109.md) | Tool bug 3.109 — the failure flag was a word search: a passing subtest named ".../FAILED" called a green suite a contradiction, and the half of the check that catches an invented failure was off on exactly those repositories |
 
 ---
 
@@ -106,7 +107,7 @@ history is public anyway.
 
 ## The catalog
 
-108 entries. The number in front is a stable identifier: it is referenced from
+109 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
 The log was written over many rounds, and three of its numbers were used
@@ -226,6 +227,7 @@ themselves.
 | **3.106** | The gate kept its own copy of two rules the checker had already changed — on Windows it was blind to a native guard | Gate / static detection |
 | **3.107** | The rule read the wording of an error — on Windows the audit produced no witness for any narrowed commit in a repository with nested modules | Go adapter |
 | **3.108** | The rule stripped the whitespace out of the string literals — and whitespace inside a literal is the value, so a change to a template was reported as a change that altered nothing | Cosmetic detection |
+| **3.109** | The consistency check decided "the runner reported a failure" by searching the output for the word "FAIL" — so a passing subtest named ".../FAILED" called a green suite a contradiction, and the half of the check that catches an invented failure was off on exactly those repositories | Consistency check |
 
 ---
 
