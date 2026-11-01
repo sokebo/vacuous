@@ -56,17 +56,40 @@ func GoTestFailed(stream string) bool {
 	return false
 }
 
+// unittestNoTestsExitCode is the code unittest exits with when it ran no test
+// at all.
+//
+// It is not a usage error. `unittest/main.py` names it
+// `_NO_TESTS_EXITCODE`, and it is what a class-level error produces when the
+// error happens before the first test runs: `setUpClass` and `setUpModule`
+// raise, no test ever executes, and the runner exits 5.
+//
+// That run did fail. The parser files it as a failed outcome, so a criterion
+// that reads 5 as "the command could not be run" ends up calling the tool's
+// own report a contradiction.
+const unittestNoTestsExitCode = 5
+
 // UnittestFailed reports whether a unittest report says that a test went red.
 //
 // unittest says two things about a run that did not come out green: its exit
 // code, and the failures section at the end of the report, where every
 // failure and every error is repeated as a header ("FAIL: <name> (<id>)").
 //
-// The exit code comes first, and it is the runner's own verdict: unittest
-// exits 0 when everything passed, 1 when a test did not pass, and above 1
-// when the command could not be run at all. **A green run therefore cannot be
-// read as a red one**, no matter what its tests printed - and a test's own
-// output is exactly the kind of thing that used to fool this check.
+// The exit code comes first, because it is the runner's own verdict, and a
+// runner's verdict is not something its output can overrule. The codes are:
+//
+//	0  everything passed
+//	1  a test did not pass
+//	2  the command could not be run: a usage error
+//	5  no test ran at all
+//
+// Code 0 therefore settles it: **a green run cannot be read as a red one**,
+// no matter what its tests printed - and a test's own output is exactly the
+// kind of thing that used to fool this check.
+//
+// Code 5 is the one that cannot be settled on its own. It says no test ran,
+// and that is what a class-level error looks like when it happens before the
+// first test does. So codes 1 and 5 both go to the report.
 //
 // The report then says which of the two "a test did not pass" cases it was:
 // a test that went red, or a module that could not be imported. The second
@@ -79,10 +102,19 @@ func GoTestFailed(stream string) bool {
 // views of the same run, and the check is only worth anything if they can
 // disagree.
 func UnittestFailed(exitCode int, output string) bool {
-	if exitCode != 1 {
-		// 0 means everything passed. Above 1 means the command could
-		// not be run. Neither is a red test, and neither can be talked
-		// out of it by the text in the output.
+	switch {
+	case exitCode == 0:
+		// Everything passed. Nothing the tests printed can talk the
+		// runner out of that.
+		return false
+	case exitCode == 1 || exitCode == unittestNoTestsExitCode:
+		// The report decides. See below.
+	case exitCode > 1:
+		// The command could not be run: a usage error, an internal
+		// error. Not a red test.
+		return false
+	default:
+		// The process never started.
 		return false
 	}
 	// The separator is where the failures section starts. It is the only

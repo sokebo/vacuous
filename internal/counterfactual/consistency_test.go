@@ -324,3 +324,55 @@ func TestAFailureOutsideTheRawTailIsNotACcontradiction(t *testing.T) {
 		t.Fatalf("classify() = %q, want %q", verdict, VerdictProven)
 	}
 }
+
+// TestAClassErrorThatRanNoTestIsNotACcontradiction is the shape the exit
+// code alone cannot settle.
+//
+// unittest exits 5 when it ran no test at all, and a class-level error is
+// what produces that: the error happens before the first test, so the run
+// has a red outcome and the exit code says nothing about it.
+//
+// A criterion that reads 5 as "the command could not be run" says "no test
+// went red" while the parse says one did. The tool's answer to that is a
+// critical finding that says the tool is broken - which is the failure this
+// whole change exists to remove, reproduced by the fix that came with it.
+func TestAClassErrorThatRanNoTestIsNotACcontradiction(t *testing.T) {
+	// The report is a real one, captured from a suite whose setUpClass
+	// raised. The traceback's path is the only part that was changed.
+	report := `setUpClass (test_setup.Boom) ... ERROR
+
+======================================================================
+ERROR: setUpClass (test_setup.Boom)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "test_setup.py", line 6, in setUpClass
+    raise RuntimeError("boom in setUpClass")
+RuntimeError: boom in setUpClass
+
+----------------------------------------------------------------------
+Ran 0 tests in 0.001s
+
+FAILED (errors=1)
+`
+
+	run := &runOutcome{result: core.RunResult{
+		// The parse filed the class-level error as a failed outcome.
+		Outcomes: []core.TestOutcome{
+			{Name: "test_setup.py::setUpClass", Status: core.StatusFail},
+		},
+		// And the suite says it ran no test.
+		SuiteErrors: []string{"unittest ran no tests (exit 5): " + report},
+		RawOutput:   report,
+		// The flag is the runner's own failure channel.
+		RawFailed: adapters.UnittestFailed(5, report),
+	}}
+
+	verdict := classify(run, nil, nil)
+	if verdict == VerdictContradictory {
+		t.Fatalf("classify() = %q: the parse says a test went red and the flag "+
+			"says the same thing - there is nothing to contradict", verdict)
+	}
+	if verdict != VerdictProven {
+		t.Fatalf("classify() = %q, want %q", verdict, VerdictProven)
+	}
+}
