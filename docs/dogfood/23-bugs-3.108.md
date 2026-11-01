@@ -307,7 +307,7 @@ three are about the file-level confirmation being load-bearing:
     {Kind:no-test-for-fix Severity:info Summary:This change did not alter
      the behavior of the code — it needs no new test
 --- FAIL: TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead (0.60s)
-    audit_test.go:541: a change in a file the tool could not read was left alone
+    audit_test.go:548: a change in a file the tool could not read was left alone
 ```
 
 ★ ★ The second and the third are the tests the review rounds added, and they
@@ -337,7 +337,7 @@ tests red and the end-to-end test with them:
 --- FAIL: TestNormalizeFileSeesALiteralThatSpansLines (0.00s)
 --- FAIL: TestNormalizeFileCountsTheLinesThatReallyChanged (0.00s)
     --- FAIL: .../an_indentation_inside_a_raw_string
-        normalize_test.go:208: the change measured 0 lines, want 2
+        normalize_test.go:219: the change measured 0 lines, want 2
 ```
 
 ★ The tests that were already in the repository — `TestPatchIsCosmetic`,
@@ -395,7 +395,7 @@ firing — makes eight tests red, and the new end-to-end one is among them:
 --- FAIL: TestAuditLeavesACommentAloneInsideAFileWithARawString
     audit_test.go:474: a comment-only change in a file with a template was not left alone
 --- FAIL: TestAuditSaysWhatItsReadingActuallyRemoves
-    audit_test.go:545: the comment-only change was not left alone
+    audit_test.go:582: the comment-only change was not left alone
 --- FAIL: TestPatchIsCosmetic
     --- FAIL: .../comment_added
     --- FAIL: .../comment_reworded
@@ -411,7 +411,7 @@ firing — makes eight tests red, and the new end-to-end one is among them:
 
 ---
 
-### The review of this entry, before it was merged
+### The first review of this entry
 
 ★ The branch was reviewed by somebody who did not write it: on a copy of the
 repository, with the mutants built by hand and the probes written from
@@ -523,7 +523,7 @@ red, and the third one is the size test the second review asked for:
     {Kind:no-test-for-fix Severity:info Summary:This change did not alter
      the behavior of the code — it needs no new test}
 --- FAIL: TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead (0.88s)
-    audit_test.go:544: the report does not stand on the size the diff
+    audit_test.go:551: the report does not stand on the size the diff
     measured (want 1): {cosmetic:false lines:3 biggestFile:2}
 --- FAIL: TestNormalizeFileSaysWhenItCouldNotReadTheFile (0.00s)
     --- FAIL: .../a_backtick_that_never_closes
@@ -566,7 +566,7 @@ and it is the size test:
 
 ```
 --- FAIL: TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead (0.84s)
-    audit_test.go:544: the report does not stand on the size the diff
+    audit_test.go:551: the report does not stand on the size the diff
     measured (want 1): {cosmetic:false lines:0 biggestFile:0}
 ```
 
@@ -574,7 +574,7 @@ and it is the size test:
 
 ### The second review of this entry
 
-★ The branch went through a second review before it was merged. It found four
+★ The branch went through a second review. It found four
 things, and one of the four was about this volume: **the list of what goes red
 under each negative control had been measured on an older tree and carried
 over**. A list of what goes red is only worth what the tree it was measured on
@@ -604,12 +604,103 @@ written down as a neighbour below.
 
 **4. The size that survives a failed measurement had no test at all.** The
 second review found that the change was **zero-covered**, and that it can move
-the severity of three findings. It has a test now, and the control for it is
-the eighth one above.
+the severity of two findings and the wording of a third. It has a test now,
+and the control for it is the eighth one above.
 
 ★ What the second review did **not** find: a problem with the three code
 fixes. It measured each of them on its own — the file that cannot be read, the
 two counts, the wording — and each one does what it says.
+
+---
+
+### The third review of this entry
+
+★ The branch went through a third review, on the tree the second round of fixes
+ends on. It confirmed the behaviour — all eight controls were rebuilt by hand
+and re-measured, and every red list came out with the same names and the same
+counts — and it found two things about **the words on the tree**, not about the
+rule.
+
+**1. The size test argued with a number that does not exist.** The comment on
+`TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead` said the count
+there is "1, not the 2 the file-level reading would have produced", and the
+commit that added the test said the same. Measured on this branch:
+
+```
+diff-level (this fixture)              perFile = map[a.go:1 b.go:1]
+file-level (with the backtick closed)  biggestFile = 1
+file-level (this fixture)              errors — it produces no number at all
+```
+
+So the file-level reading would have measured **1** as well, and the argument
+"1 rather than 2, so the assertion says which of the two readings the report
+is standing on" does not hold: on this fixture the file-level reading has no
+number to disagree with.
+
+The **2** is real — but it belongs to the sixth control, the one that reads an
+unclosed quote as a closed one, where the file-level reading swallows the line
+that moved:
+
+```
+    audit_test.go:551: the report does not stand on the size the diff measured (want 1): {cosmetic:false lines:3 biggestFile:2}
+```
+
+★ The assertion itself was not wrong and was not changed: it is still 1, and it
+is still a real control — put the assignment back inside `if err == nil` and
+exactly this one test goes red. The *explanation* was wrong, and an
+explanation is a claim about the rule like any other. The fixture's own
+description was made exact too: the commit takes the constant out of one file,
+puts it in another and takes the blank line around it along, which is why the
+raw diff reads `a.go -2 / b.go +1` while the semantic count is one line in
+each file.
+
+**2. A line number in this volume was from an older tree.** The second control
+quoted `normalize_test.go:208` for the failure `the change measured 0 lines,
+want 2`. That failure is reported at `normalize_test.go:219`; 208 is a line of
+test data. Every other line number this volume quotes was checked on the tree
+this entry ends on and is correct — `audit_test.go:432`, `:507`, `:548`,
+`:551`, `:582`, `normalize_test.go:219`, `audit.go:2116`, `:2584`, `:2618`.
+
+★ ★ And the check found more of the same kind, which is why the outputs quoted
+above were taken from a fresh run rather than carried over: the fix in this
+round rewrote a comment in `audit_test.go` and made it seven lines longer, so
+the line numbers below that comment moved — `541` became `548` and `544`
+became `551`. One of them was stale before that: `545` was quoted from a tree
+older than the size test, and the line it names is `582` now. The line numbers
+in the failure outputs quoted in this volume were replaced with the ones the
+tree this entry ends on actually produces, and the eight controls were run
+again on that tree to get them:
+
+```
+CONTROL 1  3 tests                                     (baseline 3 excluded)
+CONTROL 2  4 tests + 8 sub-cases                       (baseline 3 excluded)
+CONTROL 3  5 tests + 2 sub-cases                       (baseline 3 excluded)
+CONTROL 4  8 tests + 7 sub-cases                       (baseline 3 excluded)
+CONTROL 5  1 test  + 1 sub-case                        (baseline 3 excluded)
+CONTROL 6  3 tests + 2 sub-cases                       (baseline 3 excluded)
+CONTROL 7  1 test                                      (baseline 3 excluded)
+CONTROL 8  1 test                                      (baseline 3 excluded)
+```
+
+★ The third control was also run with **both** cross-line paths broken — the
+backtick one and the triple-quote one — and that one makes five tests and
+**three** sub-cases red, the third being
+`TestNormalizeFileKeepsWhitespaceInsideALiteral/indentation_inside_a_triple-quoted_string`.
+The list above is the backtick-only variant, which is the one this volume
+describes.
+
+★ Two smaller things came out of the same review, and both are fixed here: the
+size signal can move the **severity of two** findings and the **wording of a
+third** — not the severity of three — and the two review sections above were
+titled "before it was merged" while the branch had not been merged.
+
+★ What the third review did **not** find: a problem with the rule, with the
+fixes, or with the numbers. It re-measured the eight controls, the blind
+spots, the file-level/diff-level disagreement and the failure sets of the whole
+suite on both ends, and it compared the self-audit on this tree with the
+self-audit on the tree before this round: the same result on both
+(`undecidable 1`, `coupled 1`, exit 0). The production code did not change in
+this round at all.
 
 ---
 
