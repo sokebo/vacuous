@@ -183,12 +183,14 @@ at all":
   contradict the parser over a tree that simply did not compile — and
   `RawFailed` now says TEST failure, in words, in the contract.
 
-★ Why the Python rule reads the failures section: the unittest parser reads
-the **result lines** (one per test, `... ok` / `... FAIL` / `... ERROR`), and
-it stops at the `=====` separator, so it never reads the failures section.
-The criterion reads the other half of the report. Two views on different
-parts of the output can disagree — and the whole value of a consistency
-check is that they can.
+★ Why the Python rule reads the failures section: the unittest parser decides
+every test's state from the **result lines** (one per test, `... ok` / `... FAIL`
+/ `... ERROR`), and it stops at the `=====` separator, so it never decides
+anything from the failures section. (It does read the `ERROR:` headers there,
+but only to attach a reason to a module that could not be imported — a
+decision about the suite, not about a test.) The criterion reads that other
+half of the report. Two views on different parts of the output can disagree —
+and the whole value of a consistency check is that they can.
 
 Measured on this machine (Python 3.12.10), the three shapes the criterion has
 to tell apart.
