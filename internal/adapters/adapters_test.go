@@ -218,6 +218,46 @@ func TestGoAdapterGreenSuite(t *testing.T) {
 	}
 }
 
+// TestGoAdapterDoesNotCallAGreenSuiteRed is the adapter-level negative
+// control for the failure channel.
+//
+// The fixture's suite is green, and its output mentions a failure twice: a
+// passing subtest named "FAILED", and a test that prints "panic:" to prove
+// that a recovery middleware works.
+//
+// A substring scan over the runner's output calls both a failure. The flag
+// the engine's consistency check compares its verdict against then says
+// "the runner reported a red test" over a run that was entirely green, and
+// the tool answers "my verdict contradicts my own output" - a critical
+// finding that says the tool is broken.
+//
+// The load-bearing half is the last assertion: the counts say the suite is
+// green, and the flag has to say the same thing.
+func TestGoAdapterDoesNotCallAGreenSuiteRed(t *testing.T) {
+	root := copyFixture(t, "goproj-failnames")
+	a := NewGo()
+	a.Detect(root, core.FileScopeAll())
+	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	res, err := a.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	pass, fail, skip, unknown := res.Counts()
+	if pass == 0 {
+		t.Fatalf("no test passed: %+v", res.Outcomes)
+	}
+	if fail != 0 || skip != 0 || unknown != 0 {
+		t.Errorf("counts = pass %d fail %d skip %d unknown %d, want all green", pass, fail, skip, unknown)
+	}
+	if res.RawFailed {
+		t.Error("RawFailed = true, want false: the runner reported no red test")
+	}
+}
+
 // TestGoAdapterRunsModuleInSubdirectory checks a repository whose Go module
 // is not at the root.
 //
