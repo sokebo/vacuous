@@ -166,8 +166,8 @@ not change".
   still costs the reader nothing. The re-alignment `gofmt` does when a struct
   block grows a field is still not a change, and the report still says so.
 - The **size** signal is measured on the files too, so a change the diff
-  could not count is counted: the report says "the largest of them changed 2
-  lines" rather than "0 lines" next to "altered behavior".
+  could not count is counted: the report says how many lines changed rather
+  than "0 lines" next to "altered behavior".
 
 ★ The finding's own wording changed with it, because the report must state
 what it actually did:
@@ -658,18 +658,19 @@ each file.
 quoted `normalize_test.go:208` for the failure `the change measured 0 lines,
 want 2`. That failure is reported at `normalize_test.go:219`; 208 is a line of
 test data. Every other line number this volume quotes was checked on the tree
-this entry ends on and is correct — `audit_test.go:432`, `:507`, `:548`,
-`:551`, `:582`, `normalize_test.go:219`, `audit.go:2116`, `:2584`, `:2618`.
+this entry ends on and is correct — `audit_test.go:363`, `:396`, `:432`,
+`:474`, `:507`, `:548`, `:551`, `:582`, `normalize_test.go:219`,
+`audit.go:2116`, `:2584`, `:2618`.
 
 ★ ★ And the check found more of the same kind, which is why the outputs quoted
-above were taken from a fresh run rather than carried over: the fix in this
-round rewrote a comment in `audit_test.go` and made it seven lines longer, so
-the line numbers below that comment moved — `541` became `548` and `544`
-became `551`. One of them was stale before that: `545` was quoted from a tree
-older than the size test, and the line it names is `582` now. The line numbers
-in the failure outputs quoted in this volume were replaced with the ones the
-tree this entry ends on actually produces, and the eight controls were run
-again on that tree to get them:
+above were re-run rather than carried over: the fix in this round rewrote a
+comment in `audit_test.go` and made it seven lines longer, so the line numbers
+below that comment moved — `541` became `548` and `544` became `551`. One of
+them was stale before that: `545` was quoted from a tree older than the size
+test, and the line it names is `582` now. Every failure output quoted in this
+volume was **re-run on the tree this entry ends on**; the quotes are that
+run's output, wrapped by hand where a line was long. The eight controls were
+run there to get them:
 
 ```
 CONTROL 1  3 tests                                     (baseline 3 excluded)
