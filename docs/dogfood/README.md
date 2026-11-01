@@ -72,6 +72,7 @@ in the tables below are the record of that run.
 | [21-bugs-3.106.md](./21-bugs-3.106.md) | Tool bug 3.106 — the gate kept its own copy of two rules the checker had already changed |
 | [22-bugs-3.107.md](./22-bugs-3.107.md) | Tool bug 3.107 — the rule read the wording of an error, and the wording is the platform's: on Windows the audit produced no witness for any narrowed commit in a repository with nested Go modules |
 | [23-bugs-3.108.md](./23-bugs-3.108.md) | Tool bug 3.108 — the rule stripped the whitespace out of the string literals, and whitespace inside a literal is the value: a change to a template was reported as a change that altered nothing |
+| [24-round-2026-11-01.md](./24-round-2026-11-01.md) | The 2026-11-01 acceptance round on `admin-service` — a real TDD-shaped change judged end to end, the suite made green first, and a `contradictory` verdict that turned out to be the consistency check reading the test names |
 
 ---
 
