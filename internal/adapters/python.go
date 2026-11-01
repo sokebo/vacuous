@@ -820,7 +820,7 @@ func (p *Python) runUnittest(ctx context.Context, plan core.Plan) (core.RunResul
 	}
 
 	merged.RawOutput = tailOf([]byte(raw.String()), 4000)
-	merged.RawFailed = core.MentionsFailure(raw.String())
+	merged.RawFailed = UnittestFailed(raw.String())
 
 	merged.Outcomes = dedupeOutcomes(merged.Outcomes)
 

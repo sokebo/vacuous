@@ -234,8 +234,15 @@ func (g *Go) runSingle(ctx context.Context, plan core.Plan) (core.RunResult, err
 		// against what the runner actually printed. The tail is what a
 		// human reads; the flag below is what the check needs, and it is
 		// computed over the WHOLE output - a tail is not the output.
+		//
+		// The flag is the runner's own failure channel, read without the
+		// parser, so that the engine's check compares two views that can
+		// disagree. Searching the output for the word "FAIL" cannot: the
+		// stream carries the test names and the tests' own output, and a
+		// passing subtest named ".../FAILED" makes a green suite look
+		// red.
 		RawOutput: tailOf(stdout.Bytes(), 4000),
-		RawFailed: core.MentionsFailure(stdout.String()),
+		RawFailed: GoTestFailed(stdout.String()),
 	}
 
 	records, buildErrors := parseGoEvents(stdout.Bytes(), goStatus)
