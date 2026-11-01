@@ -58,20 +58,33 @@ func GoTestFailed(stream string) bool {
 
 // UnittestFailed reports whether a unittest report says that a test went red.
 //
-// unittest prints two things: one result line per test, and a failures
-// section at the end that repeats every failure and every error as a header
-// ("FAIL: <name> (<id>)"). The parse reads the result lines; this reads the
-// failures section. The two views sit on different parts of the output, so
-// they can disagree - which is the whole point of a consistency check.
+// unittest says two things about a run that did not come out green: its exit
+// code, and the failures section at the end of the report, where every
+// failure and every error is repeated as a header ("FAIL: <name> (<id>)").
 //
-// The failures section only exists when there is something to report. A
-// green run has no "FAIL:" header anywhere, no matter what its test names
-// or its own output say.
+// The exit code comes first, and it is the runner's own verdict: unittest
+// exits 0 when everything passed, 1 when a test did not pass, and above 1
+// when the command could not be run at all. **A green run therefore cannot be
+// read as a red one**, no matter what its tests printed - and a test's own
+// output is exactly the kind of thing that used to fool this check.
 //
-// A module that could not be imported is not a red test - it never ran one.
-// unittest reports it with a placeholder, and the placeholder is left out
-// here for the same reason parseUnittestOutput leaves it out.
-func UnittestFailed(output string) bool {
+// The report then says which of the two "a test did not pass" cases it was:
+// a test that went red, or a module that could not be imported. The second
+// one is not a red test - it never ran one - and unittest reports it with a
+// placeholder, which is left out here for the same reason
+// parseUnittestOutput leaves it out.
+//
+// The parser reads the result lines (one per test, `... ok` / `... FAIL` /
+// `... ERROR`), and this reads the exit code and the failures section. Three
+// views of the same run, and the check is only worth anything if they can
+// disagree.
+func UnittestFailed(exitCode int, output string) bool {
+	if exitCode != 1 {
+		// 0 means everything passed. Above 1 means the command could
+		// not be run. Neither is a red test, and neither can be talked
+		// out of it by the text in the output.
+		return false
+	}
 	// The separator is where the failures section starts. It is the only
 	// place a line of equals signs appears, and the parse stops there
 	// too - so this reads the part of the report the parse never sees.
