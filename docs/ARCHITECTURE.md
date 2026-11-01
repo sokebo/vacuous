@@ -267,9 +267,9 @@ report has to be able to tell them apart.
 `RawFailed` is a separate field because the consistency check asks "does the
 runner itself say a test went red" — and the answer has to come from the
 runner's own failure channel, which is a different thing for every runner.
-Go speaks in events, unittest speaks in a failures section, and the adapter
-that ran the suite is the one that knows which is which. The flag carries the
-answer; it does not carry a rule.
+Go speaks in events, unittest speaks in an exit code and a failures section,
+and the adapter that ran the suite is the one that knows which is which. The
+flag carries the answer; it does not carry a rule.
 
 Two earlier versions of that rule are worth remembering, because both of them
 were wrong in the direction that costs the most:

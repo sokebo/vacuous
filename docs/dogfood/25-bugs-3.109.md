@@ -7,8 +7,10 @@ a **passing** subtest named ".../FAILED" made a green suite look red — so the
 tool answered "my verdict contradicts my own output", a `critical` finding
 that says the tool is broken.
 
-**Tool under test**: `v0.1.7-0.20261101173836-6619d7c4abae`, built from
-`fix/3109-failure-criterion` at `6619d7c`.
+**Tool under test**: `v0.1.7-0.20261101180254-2c3d6a3b63cb`, built from
+`fix/3109-failure-criterion` at `2c3d6a3`. (The first draft of this fix was
+`6619d7c`; a review found a defect in it, and `2c3d6a3` is that defect fixed.
+Both are told here, because the second one is the more interesting of the two.)
 
 **Repository under test**: `example/admin-service` — the same read-only
 scratch clone volume 24 used, with the sibling checkout of
@@ -161,10 +163,10 @@ internal/adapters/failure.go（新增）
         字段的事件 → 有红测试。
 
     UnittestFailed(exitCode int, output string) bool
-        先看退出码：unittest 退出 1 才是「有测试没有通过」，0 是全过，
-        >1 是命令根本没跑起来 → 只有 1 才继续。
-        再读报告的 failures section：分隔线之后有一行以 "FAIL: " 或
-        "ERROR: " 开头的头（且不是 _FailedTest 占位符）→ 有红测试。
+        先看退出码：0 是全过；1 是「有测试没有通过」；5 是「一个测试都没跑到」；
+        2 是用法错；>1 且≠5 是命令没跑起来；<0 是进程没起来。
+        1 和 5 都继续读报告：failures section 里有 "FAIL: " 或 "ERROR: " 开头的
+        头（且不是 _FailedTest 占位符）→ 有红测试。
 
 internal/adapters/go_run.go     RawFailed: GoTestFailed(stdout.String())
 internal/adapters/python.go    每个 suite 各自判 UnittestFailed(exitCode, report)，
@@ -193,12 +195,14 @@ at all":
   `RawFailed` now says TEST failure, in words, in the contract.
 
 ★ Why the Python rule starts with the exit code. unittest's own vocabulary is
-already written down in this repository (`unittestExitErrors`):
+already written down in this repository (`unittestExitErrors`) — and it is
+**four** codes, not three:
 
 ```
 	0  everything passed
 	1  a test did not pass
-	>1 the command could not be run
+	2  the command could not be run: a usage error
+	5  no test ran at all
 ```
 
 So the exit code **is** the runner's answer to "did a test go red", and it is
@@ -207,6 +211,71 @@ exits 0. The report then says which of the two "a test did not pass" cases it
 was — a test that went red, or a module that could not be imported (the
 placeholder `_FailedTest`, which the parse also treats as a suite error
 rather than a red test).
+
+★ **Code 5 is the one that cannot be settled on its own, and getting it wrong
+is worse than not having the exit code at all.** The first draft of this
+criterion read every code above 1 as "the command could not be run", so 5
+came out as "not a red test". But 5 is what a **class-level error** produces:
+`setUpClass` and `setUpModule` raise, no test ever executes, and unittest
+exits 5. The run did fail — the parse files it as a failed outcome — so the
+criterion disagreed with the parse, and the tool's answer to that is a
+`critical` finding that says the tool is broken.
+
+Measured on this machine (Python 3.12.10), the report of that shape, and the
+exit code that came with it:
+
+```
+setUpClass (test_setup.Boom) ... ERROR
+
+======================================================================
+ERROR: setUpClass (test_setup.Boom)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "test_setup.py", line 6, in setUpClass
+    raise RuntimeError("boom in setUpClass")
+RuntimeError: boom in setUpClass
+
+----------------------------------------------------------------------
+Ran 0 tests in 0.001s
+
+FAILED (errors=1)
+
+-- exit code = 5
+```
+
+(The traceback's path is the only part that was changed; the shape is what the
+runner printed.)
+
+★ And the same code 5 is also what a suite that holds **no test at all** says,
+which is not a failure:
+
+```
+----------------------------------------------------------------------
+Ran 0 tests in 0.000s
+
+NO TESTS RAN
+
+-- exit code = 5
+```
+
+So 5 and 1 are read together, and the report is what tells them apart: the
+first report has an `ERROR: setUpClass (...)` header in its failures section
+and the second has no failures section at all. The rule is now:
+
+| exit code | what it means | what the criterion does |
+|---|---|---|
+| 0 | everything passed | false — no printed text can talk the runner out of that |
+| 1 | a test did not pass | read the report |
+| 2 | the command could not be run: a usage error | false |
+| 5 | no test ran at all | read the report — it is either a class-level error (red) or an empty suite (not red) |
+| >1, ≠5 | an internal error | false |
+| <0 | the process never started | false |
+
+★ `unittestExitErrors` had the same mistake, and it is fixed in the same
+commit: it filed 5 under "the command could not be run", so a healthy suite
+that simply holds no test was reported as "unittest exited 5". It now says
+"unittest ran no tests (exit 5)" — which is exactly what happened, and is not
+the same thing as a command that could not be started.
 
 ★ Why the rule still reads the failures section. The unittest parser decides
 every test's state from the **result lines** (one per test, `... ok` / `... FAIL`
@@ -262,6 +331,11 @@ ImportError: Failed to import test module: test_broken
 ...
 ```
 
+★ Two more shapes live above, in the exit-code section: a **class-level
+error** (exit code 5, a red test) and a **suite that holds no test** (exit
+code 5, not a red test). Both are printed there, with the exit code that came
+with them.
+
 ★ The contract change. `internal/core` is the contract package, and this is
 a **breaking** change to it:
 
@@ -276,7 +350,7 @@ a **breaking** change to it:
 **Verification**
 
 ★ The acceptance round's three rows, re-run with the tool under test
-(`v0.1.7-0.20261101173836-6619d7c4abae`, built from `6619d7c`):
+(`v0.1.7-0.20261101180254-2c3d6a3b63cb`, built from `2c3d6a3`):
 
 | row | tree | before the fix | after the fix | volume 24 said it should be |
 |---|---|---|---|---|
@@ -325,7 +399,7 @@ $names = { param($f)
         Sort-Object
 }
 $a = & $names "$env:TEMP\baseline-win.txt"
-$b = & $names "$env:TEMP\full-suite-after2.txt"
+$b = & $names "$env:TEMP\full-suite-3109c.txt"
 "baseline: $($a.Count)  after: $($b.Count)"
 Compare-Object $a $b
 # baseline: 20  after: 20
@@ -335,21 +409,26 @@ Compare-Object $a $b
 They are the 15 in `internal/adapters` (the `unittest` path, the POSIX path
 assumptions and the `file://C:%5C...` URI), the 3 in
 `internal/counterfactual`, and the 2 in `internal/dogfood/gate` that volume
-24 §10.9 lists. Every other package is green, including the 13 new tests of
+24 §10.9 lists. Every other package is green, including the 19 new tests of
 this round.
 
 **Negative control**
 
-★ 14 new tests, plus one existing test rewired, and every one of them has a
+★ 19 new tests, plus one existing test rewired, and every one of them has a
 measured break point. The convention this project follows is "remove the
 logic under test, and the test must fail", so the break points were
 **measured**, not argued:
 
 ```
-internal/adapters/failure_test.go              12 个：6 个 Go 判据 + 6 个 Python 判据
-internal/adapters/adapters_test.go             1 个：适配器级（真跑一次 Go 套件）
-internal/counterfactual/consistency_test.go    1 个新的 + 1 个改写的
+internal/adapters/failure_test.go              14 个：6 个 Go 判据 + 8 个 Python 判据
+internal/adapters/adapters_test.go             3 个：适配器级（真跑一次 Go 套件、
+                                               真跑一次 unittest 套件、两次）
+internal/counterfactual/consistency_test.go    2 个新的 + 1 个改写的
 internal/adapters/testdata/goproj-failnames/   夹具：一个全绿、但输出里提到失败的 Go 模块
+internal/adapters/testdata/pyproj-unittest-classerr/   夹具：setUpClass 抛错、
+                                               第一个测试都没跑成的 unittest 套件
+internal/adapters/testdata/pyproj-unittest-printsep/   夹具：全绿、但在
+                                               tearDownClass 里打印了一段 failures section
 ```
 
 ★ The rewired one is `TestAFailureOutsideTheRawTailIsNotACcontradiction`: it
@@ -398,16 +477,18 @@ func TestPrintsAPanic(t *testing.T) {
 }
 ```
 
-★ Four mutations, each measured, each of which turns a specific set of tests
+★ Six mutations, each measured, each of which turns a specific set of tests
 red. They were run with `go test -overlay`, so the mutants never touched the
 working tree:
 
 | mutation | what it does | tests that go red |
 |---|---|---|
-| A | the criterion goes back to the old word search | 9 |
-| B | a package-level `fail` counts as a red test, and so does a load error | 4 |
-| D | the criterion never reports a failure | 5 |
-| E | the criterion always reports a failure | 10 |
+| A | the criterion goes back to the old word search | 10 |
+| B | a package-level `fail` counts as a red test, and so does a load error | 3 |
+| D | the criterion never reports a failure | 8 |
+| E | the criterion always reports a failure | 12 |
+| F | the exit-code gate goes back to "anything but 1 is not a red test" | 3 |
+| G | exit code 5 is always a red test, without reading the report | 1 |
 
 ★ Mutation A, the one that matters most, is the old code verbatim:
 
@@ -420,6 +501,7 @@ working tree:
 --- FAIL: TestUnittestFailedSeesAnErroredTest (0.00s)
 --- FAIL: TestUnittestFailedIgnoresAGreenSuiteThatMentionsAFailure (0.00s)
 --- FAIL: TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection (0.00s)
+--- FAIL: TestPythonAdapterDoesNotCallAGreenSuiteRedThatPrintsAFailureSection (0.00s)
 --- FAIL: TestAnInventedFailureIsCaughtEvenWhenTheOutputMentionsAFailure (0.00s)
 --- FAIL: TestAFailureOutsideTheRawTailIsNotACcontradiction (0.00s)
 ```
@@ -429,7 +511,6 @@ working tree:
 ```
 --- FAIL: TestGoTestFailedIgnoresABuildFailure (0.00s)
 --- FAIL: TestGoTestFailedIgnoresAPackageFailureWithoutAFailingTest (0.00s)
---- FAIL: TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection (0.00s)
 --- FAIL: TestUnittestFailedIgnoresALoadError (0.00s)
 ```
 
@@ -440,6 +521,9 @@ working tree:
 --- FAIL: TestGoTestFailedSeesAFailureAtTheStartOfTheStream (0.00s)
 --- FAIL: TestUnittestFailedSeesAFailedTest (0.00s)
 --- FAIL: TestUnittestFailedSeesAnErroredTest (0.00s)
+--- FAIL: TestUnittestFailedSeesAClassErrorThatRanNoTest (0.00s)
+--- FAIL: TestPythonAdapterSeesAClassErrorThatRanNoTest (0.00s)
+--- FAIL: TestAClassErrorThatRanNoTestIsNotACcontradiction (0.00s)
 --- FAIL: TestAFailureOutsideTheRawTailIsNotACcontradiction (0.00s)
 ```
 
@@ -456,7 +540,27 @@ fires on everything is not a checker:
 --- FAIL: TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection (0.00s)
 --- FAIL: TestUnittestFailedIgnoresALoadError (0.00s)
 --- FAIL: TestUnittestFailedIgnoresACleanRun (0.00s)
+--- FAIL: TestUnittestFailedIgnoresARunThatRanNoTest (0.00s)
+--- FAIL: TestPythonAdapterDoesNotCallAGreenSuiteRedThatPrintsAFailureSection (0.00s)
 --- FAIL: TestAnInventedFailureIsCaughtEvenWhenTheOutputMentionsAFailure (0.00s)
+```
+
+★ Mutation F is the defect a review found in this volume's own first draft:
+the exit-code gate that read every code above 1 as "the command could not be
+run". Taking it back to that shape turns exactly the three controls that
+guard code 5 red:
+
+```
+--- FAIL: TestUnittestFailedSeesAClassErrorThatRanNoTest (0.00s)
+--- FAIL: TestPythonAdapterSeesAClassErrorThatRanNoTest (0.00s)
+--- FAIL: TestAClassErrorThatRanNoTestIsNotACcontradiction (0.00s)
+```
+
+★ Mutation G is the opposite mistake — reading code 5 as a red test without
+asking the report — and it is caught by the other half:
+
+```
+--- FAIL: TestUnittestFailedIgnoresARunThatRanNoTest (0.00s)
 ```
 
 ★ One correction, because the first version of this table was measured on the
@@ -464,16 +568,23 @@ wrong set. The D and E counts in the first version of this volume were taken
 from a run that covered `./internal/adapters` only, so the two tests that live
 in `./internal/counterfactual` were not in the measurement at all — and both
 of them do go red under D and E (they call the Go criterion). Re-measured over
-every test of this round: **A → 9, B → 4, D → 5, E → 10**, and the names above
-are the ones that actually turn red. The claim the table makes — that the four
-mutations together cover all fifteen — held either way, but the numbers in the
-evidence column have to be the measured ones.
+every test of this round: **A → 10, B → 3, D → 8, E → 12, F → 3, G → 1**, and
+the names above are the ones that actually turn red. The union covers all
+twenty of them — **19 new and 1 rewired** — so there is no fake negative
+control.
+
+★ And the numbers in the evidence column have to be the measured ones: a
+reviewer re-ran this battery and found that the first version of row B said
+4, which is only reachable if the mutation also drops the exit-code gate —
+which is row F on its own. As row B is written above (the Go side counts a
+package-level `fail`, the Python side stops excluding the `_FailedTest`
+placeholder, the exit-code gate untouched), it turns **3** tests red.
 
 
 ★ The lesson from this repository's own history is the one in volume 03:
 "a negative control that stays green is usually a sign that it never tested
 the thing at all". So every new test was checked against at least one
-mutation that breaks it, and the four mutations together cover all fourteen.
+mutation that breaks it, and the six mutations together cover all twenty.
 
 ### What this fix does not cover
 
@@ -524,10 +635,11 @@ behaviour and this change did not touch it — it is written down here because
 sentences.
 
 ★ And one shape on the Python side that a criterion reading only the **text**
-cannot tell from a real one. A green test that prints a line of equals signs
-and then a line that looks like a failure header writes the shape of a
-failures section into the output. Measured on this machine (Python 3.12.10),
-with the test printing both lines to stderr:
+cannot tell from a real one: a green run whose output carries the **shape** of
+a failures section. There are two ways to get there, both real, both measured
+on this machine (Python 3.12.10).
+
+The first is a test that prints while it runs:
 
 ```
 test_prints_a_separator (test_printsep.PrintSepTest.test_prints_a_separator) ... ======================================================================
@@ -537,21 +649,63 @@ ok
 -- exit code = 0
 ```
 
-★ Two things stop it from becoming a false accusation, and the first one is
-why the exit code is in the rule:
+unittest has already written "test_x (id) ... " without a newline when the
+test prints, so the separator lands at the **end** of the result line. What
+that does to the two views, measured:
 
-1. The **exit code is 0** — the runner says everything passed, and no printed
-   text can talk it out of that. The criterion returns false.
-2. The parser stops at the first line of equals signs, so it cannot read the
-   rest of the report: `readSummary` never sees the summary, and
-   `crossCheck` records "unittest printed no summary line". The verdict is
-   `suite-crash` — "cannot tell" — not a contradiction.
+- the parse: its `=====` test is `HasPrefix(trimmed, "=====")`, and the
+  separator is not at the start of a line, so the parse never stops there —
+  it reads the whole report. What it cannot do is read the **result line**,
+  which the interleaved print broke in half, so it reads no outcome at all.
+  `readSummary` still sees "Ran 1 test in 0.001s" — it scans the whole
+  output and stops at nothing — and `crossCheck` then records
+  `unittest ran 1 tests but none of them could be read`. The verdict is
+  `suite-crash` — "cannot tell" — not a contradiction.
+- the criterion: the old word search reads this green run as red.
 
-★ The first version of this criterion did not have the exit code, and the
-second point above was the only thing between it and a false `contradictory`.
-That is the whole reason the rule reads the exit code first: **a runner's own
-verdict is not something its output can overrule.** The negative control for
-it is `TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection`.
+The second is a class that prints on its way out, from `tearDownClass`:
+
+```
+test_ok (test_printsep.PrintSepTest.test_ok) ... ok
+======================================================================
+FAIL: this line was printed by a green test
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK
+
+-- exit code = 0
+```
+
+`tearDownClass` runs after the result lines are written, so the separator
+lands at the **start** of a line and the result line is complete. Measured:
+
+- the parse: one passing test, no suite errors — a clean green run.
+- the criterion: the old word search reads it as red, and so does a
+  failures-section scan **without the exit code**.
+
+★ So the exit code is load-bearing on the second shape and only on the second
+shape, and that is why the negative control
+(`TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection`, and the
+adapter-level one that runs it for real) uses it. On the first shape the
+parse says "cannot tell" and the text is harmless; on the second shape the
+parse says "everything passed" and the text says "a test went red", and only
+the exit code keeps them from disagreeing.
+
+**a runner's own verdict is not something its output can overrule** — that is
+the whole reason the rule reads the exit code first.
+
+★ A correction to an earlier version of this section, because it named the
+wrong mechanism. It said the parser "stops at the first line of equals signs,
+so `readSummary` never sees the summary, and `crossCheck` records 'unittest
+printed no summary line'". Measured on the real output above: `readSummary`
+sees the summary (it stops at nothing), the parser does not stop at the
+separator (it is not at the start of a line), and the suite error it records
+is `unittest ran 1 tests but none of them could be read`. The conclusion was
+right — the verdict is `suite-crash`, not a contradiction — and the reason
+given for it was wrong. The negative control's fixture is the **second**
+shape, and the earlier version claimed it was the first one.
 
 ### Reproduction
 
@@ -578,11 +732,23 @@ vacuous --mode audit --commit c2de2d6b --json --policy warn --fail-on critical %
 vacuous --mode audit --commit aa138854 --json --policy warn --fail-on critical %TEMP%\vac-green   # row 11
 
 # the negative controls
-go test ./internal/adapters -run 'TestGoTestFailed|TestUnittestFailed|TestGoAdapterDoesNotCallAGreenSuiteRed' -v
-go test ./internal/counterfactual -run 'TestAnInventedFailureIsCaughtEvenWhenTheOutputMentionsAFailure|TestAFailureOutsideTheRawTailIsNotACcontradiction' -v
+go test ./internal/adapters -run 'TestGoTestFailed|TestUnittestFailed|TestGoAdapterDoesNotCallAGreenSuiteRed|TestPythonAdapter' -v
+go test ./internal/counterfactual -run 'TestAnInventedFailureIsCaughtEvenWhenTheOutputMentionsAFailure|TestAFailureOutsideTheRawTailIsNotACcontradiction|TestAClassErrorThatRanNoTestIsNotACcontradiction' -v
 ```
 
-The unittest shapes, on Python 3.12.10:
+The unittest shapes, on Python 3.12.10. Three of them are checked into this
+repository now, so they can be re-run without a scratch directory:
+
+```bash
+cd internal/adapters/testdata/pyproj-unittest-classerr
+python -m unittest discover -v        # a class-level error: exit code 5,
+                                      # and an ERROR: header in the report
+cd internal/adapters/testdata/pyproj-unittest-printsep
+python -m unittest discover -v        # a green run that prints the shape of
+                                      # a failures section: exit code 0
+```
+
+The older scratch shapes:
 
 ```bash
 cd %TEMP%\pyjson-bf-2026-11-01
@@ -609,19 +775,8 @@ garbage where this volume sees JSON. Read them with a BOM-aware reader.
 The reports of the runs before and after the fix:
 
 ```
-%TEMP%\row8-before.json         row 8, built from cd8a719: contradictory / critical
-%TEMP%\row-0e75adf1-after.json   row 8, built from 7a15c6e: no-test / high
-%TEMP%\row-c2de2d6b-after.json   row 6, built from 7a15c6e: proven, 2 witnesses
-%TEMP%\row-aa138854-after.json   row 11, built from 7a15c6e: vacuous
-```
-
-The unittest shapes, on Python 3.12.10:
-
-```bash
-cd %TEMP%\pyjson-bf-2026-11-01
-python -m unittest discover -v                                        # a red run
-python -m unittest test_unittest_sample.SampleTest.test_ok \
-                    test_unittest_sample.SampleTest.test_named_FAIL -v   # a green run
-cd %TEMP%\pyjson-loaderr-2026-11-01
-python -m unittest discover -v                                        # a module that cannot be imported
+%TEMP%\row8-before-3.109.json   row 8, built from cd8a719: contradictory / critical
+%TEMP%\row8-after-3.109.json    row 8, built from 2c3d6a3: no-test / high
+%TEMP%\row6-after-3.109.json    row 6, built from 2c3d6a3: proven, 2 witnesses
+%TEMP%\row11-after-3.109.json   row 11, built from 2c3d6a3: vacuous
 ```
