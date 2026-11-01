@@ -623,6 +623,178 @@ func Greet(name string) string {
 	return m
 }
 
+// TemplateWhitespaceFixture builds the case where the whitespace is the
+// change.
+//
+// The file holds a template: a raw string whose indentation is part of what
+// the program produces. The second commit reindents one line of it and
+// changes nothing else.
+//
+// The change is real - the output of the template changes - and the only
+// way to see that is to read the file. On its own, the changed line looks
+// like ordinary code, and a reading that compares lines one at a time calls
+// it a reindent.
+//
+// The test in the tree is deliberately blind to the change: it checks that
+// the render produced something, not what it produced. That is what makes
+// the second commit's verdict a question with an answer - the answer is
+// "nothing in the repository is watching this", and it is backed by an
+// experiment rather than by an assumption.
+func TemplateWhitespaceFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/template")
+	m.Write(t, "render.go", `package fixture
+
+import "fmt"
+
+// Render produces the report body.
+func Render(name string) string {
+	return fmt.Sprintf(`+"`"+`
+  <p>hello, %s</p>
+`+"`"+`, name)
+}
+`)
+	m.Write(t, "render_test.go", `package fixture
+
+import "testing"
+
+func TestRenderProducesSomething(t *testing.T) {
+	if Render("bob") == "" {
+		t.Fatal("Render returned nothing")
+	}
+}
+`)
+	m.Init(t)
+	m.Write(t, "render.go", `package fixture
+
+import "fmt"
+
+// Render produces the report body.
+func Render(name string) string {
+	return fmt.Sprintf(`+"`"+`
+    <p>hello, %s</p>
+`+"`"+`, name)
+}
+`)
+	m.Commit(t, "style(ui): align the report template")
+	return m
+}
+
+// CommentInTemplateFixture builds the other half of the template case.
+//
+// The file holds a template, and the second commit changes nothing but a
+// comment in it. The comment is the whole change, and a comment has no
+// behaviour - so the tool must still leave this commit alone, even though
+// the file it changed is full of whitespace that is data.
+//
+// The two fixtures together are the rule: a comment is not a change, and a
+// template is not a comment.
+func CommentInTemplateFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/comment")
+	m.Write(t, "render.go", `package fixture
+
+import "fmt"
+
+// Render produces the report body.
+func Render(name string) string {
+	return fmt.Sprintf(`+"`"+`
+  <p>hello, %s</p>
+`+"`"+`, name)
+}
+`)
+	m.Write(t, "render_test.go", `package fixture
+
+import "testing"
+
+func TestRenderProducesSomething(t *testing.T) {
+	if Render("bob") == "" {
+		t.Fatal("Render returned nothing")
+	}
+}
+`)
+	m.Init(t)
+	m.Write(t, "render.go", `package fixture
+
+import "fmt"
+
+// Render produces the report body. It never fails.
+func Render(name string) string {
+	return fmt.Sprintf(`+"`"+`
+  <p>hello, %s</p>
+`+"`"+`, name)
+}
+`)
+	m.Commit(t, "docs: explain that Render never fails")
+	return m
+}
+
+// UnreadableSourceFixture builds the case where the file cannot be read to
+// the end.
+//
+// The file holds a quote that never closes, so a reader cannot tell which
+// bytes are inside a string literal and which are outside it. The commit
+// changes whitespace in front of that quote - a change the line-at-a-time
+// reading calls a reindent, and that the old rule called a reindent too.
+//
+// The tool must not excuse the change on the strength of a reading it could
+// not make. "I could not read this file" is not "this changed nothing".
+//
+// The module does not compile - a raw string that never closes cannot - so
+// the experiment has no answer to give either. What it must not do is reach
+// the answer "nothing to test here".
+func UnreadableSourceFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/unreadable")
+	m.Write(t, "greet.go", `package fixture
+
+// Greet greets.
+func Greet() string {
+	return "hi"
+}
+`)
+	m.Write(t, "greet_test.go", `package fixture
+
+import "testing"
+
+func TestGreetSaysSomething(t *testing.T) {
+	if Greet() == "" {
+		t.Fatal("Greet returned nothing")
+	}
+}
+`)
+	m.Write(t, "template.go", "package fixture\n\nconst Template = `never closed\n")
+	m.Init(t)
+	m.Write(t, "template.go", "package fixture\n\nconst  Template = `never closed\n")
+	m.Commit(t, "style(ui): align the constant")
+	return m
+}
+
+// SizeOnUnreadableFixture builds the case where the diff measured a size
+// and the files could not be read.
+//
+// The commit moves one line from one file into another, and takes the blank
+// line that was around it along. The two sides of the diff reduce to the same
+// text - the diff-level reading says "the same" - but the lines are not in
+// the same file, so the diff-level count is not zero either: one line
+// changed in each of the two files. One of the two files holds a quote that
+// never closes, so the file-level reading cannot be made at all.
+//
+// The size the diff measured is then the only number the tool has, and it is
+// a number it earned. The report must not say "changed 0 lines" for a change
+// whose size was measured.
+func SizeOnUnreadableFixture(t *testing.T) *GoModule {
+	t.Helper()
+	m := NewGoModule(t, "example.com/size")
+	m.Write(t, "a.go", "package fixture\n\nconst A = 1\n")
+	m.Write(t, "b.go", "package fixture\n\nconst B = `never closed\n")
+	m.Init(t)
+	m.Write(t, "a.go", "package fixture\n")
+	m.Write(t, "b.go", "package fixture\n\nconst B = `never closed\nconst A = 1\n")
+	m.Commit(t, "refactor: move the constant")
+	return m
+}
+
 // VetRejectedFixture builds the case the report used to get wrong.
 //
 // The first commit carries a file that COMPILES PERFECTLY WELL and is

@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **107 bugs the tool had in itself** that dogfooding uncovered.
+the **108 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -71,6 +71,7 @@ in the tables below are the record of that run.
 | [20-bugs-3.105.md](./20-bugs-3.105.md) | Tool bug 3.105 — the rule about rooted paths was fixed in one place and missed in three others |
 | [21-bugs-3.106.md](./21-bugs-3.106.md) | Tool bug 3.106 — the gate kept its own copy of two rules the checker had already changed |
 | [22-bugs-3.107.md](./22-bugs-3.107.md) | Tool bug 3.107 — the rule read the wording of an error, and the wording is the platform's: on Windows the audit produced no witness for any narrowed commit in a repository with nested Go modules |
+| [23-bugs-3.108.md](./23-bugs-3.108.md) | Tool bug 3.108 — the rule stripped the whitespace out of the string literals, and whitespace inside a literal is the value: a change to a template was reported as a change that altered nothing |
 
 ---
 
@@ -104,7 +105,7 @@ history is public anyway.
 
 ## The catalog
 
-107 entries. The number in front is a stable identifier: it is referenced from
+108 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
 The log was written over many rounds, and three of its numbers were used
@@ -223,6 +224,7 @@ themselves.
 | **3.105** | The rule about rooted paths was fixed in one place and missed in three others — and the finding named a path that cannot exist | Static detection |
 | **3.106** | The gate kept its own copy of two rules the checker had already changed — on Windows it was blind to a native guard | Gate / static detection |
 | **3.107** | The rule read the wording of an error — on Windows the audit produced no witness for any narrowed commit in a repository with nested modules | Go adapter |
+| **3.108** | The rule stripped the whitespace out of the string literals — and whitespace inside a literal is the value, so a change to a template was reported as a change that altered nothing | Cosmetic detection |
 
 ---
 
@@ -243,7 +245,10 @@ distributed. They cluster in three places:
   in the gate — and the gate's copy was the older one. 3.107 is the same
   shape once more: the rule that decides whether a nested module holds the
   packages a pattern names was decided by reading the wording of `go list`'s
-  error, and the wording belongs to the platform.
+  error, and the wording belongs to the platform. 3.108 is the same shape at
+  its smallest: the rule that decides whether a change altered anything
+  assumed that whitespace is always formatting, and whitespace inside a
+  string literal is the value.
 - **Places where "I could not tell" was dressed up as an answer** — 3.1, 3.13,
   3.33, 3.41, 3.43, 3.55, 3.60, 3.81, 3.98, 3.100, 3.103, 3.104, 3.106, 3.107. This is the cluster that matters
   most, because those are the bugs that produce confident, specific, wrong

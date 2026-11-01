@@ -680,13 +680,16 @@ func (a *Auditor) auditRange(ctx context.Context, base, head string, res *Result
 	// is a real change and is judged below; this is only about changes
 	// that leave the code exactly as it was.
 	change, err := a.sourceChangeRange(ctx, base, head, res.SourceFiles)
-	if err == nil {
-		// How much the commit changed is what decides how loudly the
-		// report says things about it. It is recorded here, once, so
-		// that every path out of this function can use it - including
-		// the one that returns before the ordinary bookkeeping runs.
-		res.SourceChange = change
-	}
+	// How much the commit changed is what decides how loudly the report
+	// says things about it. It is recorded here, once, so that every path
+	// out of this function can use it - including the one that returns
+	// before the ordinary bookkeeping runs.
+	//
+	// It is recorded even when the file-level measurement failed. "We
+	// could not read the file" is not "the file did not change", and a
+	// finding that says "the largest of them changed 0 lines" next to a
+	// behaviour change would be a number nobody earned.
+	res.SourceChange = change
 	if err == nil && change.cosmetic {
 		res.Verdict = VerdictNotApplicable
 		res.Findings = append(res.Findings, core.Finding{
@@ -694,11 +697,12 @@ func (a *Auditor) auditRange(ctx context.Context, base, head string, res *Result
 			Severity: core.SevInfo,
 			Summary:  "This change did not alter the behavior of the code — it needs no new test",
 			Detail: fmt.Sprintf(
-				"%s changed %d source files, but the changes are only comments and whitespace.\n"+
-					"It did not change any behavior, so no test needs to come with it.",
+				"%s changed %d source files, but the changes are only comments and whitespace outside the string literals.\n"+
+					"A blind spot: where the layout is the syntax — the indentation of a Python or YAML block, the body of a heredoc — that whitespace is part of the value, and this reading does not see it.\n"+
+					"Apart from that, it did not change any behavior, so no test needs to come with it.",
 				res.subject(), len(res.SourceFiles)),
 			File:     firstPath(res.SourceFiles),
-			Evidence: "Line-by-line comparison: once comments and whitespace are removed, the two sides are identical",
+			Evidence: "The files at both ends of the range reduce to the same text: the whitespace outside the string literals is removed, the string literals are kept as they are, a // comment is removed wherever it starts, and a # comment is removed only when it starts the line",
 			Hint:     "If this commit does change behavior, then it needs a test",
 		})
 		return res, nil

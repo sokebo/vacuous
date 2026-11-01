@@ -145,16 +145,16 @@ func TestPatchIsCosmetic(t *testing.T) {
 // one rule that is easy to get wrong in the dangerous direction.
 func TestStripCommentDoesNotTouchHashInsideStrings(t *testing.T) {
 	in := `const Tag = "a#b"`
-	if got := normalizeCode(in); got != `constTag="a#b"` {
-		t.Errorf("normalizeCode(%q) = %q, want %q", in, got, `constTag="a#b"`)
+	if got := normalizeLine(in); got != `constTag="a#b"` {
+		t.Errorf("normalizeLine(%q) = %q, want %q", in, got, `constTag="a#b"`)
 	}
 }
 
 // TestNormalizeCodeDropsWholeLineComments covers the other hash rule: a
 // line that IS a comment contributes nothing.
 func TestNormalizeCodeDropsWholeLineComments(t *testing.T) {
-	if got := normalizeCode("  # just a note"); got != "" {
-		t.Errorf("normalizeCode() = %q, want empty", got)
+	if got := normalizeLine("  # just a note"); got != "" {
+		t.Errorf("normalizeLine() = %q, want empty", got)
 	}
 }
 
