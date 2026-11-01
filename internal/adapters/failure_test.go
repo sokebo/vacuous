@@ -210,25 +210,41 @@ func TestUnittestFailedIgnoresAGreenSuiteThatMentionsAFailure(t *testing.T) {
 // A green test that prints a line of equals signs and then a line that looks
 // like a failure header writes the *shape* of a failures section into the
 // output. The text alone cannot tell that from a real one - and the parse
-// stops at the first equals line, so the parse says "everything passed" while
+// reads the result line before it, so the parse says "one test passed" while
 // the text says "a test went red", which is a critical contradiction on a run
 // that was perfectly green.
+//
+// The report below is a real one. The class printed both lines to stderr from
+// its `tearDownClass`, which runs after the result lines are written - so the
+// separator lands at the start of a line, and the failures section is real in
+// every way but the one that matters.
+//
+// Measured on it: the old word search reads it as red, and so does a
+// failures-section scan without the exit code. Only the exit code keeps it
+// green.
 //
 // The exit code closes it: a green run exits 0, and no text can talk the
 // runner out of that.
 func TestUnittestFailedIgnoresAGreenRunThatPrintsAFailureSection(t *testing.T) {
-	report := unittestReport(
-		[]string{"test_prints (test_mod.TestThing.test_prints) ... ok"},
-		nil,
-	)
-	report += strings.Repeat("=", 70) + "\n"
-	report += "FAIL: this line was printed by a green test\n"
+	report := unittestGreenRunThatPrintsAFailureSection
 
 	if UnittestFailed(0, report) {
 		t.Error("UnittestFailed() = true, want false: the run exited 0, so " +
 			"no test went red - whatever the output says")
 	}
 }
+
+// unittestGreenRunThatPrintsAFailureSection is a real unittest report of a
+// green suite whose class printed a failures section on its way out.
+const unittestGreenRunThatPrintsAFailureSection = `test_ok (test_printsep.PrintSepTest.test_ok) ... ok
+======================================================================
+FAIL: this line was printed by a green test
+
+----------------------------------------------------------------------
+Ran 1 test in 0.000s
+
+OK
+`
 
 // TestUnittestFailedIgnoresALoadError pins the difference between a red test
 // and a module that could not be imported.
@@ -264,3 +280,92 @@ func TestUnittestFailedIgnoresACleanRun(t *testing.T) {
 		t.Error("UnittestFailed() = true, want false: the run was green")
 	}
 }
+
+// TestUnittestFailedSeesAClassErrorThatRanNoTest is the shape the exit code
+// alone cannot decide.
+//
+// A class-level error - setUpClass or setUpModule raising - happens before
+// the first test runs. unittest exits 5 ("no tests ran"), and the report
+// carries the error in its failures section:
+//
+//	setUpClass (test_setup.Boom) ... ERROR
+//
+//	======================================================================
+//	ERROR: setUpClass (test_setup.Boom)
+//	----------------------------------------------------------------------
+//	Traceback (most recent call last):
+//	  ...
+//	RuntimeError: boom in setUpClass
+//
+//	----------------------------------------------------------------------
+//	Ran 0 tests in 0.001s
+//
+//	FAILED (errors=1)
+//
+// The report was captured from a real run of that shape. The parse files it
+// as a failed outcome - the result line ends in ERROR - so the criterion has
+// to agree, or the tool calls its own report a contradiction.
+//
+// Reading 5 as "the command could not be run" makes it disagree, and the
+// finding that comes out is critical: "the tool is broken".
+func TestUnittestFailedSeesAClassErrorThatRanNoTest(t *testing.T) {
+	report := unittestClassErrorReport
+
+	if !UnittestFailed(unittestNoTestsExitCode, report) {
+		t.Errorf("UnittestFailed(%d, ...) = false, want true: the runner exited %d "+
+			"because a class-level error stopped the run before the first test, and "+
+			"the report says so",
+			unittestNoTestsExitCode, unittestNoTestsExitCode)
+	}
+}
+
+// TestUnittestFailedIgnoresARunThatRanNoTest is the other side of the same
+// exit code.
+//
+// Code 5 also says "this suite holds no test at all", and that is not a
+// failure:
+//
+//	----------------------------------------------------------------------
+//	Ran 0 tests in 0.000s
+//
+//	NO TESTS RAN
+//
+// Captured from a real run of that shape. A criterion that reads 5 as "a
+// red test" without asking the report would call an empty suite a failing
+// one.
+func TestUnittestFailedIgnoresARunThatRanNoTest(t *testing.T) {
+	report := unittestNoTestsReport
+
+	if UnittestFailed(unittestNoTestsExitCode, report) {
+		t.Errorf("UnittestFailed(%d, ...) = true, want false: the suite holds no "+
+			"test, and no test went red",
+			unittestNoTestsExitCode)
+	}
+}
+
+// unittestClassErrorReport is a real unittest report of a suite whose
+// setUpClass raised. The traceback's path is the only part that was changed;
+// the shape is what the runner printed.
+const unittestClassErrorReport = `setUpClass (test_setup.Boom) ... ERROR
+
+======================================================================
+ERROR: setUpClass (test_setup.Boom)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "test_setup.py", line 6, in setUpClass
+    raise RuntimeError("boom in setUpClass")
+RuntimeError: boom in setUpClass
+
+----------------------------------------------------------------------
+Ran 0 tests in 0.001s
+
+FAILED (errors=1)
+`
+
+// unittestNoTestsReport is a real unittest report of a suite that holds no
+// test at all.
+const unittestNoTestsReport = `----------------------------------------------------------------------
+Ran 0 tests in 0.000s
+
+NO TESTS RAN
+`

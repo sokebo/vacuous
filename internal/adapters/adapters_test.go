@@ -657,6 +657,122 @@ func requirePytest(t *testing.T) {
 	}
 }
 
+// pythonInterpreter finds a Python that actually runs, and names it.
+//
+// The name is not enough. On Windows "python3" is often a store alias that
+// exits with a code no toolchain can use, and a test that used it would
+// measure the alias instead of the adapter. So every candidate is asked for
+// its version, and the first one that answers is the one used.
+func pythonInterpreter(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"python3", "python"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		out, err := exec.Command(path, "--version").CombinedOutput()
+		if err != nil {
+			continue
+		}
+		if !strings.Contains(string(out), "Python") {
+			continue
+		}
+		return path
+	}
+	t.Skip("no working python interpreter was found on this machine")
+	return ""
+}
+
+// TestPythonAdapterSeesAClassErrorThatRanNoTest is the adapter-level
+// negative control for the exit code 5.
+//
+// A class-level error stops the suite before the first test runs, so
+// unittest exits 5 - the code it uses for "no tests ran" - and puts the
+// error in the report's failures section. The parse files that as a failed
+// outcome, so the failure flag has to say the same thing, or the engine
+// compares "a test went red" with "no test went red" and calls the tool
+// broken.
+//
+// The fixture is a real project, and the interpreter is the machine's own.
+func TestPythonAdapterSeesAClassErrorThatRanNoTest(t *testing.T) {
+	prog := pythonInterpreter(t)
+	root := copyFixture(t, "pyproj-unittest-classerr")
+	a := NewPython()
+	if !a.Detect(root, core.FileScopeAll()) {
+		t.Fatal("the Python adapter did not detect the fixture")
+	}
+	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	plan.Args[0] = prog
+
+	res, err := a.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if res.ExitCode != 5 {
+		t.Errorf("ExitCode = %d, want 5: unittest exits 5 when it ran no test", res.ExitCode)
+	}
+	if got, ok := outcomeFor(res, "setUpClass"); !ok {
+		t.Errorf("the class-level error is missing from the outcomes: %+v", res.Outcomes)
+	} else if got.Status != core.StatusFail {
+		t.Errorf("setUpClass = %s, want %s", got.Status, core.StatusFail)
+	}
+	if !res.RawFailed {
+		t.Error("RawFailed = false, want true: the runner reported a class-level " +
+			"error, and the parse filed it as a failed outcome")
+	}
+}
+
+// TestPythonAdapterDoesNotCallAGreenSuiteRedThatPrintsAFailureSection is the
+// adapter-level negative control for the shape a green suite can take.
+//
+// The fixture's class prints a failures section on its way out - a line of
+// equals signs and a line that looks like a failure header. The run is green
+// and the runner says so, but the output carries the shape of a red test.
+//
+// The flag has to say "no red test" here. A flag that read the text would say
+// the opposite, and the engine would compare "one test passed" with "a test
+// went red" and call the tool broken.
+//
+// The fixture is a real project, and the interpreter is the machine's own.
+func TestPythonAdapterDoesNotCallAGreenSuiteRedThatPrintsAFailureSection(t *testing.T) {
+	prog := pythonInterpreter(t)
+	root := copyFixture(t, "pyproj-unittest-printsep")
+	a := NewPython()
+	if !a.Detect(root, core.FileScopeAll()) {
+		t.Fatal("the Python adapter did not detect the fixture")
+	}
+	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	plan.Args[0] = prog
+
+	res, err := a.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if res.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0: the suite is green", res.ExitCode)
+	}
+	if got, ok := outcomeFor(res, "test_ok"); !ok {
+		t.Errorf("the passing test is missing from the outcomes: %+v", res.Outcomes)
+	} else if got.Status != core.StatusPass {
+		t.Errorf("test_ok = %s, want %s", got.Status, core.StatusPass)
+	}
+	if len(res.SuiteErrors) != 0 {
+		t.Errorf("SuiteErrors = %v, want none: the suite ran fine", res.SuiteErrors)
+	}
+	if res.RawFailed {
+		t.Error("RawFailed = true, want false: the suite is green, and the text " +
+			"it printed cannot talk the runner out of that")
+	}
+}
+
 // requireNodeRunner makes jest resolvable for the fixture and skips the
 // test when it is not installed at all.
 //

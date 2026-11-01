@@ -941,16 +941,26 @@ func (p *Python) runUnittestCommand(ctx context.Context, plan core.Plan, suite s
 //
 //	0  everything passed
 //	1  a test did not pass
-//	>1 the command could not be run: a usage error, an internal error
+//	2  the command could not be run: a usage error
+//	5  no test ran at all
 //
-// The third case is not a failing test. Reporting it as one would accuse a
+// The last two are not failing tests. Reporting them as one would accuse a
 // test of something the runner itself did, and it would turn "the tool
 // asked the wrong question" into "your test is broken".
+//
+// Code 5 is not a crash either: it is what a suite that holds no test says,
+// and what a class-level error says when it happens before the first test
+// runs. It is still worth reporting - a suite error is how the engine learns
+// that this suite did not run - but it is not the same thing as a command
+// that could not be started.
 func unittestExitErrors(exitCode int, output string, runErr error) []string {
 	switch {
 	case exitCode == 0 || exitCode == 1:
 		// The suite ran. What it said is in the parsed results.
 		return nil
+	case exitCode == unittestNoTestsExitCode:
+		return []string{fmt.Sprintf("unittest ran no tests (exit %d): %s",
+			exitCode, truncate(strings.TrimSpace(output), 2000))}
 	case exitCode > 1:
 		return []string{fmt.Sprintf("unittest exited %d: %s",
 			exitCode, truncate(strings.TrimSpace(output), 2000))}
