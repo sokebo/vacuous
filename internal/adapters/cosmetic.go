@@ -852,11 +852,15 @@ func multisetDifference(a, b []string) int {
 
 // isSpace reports whether c is whitespace.
 //
-// The caller only reaches it outside a string literal, where the rule reads
-// whitespace as formatting. That is a rule this project applies, not a fact
-// about every language: where the layout is the syntax - the indentation of
-// a Python block, the body of a heredoc - the whitespace outside a literal
-// is the value too, and this rule does not see it.
+// The caller only reaches it outside a string literal, where the whitespace
+// is between the tokens - and that is layout in every language.
+//
+// ★ The OTHER two kinds of whitespace are not thrown away with it. The
+// indentation of a line and the break at the end of a line are read apart
+// from the code, because in some languages they are the syntax: Python's
+// indentation is the block structure, and Go's and JavaScript's line break
+// ends a statement. The reader keeps both of those, and the language says
+// what they mean.
 //
 // Only ASCII whitespace counts. Anything else is left alone: a byte that is
 // not whitespace is kept, and a byte that is whitespace outside a literal is
