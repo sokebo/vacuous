@@ -215,16 +215,45 @@ Both are fixed (dogfood bugs 3.109, 3.110). The rules are per language
 now, and the report's evidence says which language's rules were applied and
 what they keep as more than a comment.
 
+★ **The layout is read too, because in some languages the layout IS the
+syntax.** Whitespace is not one thing: it is the space between the tokens,
+the indentation of a line, and the break at the end of a line. The first is
+layout in every language. The second is the block structure in Python. The
+third ends a statement in Go and in JavaScript.
+
+So the adapter declares what the shape of the source means, and the reader
+answers three questions instead of one:
+
+- **is the code the same?** — the two ends, with the comments removed and
+  the whitespace outside the string literals gone;
+- **does a statement end in the same place?** — Go and JavaScript insert a
+  semicolon where the line ends, so `return x` and `return\nx` are not the
+  same program;
+- **does every line sit in the same block?** — Python reads a line's
+  indentation as the block it belongs to, and moving a statement from one
+  block to another is a change of behaviour.
+
+When the code is the same and the layout is not, the adapter **cannot
+confirm** that the change is only formatting, and it says so. The verdict is
+`uncertain`, the experiment runs, and a green suite accuses nothing.
+
 **The limits that remain:**
 
-- **The rules are not a grammar.** They say what a comment is; they do not
-  say what the language's *layout* means. So a Python `return 1` moved out
-  of its block is still read as a change that altered nothing — the
-  indentation is the block structure, and the rule does not see it. The
-  same goes for a YAML mapping, a Makefile recipe, and a heredoc's body.
-- **Newlines can be syntax.** Go and JavaScript insert semicolons, so
-  `f\n(x)` and `f(x)` are different programs, and the rule does not see the
-  difference either.
+- **The rules are not a grammar.** They say what a comment is, where a
+  statement ends, and how far each line is indented. They do not parse the
+  language, so they do not see a layout rule finer than those three — a
+  YAML mapping re-indented, a Makefile recipe, a heredoc's body. A file in
+  a language the adapter does not speak is not called cosmetic either: the
+  change is judged as a change, because the adapter cannot rule out that it
+  is more than a comment.
+- **Semicolon insertion is read approximately.** The rule asks "could a
+  statement end here?", and it answers yes after an identifier, a literal, a
+  closing bracket, and `++`/`--`. JavaScript's own rule is wider — it
+  inserts a semicolon wherever the next token could not continue the
+  expression — so a change shaped like `a\n+b` is read as a change that
+  moved a statement when JavaScript would have continued the expression.
+  That direction is the safe one: the tool asks a question it can be
+  wrong about in the loud direction, and says "I cannot tell".
 - **A file the reader cannot get through cannot be classified.** A quote or
   a block comment that never closes leaves the reader unable to tell which
   bytes are inside it. The tool says "could not tell" and runs the

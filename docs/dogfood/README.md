@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **110 bugs the tool had in itself** that dogfooding uncovered.
+the **112 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -107,7 +107,7 @@ history is public anyway.
 
 ## The catalog
 
-110 entries. The number in front is a stable identifier: it is referenced from
+112 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
 The log was written over many rounds, and three of its numbers were used
@@ -229,6 +229,8 @@ themselves.
 | **3.108** | The rule stripped the whitespace out of the string literals — and whitespace inside a literal is the value, so a change to a template was reported as a change that altered nothing | Cosmetic detection |
 | **3.109** | A `//` was a comment in every language — and in Python it is floor division, so a change to it was reported as a change that altered nothing | Cosmetic detection |
 | **3.110** | A `//go:build` line was a comment — and it is a build constraint, so a change to it was reported as a change that altered nothing | Cosmetic detection |
+| **3.111** | The layout was thrown away with the whitespace — but Python's indentation is the block structure, and Go and JavaScript end a statement at the end of a line, so a behaviour change was reported as a change that altered nothing | Cosmetic detection |
+| **3.112** | The diff was read by prefix alone — a content line that starts with `--- ` was taken for a file header, so the size of a change was undercounted | Sizing |
 
 ---
 
@@ -257,10 +259,18 @@ distributed. They cluster in three places:
   change altered anything assumed that a `//` is a comment, and in Python
   it is floor division while in Go it is sometimes a build constraint. The
   rule was in the engine, and the engine held no grammar — so the question
-  moved to the layer that does.
+  moved to the layer that does. 3.111 is the same shape one layer further
+  out: the rule threw away every piece of whitespace outside a string
+  literal, and whitespace is not one thing — the space between the tokens is
+  layout, the indentation of a line is the block structure in Python, and the
+  break at the end of a line ends a statement in Go and in JavaScript. 3.112
+  is the shape at its smallest: the rule that counts the size of a change
+  read a diff by its prefixes, and a line of a SQL file that begins with
+  `-- ` comes out of a diff as `--- ` — which is what a file header looks
+  like.
 - **Places where "I could not tell" was dressed up as an answer** — 3.1, 3.13,
   3.33, 3.41, 3.43, 3.55, 3.60, 3.81, 3.98, 3.100, 3.103, 3.104, 3.106, 3.107,
-  3.109, 3.110. This is the cluster that matters
+  3.109, 3.110, 3.111. This is the cluster that matters
   most, because those are the bugs that produce confident, specific, wrong
   accusations. 3.98 belongs here in its own way: an empty report's sentinel
   severity was read as a finding, and the run accused the repository of

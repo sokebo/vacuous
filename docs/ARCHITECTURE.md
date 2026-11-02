@@ -209,6 +209,32 @@ tell", so every change in a language without it reaches the experiment. That
 is slower and noisier, and it is the safe direction: the alternative is an
 engine that keeps its own grammar, and a grammar is a list to maintain.
 
+★ **The layout is read as well, and it is the same question.** Whitespace is
+not one thing: it is the space between the tokens, the indentation of a line,
+and the break at the end of a line. The first is layout in every language; the
+second is the block structure in Python; the third ends a statement in Go and
+in JavaScript.
+
+So the reader answers three questions, not one — is the code the same, does a
+statement end in the same place, does every line sit in the same block — and
+the adapter declares what its language makes of the last two:
+
+```go
+type LayoutRules struct {
+    // IndentationIsSyntax — a line's indentation says which block it
+    // belongs to. True for Python.
+    IndentationIsSyntax bool
+    // LineBreakEndsStatement — a break at the top level of a statement
+    // ends that statement. True for Go and for JavaScript.
+    LineBreakEndsStatement bool
+}
+```
+
+When the code is the same and the layout is not, the adapter **cannot
+confirm** that the change is only formatting, and it answers with the third
+value. That is the whole point of the third value: the layout is exactly the
+kind of thing a "yes" must not be given on.
+
 The rules themselves live in `internal/adapters/cosmetic.go`, next to
 `IsTestFilePath` and for the same reason — **a rule that answers the same
 question in two places is two rules that will drift.**
@@ -432,6 +458,7 @@ and in suppression comments, so renaming one is a breaking change.
 | `suite-crash` | `suite-crash` | warn | A suite crashed before it could run a single case. |
 | `skipped` | `skipped-test` | critical | The test was present but did not execute. It witnessed nothing. |
 | `pre-existing-failure` | `pre-existing-failure` | warn | The counterfactual was red and the same suite is red with the fix in place. The red says nothing about this fix. |
+| `uncertain` | `uncertain` | info | The experiment ran, everything passed, and the tool **could not tell whether the change altered behaviour at all** — the adapter could not confirm that the change was nothing but formatting. **A green suite does not accuse the tests of anything.** |
 | `contradictory` | `contradictory` | critical | **The tool's own conclusion disagrees with the tool's own raw output.** The tool is broken. |
 | `not-applicable` | `not-applicable` | info | A merge, a root commit, a docs-only commit, a test-only commit. Nothing to judge. |
 | `unsupported-source` | `unsupported-source` | info | The commit changed code in a language this repository's runner cannot execute. |
@@ -605,7 +632,11 @@ trusted with an accusation, and they are not negotiable in review.
    `//` is a comment in Go and floor division in Python, and a `//go:build`
    is a comment in neither sense. Without the capability every change
    reaches the experiment, which is safe but slow.
-8. Write the negative controls first: a fixture where the tool must find
+8. Say what the **layout** means in this language: does a line's indentation
+   carry meaning, and does a line break end a statement? Python says yes to
+   the first, Go and JavaScript say yes to the second, and both answers
+   change what the tool is allowed to claim about a change.
+9. Write the negative controls first: a fixture where the tool must find
    something, and a fixture where it must stay quiet.
 
 The adapters also share one cross-layer judgement — **what counts as
