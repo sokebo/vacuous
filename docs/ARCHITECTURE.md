@@ -104,7 +104,7 @@ needs to know *which project layout it is in* belongs in `Detect` or `Plan`;
 anything that needs to know what a failure *means* belongs in the
 counterfactual engine, not here.
 
-Two optional capabilities refine it:
+Three optional capabilities refine it:
 
 ```go
 // TestDiscoveryAuthority — is IsTestPath the COMPLETE answer to
@@ -159,6 +159,59 @@ with the code under review. The engine asks; the adapter answers, because only
 the adapter knows the language. A failure here is **not fatal** — the build
 that follows will fail, and the engine reports that as an environment problem,
 which is honest.
+
+```go
+// CosmeticConfirmer — can this change be CONFIRMED to be nothing but
+// formatting and ordinary comments?
+type CosmeticConfirmer interface {
+    ConfirmsCosmetic(ctx context.Context, q CosmeticQuestion) CosmeticAnswer
+}
+```
+
+★ **This capability exists because the engine used to do this itself, and got
+it wrong.** The engine reduced both ends of a change to "the same text" by
+removing every `//` comment — in every language. In Python `//` is floor
+division, so `count // batch` and `count // batch - 1` reduced to the same
+text, and a change that altered the value of every batch was reported as a
+change that altered nothing. In Go `//go:build` is a build constraint, and it
+decided which platforms compiled the file. Both were real changes, and both
+were thrown away before the experiment ever ran (dogfood bugs 3.109, 3.110).
+
+The engine held no grammar, so it could not tell those apart. The adapter
+holds one, so the engine asks.
+
+**The verb is the point.** The question is not "where are this language's
+comments?" — that is a rule per language, and a hole for every language it
+does not cover. It is "can you CONFIRM this change is cosmetic?", and the
+answer has three values:
+
+| answer | what the engine does |
+|---|---|
+| confirmed cosmetic | skips the experiment — the commit is "not applicable" |
+| confirmed a real change | runs the experiment — the ordinary verdicts apply |
+| **could not tell** | **runs the experiment, and a green suite accuses nothing** |
+
+The third one is why the answer is three-valued. "Could not tell" is not
+"no": some syntax the change touched is outside what the adapter's rules
+cover, so the change might have been nothing but formatting — and a green
+suite says nothing about a change whose nature is unknown. The verdict there
+is `uncertain`, and it is neither a gap nor a pass.
+
+★ **The two mistakes cost different amounts, and the contract is shaped by
+that.** A "yes" that turns out to be a behaviour change skips the experiment
+and loses the finding — the expensive mistake, because the report says "this
+change did not alter the behavior of the code" and a reader who believes it
+stops writing tests. A "no" that turns out to be a comment-only change costs
+one test run and says nothing false. So an adapter that is not sure says no.
+
+An adapter that does not implement this capability can only answer "could not
+tell", so every change in a language without it reaches the experiment. That
+is slower and noisier, and it is the safe direction: the alternative is an
+engine that keeps its own grammar, and a grammar is a list to maintain.
+
+The rules themselves live in `internal/adapters/cosmetic.go`, next to
+`IsTestFilePath` and for the same reason — **a rule that answers the same
+question in two places is two rules that will drift.**
 
 ### 3.2 `core.FileScope` — what a conclusion is allowed to depend on
 
@@ -546,7 +599,13 @@ trusted with an accusation, and they are not negotiable in review.
    has no tests".
 6. If the build needs things outside the repository, implement
    `WorktreePreparer`.
-7. Write the negative controls first: a fixture where the tool must find
+7. Implement `CosmeticConfirmer` — say what a comment is in this language,
+   and what a line that looks like a comment but is not. The engine asks
+   this question on every change, and it cannot answer it on its own: a
+   `//` is a comment in Go and floor division in Python, and a `//go:build`
+   is a comment in neither sense. Without the capability every change
+   reaches the experiment, which is safe but slow.
+8. Write the negative controls first: a fixture where the tool must find
    something, and a fixture where it must stay quiet.
 
 The adapters also share one cross-layer judgement — **what counts as
@@ -554,6 +613,13 @@ The adapters also share one cross-layer judgement — **what counts as
 (`adapters.IsTestDataPath`) rather than being written once per layer. A
 judgement written in several places gets half-fixed in each, and nobody
 notices the layer that never wrote it at all.
+
+★ **The same is true of the comment rules**, and for a sharper reason. The
+engine used to hold them, and it held one rule for every language: a `//`
+opens a comment. That rule was wrong in Python and in Go, and both errors
+were real changes reported as changes that altered nothing (dogfood bugs
+3.109, 3.110). The rules live in `internal/adapters/cosmetic.go` now, one
+set per language, and the engine asks.
 
 Note that the two layers that use it answer **different questions**, and the
 difference is deliberate:

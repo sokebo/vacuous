@@ -212,3 +212,107 @@ type CompileChecker interface {
 	// no.
 	Compiles(ctx context.Context, root, rel string) CompileVerdict
 }
+
+// CosmeticVerdict is what an adapter concluded about a change.
+//
+// It has three answers, not two, and the third one is the point.
+type CosmeticVerdict int
+
+const (
+	// CosmeticUnknown means the adapter could not tell whether the change
+	// altered behaviour.
+	//
+	// The engine does not skip the experiment on an unknown. It runs it,
+	// and a suite that stays green does not accuse anything: the change
+	// might have been nothing but formatting, and "no test watched this"
+	// is not a fact the tool is entitled to.
+	CosmeticUnknown CosmeticVerdict = iota
+	// Cosmetic means the adapter is sure the change touched nothing but
+	// formatting and ordinary comments.
+	Cosmetic
+	// NotCosmetic means the adapter is sure the change touched more than
+	// that.
+	NotCosmetic
+)
+
+// CosmeticQuestion carries the two ends of a change to the adapter.
+//
+// The engine reads the files and hands over their contents, because the
+// adapter has no git access and should not need any: the question is about
+// source text, not about history.
+type CosmeticQuestion struct {
+	// Files are the changed files, each with its content at both ends of
+	// the range.
+	Files []FileVersion
+}
+
+// FileVersion is one file at both ends of a change.
+//
+// A file that does not exist at one end has an empty string there. That is
+// what "the file was added" and "the file was deleted" look like, and both
+// of them are changes the adapter has to be able to say something about.
+type FileVersion struct {
+	// Path is the repository-relative path, for the report.
+	Path string
+	// Before is the content at the base of the range.
+	Before string
+	// After is the content at the head of the range.
+	After string
+	// RawLines is how many lines the diff touches in this file.
+	//
+	// It is the size the adapter falls back to for a file it does not
+	// speak the language of: the adapter cannot measure that file's
+	// comments, and a size of zero next to a behaviour change is a number
+	// nobody earned.
+	RawLines int
+}
+
+// CosmeticAnswer is what the adapter concluded about a change.
+type CosmeticAnswer struct {
+	// Verdict is the conclusion itself.
+	Verdict CosmeticVerdict
+	// Reason says what the adapter looked at, and why it answered the way
+	// it did.
+	//
+	// The report shows it to the reader, so it has to describe the check
+	// that was actually performed. A sentence about a rule the adapter
+	// does not have is worse than no sentence at all.
+	Reason string
+	// ChangedLines counts the lines that really changed, in the file that
+	// changed the most.
+	//
+	// It is the better size signal: a commit that touches four files by
+	// one line each is a rename, not a feature.
+	ChangedLines int
+}
+
+// CosmeticConfirmer is an optional capability an adapter may implement.
+//
+// It answers one question about a change: can this adapter CONFIRM that the
+// change touched nothing but formatting and ordinary comments?
+//
+// The verb is the whole point. An adapter that cannot be sure says no, and
+// the engine does what it always does: it runs the experiment. The two
+// mistakes cost different amounts. A "yes" that turns out to be a behaviour
+// change skips the experiment and loses the finding - and the finding is
+// the expensive mistake, because a report that says "this change did not
+// alter the behaviour" is a sentence with no way out. A "no" that turns out
+// to be a comment-only change costs one test run and says nothing false.
+//
+// The engine cannot ask this question on its own. Whether "//" opens a
+// comment, whether a line's indentation is its block structure, and whether
+// a "//go:build" line is a comment or a build constraint are questions
+// about a language, and the engine holds no grammar.
+//
+// An adapter that does not implement this capability can answer the question
+// only "no" - so every change reaches the experiment. That is slower and
+// noisier, and it is the safe direction.
+type CosmeticConfirmer interface {
+	// ConfirmsCosmetic reports what the change to the given files did.
+	//
+	// q holds the two ends of every changed file.
+	//
+	// The returned reason says what the adapter looked at, and it is what
+	// the report shows the reader. It has to be true.
+	ConfirmsCosmetic(ctx context.Context, q CosmeticQuestion) CosmeticAnswer
+}
