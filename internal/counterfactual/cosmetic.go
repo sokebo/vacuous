@@ -180,21 +180,53 @@ func (a *Auditor) askAboutChange(ctx context.Context, base, head string, files [
 // It is the size the report falls back to for a file the adapter does not
 // speak the language of: the adapter cannot measure that file's comments,
 // and a size of zero next to a behaviour change is a number nobody earned.
+//
+// ★ The path comes from the diff's own headers, and a deleted file's "+++"
+// header is "/dev/null" - so the "---" header is the one that names it.
+// Keying the count on the "+" side alone filed every deleted file's lines
+// under "/dev/null", and the file's own count came out as zero.
 func rawLinesPerFile(patch string) map[string]int {
 	out := map[string]int{}
-	file := ""
+	from, to := "", ""
+	inHunk := false
 	for _, line := range strings.Split(patch, "\n") {
 		switch {
-		case strings.HasPrefix(line, "---"):
-			continue
-		case strings.HasPrefix(line, "+++ "):
-			file = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
-			continue
-		case strings.HasPrefix(line, "-"), strings.HasPrefix(line, "+"):
-			out[file]++
+		case strings.HasPrefix(line, "diff --git "):
+			// A new file's block starts. Everything after it is a
+			// header until the first hunk.
+			inHunk = false
+			from, to = "", ""
+		case strings.HasPrefix(line, "@@"):
+			// Everything after this is content, until the next block.
+			inHunk = true
+		case !inHunk && strings.HasPrefix(line, "--- "):
+			from = patchPath(line[4:])
+			to = ""
+		case !inHunk && strings.HasPrefix(line, "+++ "):
+			to = patchPath(line[4:])
+		case inHunk && strings.HasPrefix(line, "-"), inHunk && strings.HasPrefix(line, "+"):
+			name := to
+			if name == "" {
+				name = from
+			}
+			out[name]++
 		}
 	}
 	return out
+}
+
+// patchPath reads the path out of a diff header.
+//
+// "/dev/null" is not a path: it stands for "this side of the diff does not
+// exist", which is what an added or a deleted file looks like on one side.
+func patchPath(header string) string {
+	s := strings.TrimSpace(header)
+	if s == "" || s == "/dev/null" {
+		return ""
+	}
+	s = strings.TrimPrefix(s, "a/")
+	s = strings.TrimPrefix(s, "b/")
+	return s
 }
 
 // pathBefore is where a file lived before the change. A rename has two.
@@ -213,11 +245,14 @@ func pathBefore(f core.FileChange) string {
 // could not be read.
 func patchLineCount(patch string) int {
 	n := 0
+	inHunk := false
 	for _, line := range strings.Split(patch, "\n") {
 		switch {
-		case strings.HasPrefix(line, "---"), strings.HasPrefix(line, "+++"):
-			continue
-		case strings.HasPrefix(line, "-"), strings.HasPrefix(line, "+"):
+		case strings.HasPrefix(line, "diff --git "):
+			inHunk = false
+		case strings.HasPrefix(line, "@@"):
+			inHunk = true
+		case inHunk && strings.HasPrefix(line, "-"), inHunk && strings.HasPrefix(line, "+"):
 			n++
 		}
 	}
