@@ -73,6 +73,15 @@ type SourceRules struct {
 	// a change to it is a change - and that is the whole of the Go build
 	// tag fix.
 	Directives []string
+	// Layout says what the SHAPE of the source means.
+	//
+	// It is here for the same reason the comment rules are here: two files
+	// can hold the same code and differ in their layout, and in most
+	// languages the layout is nothing but layout. In some it is the syntax.
+	//
+	// An adapter that says nothing here is saying "the layout carries no
+	// meaning", and that answer is a lie in Python and in JavaScript.
+	Layout LayoutRules
 	// Describe says what these rules do, in a sentence the report can
 	// show.
 	//
@@ -83,6 +92,57 @@ type SourceRules struct {
 	// language it was applied to, and it was printed as the evidence for
 	// the conclusion.
 	Describe string
+}
+
+// LayoutRules says what the shape of the source means.
+//
+// The engine used to throw every piece of whitespace away before comparing
+// the two ends of a change, and that is right for the code and wrong for the
+// layout. Whitespace is not one thing: it is the space between the tokens,
+// the indentation of a line, and the break at the end of a line. The first
+// is layout in every language. The second is the block structure in Python.
+// The third ends a statement in Go and in JavaScript.
+//
+// Throwing all three away made the tool call a behaviour change a
+// reformatting:
+//
+//	def total(count, batch):
+//	    return count // batch
+//
+// became
+//
+//	def total(count, batch):
+//	        return count // batch
+//
+// and the tool said the change altered nothing - while the statement had
+// moved into another block, and the tests went red.
+//
+// And in Go and in JavaScript, where a line break ends a statement:
+//
+//	return x
+//
+// became
+//
+//	return
+//	x
+//
+// and the tool said the change altered nothing - while the function had
+// started returning nothing at all.
+type LayoutRules struct {
+	// IndentationIsSyntax says the indentation of a line carries meaning.
+	//
+	// It is true for Python, where a line's indentation says which block it
+	// belongs to. A change to it can move a statement from one block to
+	// another, and that is a change of behaviour.
+	IndentationIsSyntax bool
+	// LineBreakEndsStatement says a line break at the top level of a
+	// statement ends that statement.
+	//
+	// It is true for Go and for JavaScript, which both insert a semicolon
+	// where the line ends. It is false inside brackets, where a break is
+	// nothing but layout - and the reader knows the difference, because it
+	// counts the brackets.
+	LineBreakEndsStatement bool
 }
 
 // goSourceRules are Go's.
@@ -99,7 +159,13 @@ var goSourceRules = SourceRules{
 	//
 	// None of them is a comment, so none of them may be removed.
 	Directives: []string{"//go:", "// +build", "//export", "//line"},
-	Describe: "Go: the `//` and `/* */` comments were removed, and the `//go:` build directives were kept - " +
+	// Go's indentation is layout - gofmt decides it and the compiler
+	// ignores it. But the break at the end of a line is not: Go inserts a
+	// semicolon there, and "return x" and "return\nx" are not the same
+	// program.
+	Layout: LayoutRules{IndentationIsSyntax: false, LineBreakEndsStatement: true},
+	Describe: "Go: the `//` and `/* */` comments were removed from outside the string literals, " +
+		"and the `//go:` build directives were kept - " +
 		"a build constraint decides which platforms compile the file, so it is not a comment",
 }
 
@@ -108,17 +174,29 @@ var goSourceRules = SourceRules{
 // Python has one comment syntax and it is "#". It has no block comments.
 // And "//" is not a comment: it is floor division, and it is the operator
 // that made a change invisible.
+//
+// Python's indentation is not layout either: it is the block structure. A
+// line's indentation says which block it belongs to, and moving a statement
+// from one block to another is a change of behaviour.
 var pythonSourceRules = SourceRules{
 	LineComments: []string{"#"},
-	Describe: "Python: the `#` comments were removed, and `//` was kept - `//` is floor division in Python, " +
-		"not a comment, so a change to it is a change",
+	Layout:       LayoutRules{IndentationIsSyntax: true, LineBreakEndsStatement: true},
+	Describe: "Python: the `#` comments were removed from outside the string literals, " +
+		"and `//` was kept - `//` is floor division in Python, " +
+		"not a comment, so a change to it is a change; " +
+		"the indentation was compared as well, because in Python the indentation is the block structure",
 }
 
 // nodeSourceRules are JavaScript's and TypeScript's.
+//
+// JavaScript's indentation is layout. Its line breaks are not: JavaScript
+// inserts a semicolon where a line ends, so "return x" and "return\nx" are
+// not the same program.
 var nodeSourceRules = SourceRules{
 	LineComments:  []string{"//"},
 	BlockComments: [][2]string{{"/*", "*/"}},
-	Describe:      "JavaScript/TypeScript: the `//` and `/* */` comments were removed",
+	Layout:        LayoutRules{IndentationIsSyntax: false, LineBreakEndsStatement: true},
+	Describe:      "JavaScript/TypeScript: the `//` and `/* */` comments were removed from outside the string literals",
 }
 
 // goSourceExts are the extensions of a file the Go adapter answers for.
@@ -173,20 +251,19 @@ func ConfirmCosmetic(ctx context.Context, rules SourceRules, exts map[string]boo
 			// Not this adapter's language. The change cannot be vouched
 			// for, so the experiment runs and the ordinary verdicts
 			// apply.
-			answer.Verdict = core.NotCosmetic
-			answer.Reason = rules.Describe +
-				"; but " + f.Path + " is not written in this language, " +
-				"so the change to it cannot be ruled out as a comment"
+			escalate(&answer, core.NotCosmetic, rules.Describe+
+				"; but "+f.Path+" is not written in this language, "+
+				"so the change to it cannot be ruled out as a comment")
 			if f.RawLines > answer.ChangedLines {
 				answer.ChangedLines = f.RawLines
 			}
 			continue
 		}
 
-		beforeWhole, beforeLines, beforeComplete := reduceSource(f.Before, rules)
-		afterWhole, afterLines, afterComplete := reduceSource(f.After, rules)
+		before := reduceSource(f.Before, rules)
+		after := reduceSource(f.After, rules)
 
-		if !beforeComplete || !afterComplete {
+		if !before.complete || !after.complete {
 			// The file holds a quote or a comment that never closes, so the
 			// reader cannot tell which bytes are inside it and which are
 			// outside. That is not a difference between the two sides - it
@@ -201,25 +278,50 @@ func ConfirmCosmetic(ctx context.Context, rules SourceRules, exts map[string]boo
 			// the size of the biggest file that could actually be read. A
 			// file that could not be read has no size to quote, and
 			// guessing one would be a number nobody earned.
-			if answer.Verdict == core.Cosmetic {
-				answer.Verdict = core.CosmeticUnknown
-			}
-			answer.Reason = rules.Describe +
-				"; but " + f.Path + " holds a quote or a block comment that never closes, " +
-				"so the change could not be read to the end"
+			escalate(&answer, core.CosmeticUnknown, rules.Describe+
+				"; but "+f.Path+" holds a quote or a block comment that never closes, "+
+				"so the change could not be read to the end")
 			continue
 		}
 
-		if beforeWhole != afterWhole {
+		switch {
+		case before.whole != after.whole:
 			// The two sides are different code. That is the answer, and it
 			// is the safe one: the experiment runs.
-			answer.Verdict = core.NotCosmetic
-			answer.Reason = rules.Describe + "; but the two ends of " + f.Path + " are different code"
-		} else if answer.Verdict == core.Cosmetic {
-			// So far so good: every file read cleanly and every one of them
-			// is the same text at both ends. The reason says so, because
-			// the reason is the evidence the report shows.
-			answer.Reason = rules.Describe + "; the two ends of the changed files reduce to the same text"
+			escalate(&answer, core.NotCosmetic, rules.Describe+
+				"; but the two ends of "+f.Path+" are different code")
+
+		case rules.Layout.IndentationIsSyntax && !sameIndents(before.indents, after.indents):
+			// The code is the same and the indentation is not. In a
+			// language where the indentation is the block structure, that
+			// means a statement may have moved from one block to another.
+			//
+			// "May have" is the honest word: the adapter does not parse
+			// the block structure, it reads it. And an answer it cannot
+			// earn is not an answer - the third verdict exists for exactly
+			// this, and it costs one test run rather than a false
+			// accusation.
+			escalate(&answer, core.CosmeticUnknown, rules.Describe+
+				"; but the indentation of "+f.Path+" changed, and in this language "+
+				"the indentation is the block structure - so the change cannot be "+
+				"confirmed to be nothing but formatting")
+
+		case rules.Layout.LineBreakEndsStatement && before.breaks != after.breaks:
+			// The code is the same and a statement ends in a different
+			// place. In a language that ends a statement at the end of a
+			// line, that is a semicolon appearing or disappearing.
+			escalate(&answer, core.CosmeticUnknown, rules.Describe+
+				"; but a statement ends in a different place in "+f.Path+
+				", and in this language a line break ends a statement - so the "+
+				"change cannot be confirmed to be nothing but formatting")
+
+		default:
+			if answer.Verdict == core.Cosmetic {
+				// So far so good: every file read cleanly and every one of
+				// them is the same text at both ends. The reason says so,
+				// because the reason is the evidence the report shows.
+				answer.Reason = rules.Describe + "; the two ends of the changed files reduce to the same text"
+			}
 		}
 
 		// The size of the change, counted the same way at both ends: a
@@ -230,13 +332,92 @@ func ConfirmCosmetic(ctx context.Context, rules SourceRules, exts map[string]boo
 		// It is counted from the whole file rather than from the changed
 		// lines, because a line read on its own cannot know whether it
 		// sits inside a literal that opened earlier.
-		n := multisetDifference(beforeLines, afterLines) + multisetDifference(afterLines, beforeLines)
+		n := multisetDifference(before.pieces, after.pieces) + multisetDifference(after.pieces, before.pieces)
 		if n > answer.ChangedLines {
 			answer.ChangedLines = n
 		}
 	}
 
 	return answer
+}
+
+// escalate records a conclusion, and keeps the strongest one.
+//
+// The three verdicts are not equal. "The code changed" is a fact; "I could
+// not tell" is the absence of one; "nothing but formatting" is a fact too.
+// A fact about the code outranks the absence of a fact, because a change
+// that is known to have touched the code is worth a finding even when
+// another file in the same change could not be read.
+//
+// The order matters in one direction only: a file the adapter could not
+// read must not soften a file it read and understood.
+func escalate(answer *core.CosmeticAnswer, verdict core.CosmeticVerdict, reason string) {
+	if verdictRank(verdict) <= verdictRank(answer.Verdict) {
+		return
+	}
+	answer.Verdict = verdict
+	answer.Reason = reason
+}
+
+// verdictRank orders the verdicts from "nothing to say" to "a change".
+func verdictRank(v core.CosmeticVerdict) int {
+	switch v {
+	case core.NotCosmetic:
+		return 2
+	case core.CosmeticUnknown:
+		return 1
+	}
+	return 0
+}
+
+// sameIndents reports whether two lists of indentation are the same.
+//
+// The lists are compared in order: the indentation of a line says which
+// block it belongs to, and that is a question about the sequence of lines,
+// not about how many different indents the file happens to use.
+func sameIndents(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// reduction is what one source file reduces to.
+//
+// It holds three readings of the same file, because the three answer
+// different questions. The code says whether the behaviour changed. The
+// breaks say whether a statement ended in a different place. The indents say
+// whether a line sits in a different block.
+type reduction struct {
+	// whole is the code with every piece of whitespace outside a literal
+	// removed.
+	whole string
+	// breaks is the code with the line breaks that end a statement marked.
+	//
+	// The marker stands where the language would insert a semicolon, so two
+	// ends of a change that moved such a break do not reduce to the same
+	// text - which is the whole point: "return x" and "return\nx" are not
+	// the same program.
+	//
+	// A break inside brackets is not marked. There is no statement to end
+	// there, and the reader knows it, because it counted the brackets.
+	breaks string
+	// indents is the indentation of every logical line, in order.
+	//
+	// A logical line is a run of physical lines that a bracket holds
+	// together - what Python calls a statement. The indentation of the
+	// lines inside the brackets is not part of it, because it says nothing
+	// there.
+	indents []string
+	// pieces is the content of every line, for counting.
+	pieces []string
+	// complete says whether the file could be read to the end.
+	complete bool
 }
 
 // reduceSource reduces source text to the behaviour it holds.
@@ -252,19 +433,80 @@ func ConfirmCosmetic(ctx context.Context, rules SourceRules, exts map[string]boo
 // says that prefix opens a comment, and a directive is kept because THIS
 // language says that line means something.
 //
-// The last return value says whether the text could be read to the end. A
+// The layout is not thrown away with the whitespace. It is read apart from
+// the code: where a statement ended, and how far each line was indented. A
+// language that says the layout is meaningless ignores those two readings;
+// a language that says the layout IS the syntax - Python - cannot.
+//
+// The complete field says whether the text could be read to the end. A
 // quote that never closes leaves the reader unable to tell which bytes are
 // inside a literal and which are outside it, and a reduction that guesses
 // is not a reading.
-func reduceSource(content string, rules SourceRules) (whole string, pieces []string, complete bool) {
-	var b strings.Builder
-	var current strings.Builder
+func reduceSource(content string, rules SourceRules) reduction {
+	var whole, breaks, current, lineIndent strings.Builder
+	var pieces []string
+	var indents []string
 
+	// depth counts the brackets that are open. It says where a logical line
+	// ends: a line that a bracket holds together is one line, whatever the
+	// indentation of its parts says.
+	depth := 0
+	// suppress counts the brackets that hold an EXPRESSION together - the
+	// round ones and the square ones.
+	//
+	// They are counted apart from the curly ones on purpose. A newline
+	// inside a call or inside an index is layout, and a newline inside a
+	// block is not: Go and JavaScript end the statement there. The curly
+	// brace of a block is where a statement ends, and the curly brace of a
+	// composite literal is not - and the difference between those two is
+	// not visible from the text alone, so the reader counts the round and
+	// the square brackets only, and lets the closer rule below handle the
+	// rest.
+	suppress := 0
 	// atLineStart is true while only whitespace has been seen on the line
 	// so far. It is what makes a directive a directive: a build
 	// constraint has to be on its own line.
 	atLineStart := true
-	complete = true
+	// logicalIndent is the indentation of the logical line being read, and
+	// logicalHasContent says whether it has any content yet.
+	logicalIndent := ""
+	logicalHasContent := false
+	// pendingBreak says a break that ends a statement is waiting for the
+	// next token to be written.
+	//
+	// It is written late on purpose: a break at the end of the file ends
+	// nothing, and a run of blank lines is one break, not several.
+	pendingBreak := false
+	// last and prev are the last two significant bytes, which is what
+	// tells "x++" (a token that can end a statement) from "x +" (one that
+	// cannot).
+	last, prev := byte(0), byte(0)
+	complete := true
+
+	// write puts one significant byte into the readings.
+	write := func(c byte) {
+		if pendingBreak {
+			pendingBreak = false
+			// A semicolon in front of a closing bracket is an empty
+			// statement: it changes nothing, and marking it would make
+			// every reflow of a block look like a moved statement.
+			if c != ')' && c != ']' && c != '}' {
+				breaks.WriteByte('\n')
+			}
+		}
+		whole.WriteByte(c)
+		breaks.WriteByte(c)
+		current.WriteByte(c)
+		prev, last = last, c
+		atLineStart = false
+		if !logicalHasContent {
+			// The first content of a logical line decides its
+			// indentation: that is the line the block structure is
+			// read from.
+			logicalIndent = lineIndent.String()
+			logicalHasContent = true
+		}
+	}
 
 	for i := 0; i < len(content); {
 		c := content[i]
@@ -281,10 +523,10 @@ func reduceSource(content string, rules SourceRules) (whole string, pieces []str
 				// A directive carries meaning of its own. It is kept, so
 				// that a change to it reads as a change.
 				j := skipToLineEnd(content, i)
-				current.WriteString(content[i:j])
-				b.WriteString(content[i:j])
+				for k := i; k < j; k++ {
+					write(content[k])
+				}
 				i = j
-				atLineStart = false
 				continue
 			}
 			i = skipToLineEnd(content, i)
@@ -301,12 +543,12 @@ func reduceSource(content string, rules SourceRules) (whole string, pieces []str
 				// the comment or outside it. Nothing is dropped - the
 				// text is kept exactly as it is - and the caller is told
 				// this is not a reading of the file.
-				current.WriteString(content[i:])
-				b.WriteString(content[i:])
+				for k := i; k < len(content); k++ {
+					write(content[k])
+				}
 				i = len(content)
-				atLineStart = false
 				complete = false
-				continue
+				break
 			}
 			i = i + len(open) + j + len(close)
 			continue
@@ -318,18 +560,18 @@ func reduceSource(content string, rules SourceRules) (whole string, pieces []str
 			end, state := literalEnd(content, i)
 			switch state {
 			case closedLiteral:
-				current.WriteString(content[i:end])
-				b.WriteString(content[i:end])
+				for k := i; k < end; k++ {
+					write(content[k])
+				}
 				i = end
-				atLineStart = false
 				continue
 			case openLiteral:
-				current.WriteString(content[i:])
-				b.WriteString(content[i:])
+				for k := i; k < len(content); k++ {
+					write(content[k])
+				}
 				i = len(content)
-				atLineStart = false
 				complete = false
-				continue
+				break
 			}
 			// notALiteral: a quote that never closes on its own line is
 			// ordinary text, and treating it as a literal would swallow
@@ -337,25 +579,103 @@ func reduceSource(content string, rules SourceRules) (whole string, pieces []str
 		}
 
 		if c == '\n' {
-			// A line ended outside a literal. The piece is finished.
+			// A line ended.
 			pieces = appendPiece(pieces, current.String())
 			current.Reset()
+			if depth == 0 {
+				// The logical line ends here, and its indentation is
+				// what it was.
+				if logicalHasContent {
+					indents = append(indents, logicalIndent)
+					logicalIndent = ""
+					logicalHasContent = false
+				}
+			}
+			if suppress == 0 && endsStatement(last, prev) {
+				// A statement ends here, in a language that ends a
+				// statement at the end of a line.
+				pendingBreak = true
+			}
+			lineIndent.Reset()
 			atLineStart = true
 			i++
 			continue
 		}
 		if isSpace(c) {
+			if atLineStart {
+				// The indentation of the line. It is the logical
+				// line's indentation only if the logical line
+				// starts here, and the reader decides that later.
+				lineIndent.WriteByte(c)
+			}
 			i++
 			continue
 		}
-		current.WriteByte(c)
-		b.WriteByte(c)
-		atLineStart = false
+
+		switch c {
+		case '(':
+			depth++
+			suppress++
+		case '[':
+			depth++
+			suppress++
+		case '{':
+			depth++
+		case ')', ']':
+			if depth > 0 {
+				depth--
+			}
+			if suppress > 0 {
+				suppress--
+			}
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+		write(c)
 		i++
 	}
 	pieces = appendPiece(pieces, current.String())
+	if logicalHasContent {
+		// The file ended in the middle of a logical line.
+		indents = append(indents, logicalIndent)
+	}
 
-	return b.String(), pieces, complete
+	return reduction{
+		whole:    whole.String(),
+		breaks:   breaks.String(),
+		indents:  indents,
+		pieces:   pieces,
+		complete: complete,
+	}
+}
+
+// endsStatement reports whether a line ending after this token could end a
+// statement.
+//
+// Go and JavaScript both insert a semicolon where the line ends, and they
+// only do it after a token that can end a statement: an identifier, a
+// literal, a closing bracket, or "++" and "--". A line that ends in an
+// operator continues onto the next line, and its break is nothing but
+// layout.
+//
+// Getting this wrong in the loud direction turns every reflow of a long
+// condition into "I cannot tell" - and a rule that cannot tell is a rule
+// nobody reads.
+func endsStatement(last, prev byte) bool {
+	switch {
+	case last >= 'a' && last <= 'z', last >= 'A' && last <= 'Z', last >= '0' && last <= '9':
+		return true
+	case last == '_', last == '"', last == '\'', last == '`':
+		return true
+	case last == ')', last == ']', last == '}':
+		return true
+	case (last == '+' || last == '-') && prev == last:
+		// "x++" and "x--" end a statement; "x +" does not.
+		return true
+	}
+	return false
 }
 
 // lineCommentAt reports whether a line comment starts at i, and which

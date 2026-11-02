@@ -321,3 +321,175 @@ func TestAnUnreadableFileIsUnknown(t *testing.T) {
 func contains(haystack, needle string) bool {
 	return strings.Contains(haystack, needle)
 }
+
+// The layout.
+//
+// ★ Whitespace is not one thing. It is the space between the tokens, the
+// indentation of a line, and the break at the end of a line. The first is
+// layout in every language. The second is the block structure in Python.
+// The third ends a statement in Go and in JavaScript.
+//
+// The engine used to throw all three away before comparing the two ends of
+// a change, and that made it call a behaviour change a reformatting. These
+// tests pin down the difference, and each of them is a negative control:
+// take the layout rule out and the test goes red.
+
+// TestPythonIndentationIsNotAReformatting is the guard for the first of
+// the three.
+//
+// In Python the indentation IS the block structure. Moving a statement four
+// spaces to the right is a change of behaviour, and the tool cannot confirm
+// that it is not - so it says it cannot confirm, and the experiment runs.
+//
+// It used to say "this change did not alter the behavior of the code", and
+// the experiment never ran at all.
+func TestPythonIndentationIsNotAReformatting(t *testing.T) {
+	got := confirm(t, pythonSourceRules, pythonSourceExts,
+		"def total(count, batch):\n    return count // batch\n",
+		"def total(count, batch):\n        return count // batch\n")
+
+	if got.Verdict != core.CosmeticUnknown {
+		t.Errorf("verdict = %v, want CosmeticUnknown: the adapter cannot confirm that moving a statement is only formatting", got.Verdict)
+	}
+}
+
+// TestPythonBlockStructureIsNotAReformatting is the same rule in the shape
+// that hides hardest.
+//
+// The statement does not move to another line - it moves onto the header's
+// line. The text is the same; the block it belongs to is not.
+func TestPythonBlockStructureIsNotAReformatting(t *testing.T) {
+	got := confirm(t, pythonSourceRules, pythonSourceExts,
+		"if ready:\n    go()\n",
+		"if ready: go()\n")
+
+	if got.Verdict != core.CosmeticUnknown {
+		t.Errorf("verdict = %v, want CosmeticUnknown", got.Verdict)
+	}
+}
+
+// TestPythonSpacingIsStillAReformatting is the control.
+//
+// The space between the tokens is layout in every language, Python included.
+// A rule that cannot tell the three kinds of whitespace apart would turn
+// every reformat into "I cannot tell".
+func TestPythonSpacingIsStillAReformatting(t *testing.T) {
+	got := confirm(t, pythonSourceRules, pythonSourceExts,
+		"x = call(a, b)\n",
+		"x = call(a,b)\n")
+
+	if got.Verdict != core.Cosmetic {
+		t.Errorf("verdict = %v, want Cosmetic: the space between the tokens is layout", got.Verdict)
+	}
+}
+
+// TestGoALineBreakThatEndsAStatementIsNotAReformatting is the guard for
+// the third.
+//
+// Go inserts a semicolon where the line ends. "return x" and "return\nx" are
+// not the same program: the second one returns nothing at all.
+func TestGoALineBreakThatEndsAStatementIsNotAReformatting(t *testing.T) {
+	got := confirm(t, goSourceRules, goSourceExts,
+		"func f() int { return x }\n",
+		"func f() int { return\nx }\n")
+
+	if got.Verdict != core.CosmeticUnknown {
+		t.Errorf("verdict = %v, want CosmeticUnknown: a line break ends a statement in Go", got.Verdict)
+	}
+}
+
+// TestNodeALineBreakThatEndsAStatementIsNotAReformatting is the same for
+// JavaScript, which inserts its semicolons the same way.
+func TestNodeALineBreakThatEndsAStatementIsNotAReformatting(t *testing.T) {
+	got := confirm(t, nodeSourceRules, nodeSourceExts,
+		"function f() { return x }\n",
+		"function f() { return\nx }\n")
+
+	if got.Verdict != core.CosmeticUnknown {
+		t.Errorf("verdict = %v, want CosmeticUnknown: a line break ends a statement in JavaScript", got.Verdict)
+	}
+}
+
+// TestGoIndentationIsStillAReformatting is the control for Go.
+//
+// Go's indentation is layout: gofmt decides it and the compiler never sees
+// it. A rule that treated it as syntax would call every gofmt run "I cannot
+// tell", and a rule that cannot tell is a rule nobody reads.
+func TestGoIndentationIsStillAReformatting(t *testing.T) {
+	got := confirm(t, goSourceRules, goSourceExts,
+		"if x {\n\ty = 1\n}\n",
+		"if x {\n    y = 1\n}\n")
+
+	if got.Verdict != core.Cosmetic {
+		t.Errorf("verdict = %v, want Cosmetic: Go's indentation is layout", got.Verdict)
+	}
+}
+
+// TestGoAReflowInsideBracketsIsStillAReformatting is the other control.
+//
+// A break inside a call is layout in every one of these languages: there is
+// no statement to end there, and the reader knows it because it counted the
+// brackets.
+func TestGoAReflowInsideBracketsIsStillAReformatting(t *testing.T) {
+	got := confirm(t, goSourceRules, goSourceExts,
+		"call(a, b)\n",
+		"call(\n\ta,\n\tb\n)\n")
+
+	if got.Verdict != core.Cosmetic {
+		t.Errorf("verdict = %v, want Cosmetic: a break inside a call is layout", got.Verdict)
+	}
+}
+
+// TestGoALineEndingInAnOperatorIsStillAReformatting is the third control.
+//
+// "if a && b {" and "if a &&\n b {" are the same program: the operator
+// cannot end a statement, so the break continues the expression. A rule that
+// marked every break would call every reflow of a long condition "I cannot
+// tell".
+func TestGoALineEndingInAnOperatorIsStillAReformatting(t *testing.T) {
+	got := confirm(t, goSourceRules, goSourceExts,
+		"if a && b {\n}\n",
+		"if a &&\n\tb {\n}\n")
+
+	if got.Verdict != core.Cosmetic {
+		t.Errorf("verdict = %v, want Cosmetic: a line that ends in an operator continues onto the next one", got.Verdict)
+	}
+}
+
+// TestALiteralThatSpansLinesIsStillOneLiteral pins down the reader's
+// memory of a literal that opens on one line and closes on another.
+//
+// Every line of a triple-quoted string looks like ordinary code until you
+// know the literal opened before it. A reader that forgets loses the whole
+// string - and the text inside it is data, not code.
+//
+// ★ This behaviour used to be pinned down by a test in the engine, and the
+// engine no longer reduces anything on its own. The behaviour did not move;
+// the test that held it down did, and it came here with it.
+func TestALiteralThatSpansLinesIsStillOneLiteral(t *testing.T) {
+	got := confirm(t, pythonSourceRules, pythonSourceExts,
+		"x = \"\"\"\nhello\n\"\"\"\n",
+		"x = \"\"\"\nworld\n\"\"\"\n")
+
+	if got.Verdict != core.NotCosmetic {
+		t.Errorf("verdict = %v, want NotCosmetic: the text inside the literal is data", got.Verdict)
+	}
+}
+
+// TestAQuoteThatDoesNotCloseDoesNotSwallowTheFile is the other half.
+//
+// A quote that never closes on its own line is not a quote: it is ordinary
+// text. Treating it as one would swallow the rest of the file, and every
+// change after it would look like no change at all.
+//
+// ★ This test used to live in the engine, for the same reason as the one
+// above.
+func TestAQuoteThatDoesNotCloseDoesNotSwallowTheFile(t *testing.T) {
+	got := confirm(t, goSourceRules, goSourceExts,
+		"x := \"unclosed\ny := 1\n",
+		"x := \"unclosed\ny := 2\n")
+
+	if got.Verdict != core.NotCosmetic {
+		t.Errorf("verdict = %v, want NotCosmetic: the change after the stray quote is still a change", got.Verdict)
+	}
+}
