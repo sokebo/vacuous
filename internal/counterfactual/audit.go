@@ -1944,7 +1944,11 @@ func checkConsistency(run *runOutcome, verdict Verdict) string {
 		if !mentionsFailure {
 			return "the verdict says a test went red, but the runner's own output contains no failure"
 		}
-	case VerdictVacuous:
+	case VerdictVacuous, VerdictUncertain:
+		// The uncertain verdict is the vacuous one with a footnote: the
+		// suite stayed green either way, and the difference is only
+		// whether the change might have been a reformat. A runner's
+		// output that mentions a failure contradicts both.
 		if mentionsFailure {
 			return "the verdict says every test passed, but the runner's own output contains a failure — the parse is probably wrong"
 		}
