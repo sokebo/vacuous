@@ -16,6 +16,15 @@ set -euo pipefail
 REPO="sokebo/vacuous"
 BINARY="vacuous"
 
+# The temporary directory the download unpacks into.
+#
+# It is not a local variable on purpose. The cleanup trap runs when the
+# script exits, which is after the function that made the directory has
+# returned - and a local variable is gone by then. With `set -u` that is
+# not a warning: the expansion fails, the removal never runs, and every
+# install leaves a directory behind in the temp folder.
+tmp=""
+
 info() { printf '\033[0;36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[0;33mwarning:\033[0m %s\n' "$1" >&2; }
 die()  { printf '\033[0;31merror:\033[0m %s\n' "$1" >&2; exit 1; }
@@ -79,7 +88,7 @@ install_via_release() {
   need curl
   need tar
 
-  local platform version url sums_url tmp
+  local platform version url sums_url
   platform="$(detect_platform)"
   version="${VERSION:-latest}"
 
@@ -92,7 +101,7 @@ install_via_release() {
   fi
 
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
+  trap '[ -n "$tmp" ] && rm -rf "$tmp"' EXIT
 
   info "Downloading $url ..."
   curl -fsSL "$url" -o "$tmp/vacuous.tar.gz" \
