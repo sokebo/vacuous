@@ -218,6 +218,46 @@ func TestGoAdapterGreenSuite(t *testing.T) {
 	}
 }
 
+// TestGoAdapterDoesNotCallAGreenSuiteRed is the adapter-level negative
+// control for the failure channel.
+//
+// The fixture's suite is green, and its output mentions a failure twice: a
+// passing subtest named "FAILED", and a test that prints "panic:" to prove
+// that a recovery middleware works.
+//
+// A substring scan over the runner's output calls both a failure. The flag
+// the engine's consistency check compares its verdict against then says
+// "the runner reported a red test" over a run that was entirely green, and
+// the tool answers "my verdict contradicts my own output" - a critical
+// finding that says the tool is broken.
+//
+// The load-bearing half is the last assertion: the counts say the suite is
+// green, and the flag has to say the same thing.
+func TestGoAdapterDoesNotCallAGreenSuiteRed(t *testing.T) {
+	root := copyFixture(t, "goproj-failnames")
+	a := NewGo()
+	a.Detect(root, core.FileScopeAll())
+	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	res, err := a.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	pass, fail, skip, unknown := res.Counts()
+	if pass == 0 {
+		t.Fatalf("no test passed: %+v", res.Outcomes)
+	}
+	if fail != 0 || skip != 0 || unknown != 0 {
+		t.Errorf("counts = pass %d fail %d skip %d unknown %d, want all green", pass, fail, skip, unknown)
+	}
+	if res.RawFailed {
+		t.Error("RawFailed = true, want false: the runner reported no red test")
+	}
+}
+
 // TestGoAdapterRunsModuleInSubdirectory checks a repository whose Go module
 // is not at the root.
 //
@@ -614,6 +654,173 @@ func requirePytest(t *testing.T) {
 	out, err := exec.Command(prog, "-m", "pytest", "--version").CombinedOutput()
 	if err != nil {
 		t.Skipf("pytest is not available for %s: %v (%s)", prog, err, strings.TrimSpace(string(out)))
+	}
+}
+
+// pythonInterpreter finds a Python that actually runs, and names it.
+//
+// The name is not enough. On Windows "python3" is often a store alias that
+// exits with a code no toolchain can use, and a test that used it would
+// measure the alias instead of the adapter. So every candidate is asked for
+// its version, and the first one that answers is the one used.
+func pythonInterpreter(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"python3", "python"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		out, err := exec.Command(path, "--version").CombinedOutput()
+		if err != nil {
+			continue
+		}
+		if !strings.Contains(string(out), "Python") {
+			continue
+		}
+		return path
+	}
+	t.Skip("no working python interpreter was found on this machine")
+	return ""
+}
+
+// TestPythonAdapterSeesAClassErrorThatRanNoTest is the adapter-level
+// negative control for a run that did not succeed.
+//
+// A class-level error stops the suite before the first test runs, so no test
+// ever executed - and the run did not succeed, so the runner says so in its
+// exit code. It puts the error in the report's failures section, and the
+// failure flag has to say the same thing, or the engine compares "a test
+// went red" with "no test went red" and calls the tool broken.
+//
+// The number the runner uses is not the same on every interpreter. Measured
+// on the ones at hand: a class-level error exits 1 on 3.9.6, 3.14.3 and
+// 3.15.2, and exits 5 on the 3.12.3 that the CI runner has - 3.12 carried
+// the "no tests ran" code for a while, and it was reverted and came back
+// later. The code 5 is also what an interpreter exits with when the
+// discovery collected no test at all and nothing failed.
+//
+// So the test does not pin the number. It pins that the tool reports the
+// runner's own verdict, whatever the interpreter's version makes that
+// verdict - which is the thing that is the tool's business. The number
+// itself is measured by running the same command directly.
+//
+// The fixture is a real project, and the interpreter is the machine's own.
+func TestPythonAdapterSeesAClassErrorThatRanNoTest(t *testing.T) {
+	prog := pythonInterpreter(t)
+	root := copyFixture(t, "pyproj-unittest-classerr")
+	a := NewPython()
+	if !a.Detect(root, core.FileScopeAll()) {
+		t.Fatal("the Python adapter did not detect the fixture")
+	}
+	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	plan.Args[0] = prog
+
+	res, err := a.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	want := runFixtureExitCode(t, prog, plan)
+	if want == 0 {
+		t.Fatal("the fixture ran green, so it is not the fixture this test is about")
+	}
+	if res.ExitCode != want {
+		t.Errorf("ExitCode = %d, want %d: the tool has to report the runner's own "+
+			"verdict, and the runner's verdict is the interpreter's to give",
+			res.ExitCode, want)
+	}
+	// The class-level error is a failure, and the failure flag has to say
+	// so. This is the part that does not depend on the interpreter.
+	if !res.RawFailed {
+		t.Error("RawFailed = false, want true: the runner reported a class-level " +
+			"error, and the failures section says so")
+	}
+	// The suite that ran no test is reported as such.
+	if len(res.SuiteErrors) == 0 {
+		t.Error("the suite that ran no test is missing from the suite errors")
+	}
+	// The error itself is not lost. Which part of the report carries it
+	// depends on the interpreter: 3.11 and later name the class in the
+	// result line, so the parse files it as an outcome, and older ones
+	// print a bare "ERROR" and keep the detail in the failures section.
+	if got, ok := outcomeFor(res, "setUpClass"); ok {
+		if got.Status != core.StatusFail {
+			t.Errorf("setUpClass = %s, want %s", got.Status, core.StatusFail)
+		}
+	} else if !strings.Contains(res.RawOutput, "setUpClass") {
+		t.Error("the class-level error is missing from the report")
+	}
+}
+
+// runFixtureExitCode runs the plan's commands the way the adapter runs them,
+// and returns the exit code the interpreter gave.
+//
+// The adapter's own result carries that number, so this is the same run
+// measured a second time, outside the tool. The merge is the adapter's
+// merge: the last non-zero code wins.
+func runFixtureExitCode(t *testing.T, prog string, plan core.Plan) int {
+	t.Helper()
+	exit := 0
+	for _, suite := range unittestSuitesFromEnv(plan.Env) {
+		for _, args := range unittestRuns(plan.Dir, suite) {
+			cmd := exec.Command(prog, args[1:]...)
+			cmd.Dir = plan.Dir
+			cmd.Env = append(os.Environ(), plan.Env...)
+			if code := exitCodeOf(cmd.Run()); code != 0 {
+				exit = code
+			}
+		}
+	}
+	return exit
+}
+
+// TestPythonAdapterDoesNotCallAGreenSuiteRedThatPrintsAFailureSection is the
+// adapter-level negative control for the shape a green suite can take.
+//
+// The fixture's class prints a failures section on its way out - a line of
+// equals signs and a line that looks like a failure header. The run is green
+// and the runner says so, but the output carries the shape of a red test.
+//
+// The flag has to say "no red test" here. A flag that read the text would say
+// the opposite, and the engine would compare "one test passed" with "a test
+// went red" and call the tool broken.
+//
+// The fixture is a real project, and the interpreter is the machine's own.
+func TestPythonAdapterDoesNotCallAGreenSuiteRedThatPrintsAFailureSection(t *testing.T) {
+	prog := pythonInterpreter(t)
+	root := copyFixture(t, "pyproj-unittest-printsep")
+	a := NewPython()
+	if !a.Detect(root, core.FileScopeAll()) {
+		t.Fatal("the Python adapter did not detect the fixture")
+	}
+	plan, err := a.Plan(context.Background(), core.PlanRequest{Root: root})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	plan.Args[0] = prog
+
+	res, err := a.Run(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if res.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0: the suite is green", res.ExitCode)
+	}
+	if got, ok := outcomeFor(res, "test_ok"); !ok {
+		t.Errorf("the passing test is missing from the outcomes: %+v", res.Outcomes)
+	} else if got.Status != core.StatusPass {
+		t.Errorf("test_ok = %s, want %s", got.Status, core.StatusPass)
+	}
+	if len(res.SuiteErrors) != 0 {
+		t.Errorf("SuiteErrors = %v, want none: the suite ran fine", res.SuiteErrors)
+	}
+	if res.RawFailed {
+		t.Error("RawFailed = true, want false: the suite is green, and the text " +
+			"it printed cannot talk the runner out of that")
 	}
 }
 

@@ -8,6 +8,11 @@
 *.test
 coverage.txt
 
+# Python bytecode. The fixtures under internal/adapters/testdata are real
+# projects, and running them writes __pycache__ next to the sources.
+__pycache__/
+*.pyc
+
 # Editor and OS noise
 .DS_Store
 .idea/

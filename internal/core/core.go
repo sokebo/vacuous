@@ -317,49 +317,43 @@ type RunResult struct {
 	// It may be a TAIL of the output, kept for a human to read. Do not
 	// use it to decide anything: a tail is not the output.
 	RawOutput string
-	// RawFailed says whether the runner's COMPLETE output mentions a
-	// failure.
+	// RawFailed says whether the runner reported a TEST failure.
 	//
 	// It is a separate field on purpose. The consistency check asks
-	// "does the text the runner printed show a failure" - and the answer
-	// has to come from all of that text. An earlier version of this tool
-	// looked for the marker in a 4KB tail of the output, and on a
-	// repository with a few hundred tests the tail was nothing but
+	// "does the runner itself say a test went red" - and the answer
+	// has to come from all of the runner's output. An earlier version of
+	// this tool looked for the marker in a 4KB tail of the output, and on
+	// a repository with a few hundred tests the tail was nothing but
 	// passing packages: the failure marker had been pushed out of it, and
 	// the tool reported "my verdict contradicts my own output" on runs
 	// that were perfectly consistent. The check was right; the window it
 	// looked through was too small.
+	//
+	// It says TEST failure, not "something went wrong". A build that did
+	// not compile is not a red test: it never ran one. The engine judges
+	// those separately, and a flag that mixed the two would make the two
+	// verdicts contradict each other over a tree that simply did not
+	// build.
+	//
+	// The answer is the runner's own failure channel, and every runner
+	// has a different one: Go speaks in events, unittest speaks in a
+	// failures section. So the adapter that ran the suite decides, and
+	// this field only carries the answer.
+	//
+	// It used to be a shared list of words - "FAIL", "build failed",
+	// "panic:" - searched in the output of every runner alike. A search
+	// cannot tell a report from the words inside it: a passing subtest
+	// named ".../FAILED", or a test that prints "panic:" on purpose to
+	// prove a recovery middleware works, made a green suite look red,
+	// and the tool then reported "my verdict contradicts my own
+	// output" - a critical finding that says the tool is broken - over a
+	// run that was perfectly consistent.
 	//
 	// An adapter that captures no output at all leaves this false, and
 	// the check is skipped for that run - there is nothing to contradict.
 	RawFailed bool
 	// DurationMS is the wall time of the whole run.
 	DurationMS int64
-}
-
-// failureMarkers are the strings that mean "the runner reported a failure".
-//
-// They live here so that the adapters and the engine agree on what counts
-// as a failure. The adapter scans the complete output once and records the
-// answer; the engine compares its own verdict against that answer.
-var failureMarkers = []string{
-	"FAIL",
-	"build failed",
-	"panic:",
-}
-
-// MentionsFailure reports whether the runner's output says a test failed.
-//
-// The whole output has to be scanned. A window into the middle of it will
-// miss the failure on some runs and catch it on others, and a check that
-// fires at random is worse than no check at all.
-func MentionsFailure(output string) bool {
-	for _, m := range failureMarkers {
-		if strings.Contains(output, m) {
-			return true
-		}
-	}
-	return false
 }
 
 // Counts tallies outcomes by status.

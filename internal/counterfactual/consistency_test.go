@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sokebo/vacuous/internal/adapters"
 	"github.com/sokebo/vacuous/internal/core"
 )
 
@@ -234,6 +235,44 @@ func TestRunWithoutRawOutputIsNotFlagged(t *testing.T) {
 	}
 }
 
+// TestAnInventedFailureIsCaughtEvenWhenTheOutputMentionsAFailure is the
+// other half of the check, and the half the old criterion turned off.
+//
+// A parse that invents a failure - a test marked red that the runner never
+// called red - has to be caught: the verdict says a test went red, and the
+// runner's own output says no such thing.
+//
+// The catch is in "the runner's own output says no such thing". It used to be
+// decided by a search for the word "FAIL" in the whole output, so on any
+// repository whose output mentions a failure anywhere - a passing subtest
+// named ".../FAILED", a test that prints "panic:" on purpose - the flag was
+// true, and this direction of the check could never fire. The safety net was
+// off on exactly the repositories that needed it, and this repository is one
+// of them: its own consistency test is a passing subtest whose name ends in
+// "FAIL".
+func TestAnInventedFailureIsCaughtEvenWhenTheOutputMentionsAFailure(t *testing.T) {
+	stream := `{"Action":"run","Package":"pkg","Test":"TestStates/FAILED"}` + "\n" +
+		`{"Action":"pass","Package":"pkg","Test":"TestStates/FAILED","Elapsed":0}` + "\n" +
+		`{"Action":"pass","Package":"pkg","Elapsed":0}` + "\n"
+
+	run := &runOutcome{result: core.RunResult{
+		// The counts say a test went red.
+		Outcomes: []core.TestOutcome{
+			{Name: "pkg.TestA", Status: core.StatusFail},
+		},
+		RawOutput: stream,
+		// The flag is the runner's own failure channel, and the stream
+		// has no fail event in it.
+		RawFailed: adapters.GoTestFailed(stream),
+	}}
+
+	if verdict := classify(run, nil, nil); verdict != VerdictContradictory {
+		t.Fatalf("classify() = %q, want %q — an invented failure has to be "+
+			"caught even when the output mentions a failure somewhere else",
+			verdict, VerdictContradictory)
+	}
+}
+
 // TestAFailureOutsideTheRawTailIsNotACcontradiction is the regression test
 // for the bug this tool shipped with.
 //
@@ -247,8 +286,9 @@ func TestRunWithoutRawOutputIsNotFlagged(t *testing.T) {
 // "contradictory" with "733 passed, 42 failed". The run was fine. The
 // window was too small.
 //
-// The failure marker now comes from the runner's COMPLETE output, so where
-// in the output it sits cannot change the verdict.
+// The failure now comes from the runner's own failure channel, computed over
+// the COMPLETE output, so where in the output it sits cannot change the
+// verdict.
 func TestAFailureOutsideTheRawTailIsNotACcontradiction(t *testing.T) {
 	// The failure comes FIRST, and 8KB of passing packages follow it.
 	//
@@ -256,9 +296,10 @@ func TestAFailureOutsideTheRawTailIsNotACcontradiction(t *testing.T) {
 	// events as they happen, so a package that failed early is followed by
 	// packages that passed, and a tail window holds only the passing ones.
 	var b strings.Builder
-	b.WriteString("--- FAIL: TestB (0.00s)\nFAIL\n")
+	b.WriteString(`{"Action":"fail","Package":"pkg","Test":"TestB","Elapsed":0}` + "\n")
+	b.WriteString(`{"Action":"fail","Package":"pkg","Elapsed":0}` + "\n")
 	for i := 0; i < 80; i++ {
-		b.WriteString("ok  \tpkg" + strings.Repeat("x", 80) + "\n")
+		b.WriteString(`{"Action":"pass","Package":"pkg` + strings.Repeat("x", 80) + `","Elapsed":0}` + "\n")
 	}
 	full := b.String()
 	if len(full) <= 4000 {
@@ -272,11 +313,11 @@ func TestAFailureOutsideTheRawTailIsNotACcontradiction(t *testing.T) {
 		// The tail a human would see holds only passing packages.
 		RawOutput: full[len(full)-4000:],
 		// The flag is computed over the whole output.
-		RawFailed: core.MentionsFailure(full),
+		RawFailed: adapters.GoTestFailed(full),
 	}}
 
 	if verdict := classify(run, nil, nil); verdict == VerdictContradictory {
-		t.Fatal("a run whose failure marker sits outside the tail must not be " +
+		t.Fatal("a run whose failure sits outside the tail must not be " +
 			"reported as contradictory - the check looked through too small a window")
 	}
 	if verdict := classify(run, nil, nil); verdict != VerdictProven {
@@ -284,25 +325,54 @@ func TestAFailureOutsideTheRawTailIsNotACcontradiction(t *testing.T) {
 	}
 }
 
-// TestMentionsFailureSeesTheWholeOutput is the unit behind the flag.
-func TestMentionsFailureSeesTheWholeOutput(t *testing.T) {
-	cases := []struct {
-		name   string
-		output string
-		want   bool
-	}{
-		{"a failing test", "--- FAIL: TestA (0.00s)\nFAIL\n", true},
-		{"a failed build", "FAIL\tpkg [build failed]\n", true},
-		{"a panic", "panic: runtime error\n", true},
-		{"a clean run", "ok  \tpkg\t0.01s\nPASS\n", false},
-		{"nothing at all", "", false},
-	}
+// TestAClassErrorThatRanNoTestIsNotACcontradiction is the shape the exit
+// code alone cannot settle.
+//
+// unittest exits 5 when it ran no test at all, and a class-level error is
+// what produces that: the error happens before the first test, so the run
+// has a red outcome and the exit code says nothing about it.
+//
+// A criterion that reads 5 as "the command could not be run" says "no test
+// went red" while the parse says one did. The tool's answer to that is a
+// critical finding that says the tool is broken - which is the failure this
+// whole change exists to remove, reproduced by the fix that came with it.
+func TestAClassErrorThatRanNoTestIsNotACcontradiction(t *testing.T) {
+	// The report is a real one, captured from a suite whose setUpClass
+	// raised. The traceback's path is the only part that was changed.
+	report := `setUpClass (test_setup.Boom) ... ERROR
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := core.MentionsFailure(tc.output); got != tc.want {
-				t.Errorf("MentionsFailure() = %v, want %v", got, tc.want)
-			}
-		})
+======================================================================
+ERROR: setUpClass (test_setup.Boom)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "test_setup.py", line 6, in setUpClass
+    raise RuntimeError("boom in setUpClass")
+RuntimeError: boom in setUpClass
+
+----------------------------------------------------------------------
+Ran 0 tests in 0.001s
+
+FAILED (errors=1)
+`
+
+	run := &runOutcome{result: core.RunResult{
+		// The parse filed the class-level error as a failed outcome.
+		Outcomes: []core.TestOutcome{
+			{Name: "test_setup.py::setUpClass", Status: core.StatusFail},
+		},
+		// And the suite says it ran no test.
+		SuiteErrors: []string{"unittest ran no tests (exit 5): " + report},
+		RawOutput:   report,
+		// The flag is the runner's own failure channel.
+		RawFailed: adapters.UnittestFailed(5, report),
+	}}
+
+	verdict := classify(run, nil, nil)
+	if verdict == VerdictContradictory {
+		t.Fatalf("classify() = %q: the parse says a test went red and the flag "+
+			"says the same thing - there is nothing to contradict", verdict)
+	}
+	if verdict != VerdictProven {
+		t.Fatalf("classify() = %q, want %q", verdict, VerdictProven)
 	}
 }

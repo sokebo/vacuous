@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **112 bugs the tool had in itself** that dogfooding uncovered.
+the **113 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -74,6 +74,7 @@ in the tables below are the record of that run.
 | [23-bugs-3.108.md](./23-bugs-3.108.md) | Tool bug 3.108 — the rule stripped the whitespace out of the string literals, and whitespace inside a literal is the value: a change to a template was reported as a change that altered nothing |
 | [24-round-2026-11-01.md](./24-round-2026-11-01.md) | The 2026-11-01 acceptance round on `admin-service` — a real TDD-shaped change judged end to end, the suite made green first, and a `contradictory` verdict that turned out to be the consistency check reading the test names |
 | [25-round-2026-11-02.md](./25-round-2026-11-02.md) | The 2026-11-02 round — a `//` was a comment in every language, so a change to a Python floor division and a change to a Go build constraint were both reported as changes that altered nothing |
+| [26-bugs-3.113.md](./26-bugs-3.113.md) | Tool bug 3.113 — the failure flag was a word search: a passing subtest named ".../FAILED" called a green suite a contradiction, and the half of the check that catches an invented failure was off on exactly those repositories |
 
 ---
 
@@ -107,15 +108,22 @@ history is public anyway.
 
 ## The catalog
 
-112 entries. The number in front is a stable identifier: it is referenced from
+113 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
-The log was written over many rounds, and three of its numbers were used
-twice. **3.88 was originally numbered 3.44**, and **3.89 was originally
+The log was written over many rounds, and its numbers were used twice more
+than once. **3.88 was originally numbered 3.44**, and **3.89 was originally
 numbered 3.45**; a third duplicate, a verification note that had been given a
 number it should not have had, lost its number altogether and is now an
 unnumbered subsection. The original number is noted inside 3.88 and 3.89
 themselves.
+
+And **3.113 was originally numbered 3.109**: two branches were developed in
+parallel from the same commit, and each numbered its first new bug 3.109
+without either one knowing about the other. When the two branches met, the
+consistency-check bug took the higher number and the file that carries it
+became `26-bugs-3.113.md`. The cosmetic bug that was already called 3.109
+kept it — it is the one the 2026-11-02 round is about.
 
 | # | Symptom | Area |
 |---|---|---|
@@ -231,6 +239,7 @@ themselves.
 | **3.110** | A `//go:build` line was a comment — and it is a build constraint, so a change to it was reported as a change that altered nothing | Cosmetic detection |
 | **3.111** | The layout was thrown away with the whitespace — but Python's indentation is the block structure, and Go and JavaScript end a statement at the end of a line, so a behaviour change was reported as a change that altered nothing | Cosmetic detection |
 | **3.112** | The diff was read by prefix alone — a content line that starts with `--- ` was taken for a file header, so the size of a change was undercounted | Sizing |
+| **3.113** | The consistency check decided "the runner reported a failure" by searching the output for the word "FAIL" — so a passing subtest named ".../FAILED" called a green suite a contradiction, and the half of the check that catches an invented failure was off on exactly those repositories | Consistency check |
 
 ---
 

@@ -333,7 +333,7 @@ type RunResult struct {
     ExitCode    int
     Command     string
     RawOutput   string        // a TAIL — for humans, not for decisions
-    RawFailed   bool          // does the COMPLETE output mention a failure?
+    RawFailed   bool          // did the runner report a TEST failure?
     DurationMS  int64
 }
 ```
@@ -344,12 +344,33 @@ One is a statement about the environment, the other about the code, and the
 report has to be able to tell them apart.
 
 `RawFailed` is a separate field because the consistency check asks "does the
-text the runner printed show a failure" — and the answer has to come from
-*all* of that text. An earlier version looked for the marker in a 4 KB tail,
-and on a repository with a few hundred tests the tail was nothing but passing
-packages: the failure marker had been pushed out of it, and the tool reported
-"my verdict contradicts my own output" on runs that were perfectly consistent.
-**The check was right; the window it looked through was too small.**
+runner itself say a test went red" — and the answer has to come from the
+runner's own failure channel, which is a different thing for every runner.
+Go speaks in events, unittest speaks in an exit code and a failures section,
+and the adapter that ran the suite is the one that knows which is which. The
+flag carries the answer; it does not carry a rule.
+
+Two earlier versions of that rule are worth remembering, because both of them
+were wrong in the direction that costs the most:
+
+- The first looked for the marker in a 4 KB tail of the output, and on a
+  repository with a few hundred tests the tail was nothing but passing
+  packages: the failure marker had been pushed out of it, and the tool
+  reported "my verdict contradicts my own output" on runs that were perfectly
+  consistent. **The check was right; the window it looked through was too
+  small.**
+- The second searched the *whole* output for the words "FAIL", "build failed"
+  and "panic:". A search cannot tell a report from the words inside it: the
+  stdout of `go test -json` embeds the test names and the tests' own output,
+  so a passing subtest named `.../FAILED` — or a test that panics on purpose
+  to prove a recovery middleware works — made a green suite look red, and
+  the tool reported the same contradiction on a run that was perfectly
+  consistent. See bug 3.113 in [`docs/dogfood/`](./dogfood/).
+
+And the flag is about **tests**. A build that did not compile is not a red
+test: it never ran one, and the engine judges the two separately. A flag that
+mixed them would make the two verdicts contradict each other over a tree that
+simply did not build.
 
 ### 3.5 `core.Judgement` — the verdict and its evidence
 
