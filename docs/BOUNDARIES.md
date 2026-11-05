@@ -193,6 +193,78 @@ somebody else's CI and has to be true. (It is also false in a second way:
 `make` itself fails when there is no Makefile, so the code breaking does
 NOT leave CI green.)
 
+### 1.11 What counts as "this change did not alter the behaviour"
+
+A commit that only rewords a comment, or only moves the indentation, does
+not need a test — and a tool that demands one teaches people to ignore it.
+So the tool asks whether it can **confirm** that a change is nothing but
+formatting and ordinary comments, and if it can, the commit is left alone
+(`not-applicable`) and the experiment does not run.
+
+★ **What a comment is depends on the language, so the question is asked of
+the adapter**, not answered by the engine. The engine used to answer it
+with one rule for every language — a `//` opens a comment — and that rule
+was wrong twice:
+
+- in **Python**, `//` is floor division, so a change to it was reported as
+  a change that altered nothing, and the experiment never ran;
+- in **Go**, `//go:build` is a build constraint, and it decides which
+  platforms compile the file, so a change to it was reported the same way.
+
+Both are fixed (dogfood bugs 3.109, 3.110). The rules are per language
+now, and the report's evidence says which language's rules were applied and
+what they keep as more than a comment.
+
+★ **The layout is read too, because in some languages the layout IS the
+syntax.** Whitespace is not one thing: it is the space between the tokens,
+the indentation of a line, and the break at the end of a line. The first is
+layout in every language. The second is the block structure in Python. The
+third ends a statement in Go and in JavaScript.
+
+So the adapter declares what the shape of the source means, and the reader
+answers three questions instead of one:
+
+- **is the code the same?** — the two ends, with the comments removed and
+  the whitespace outside the string literals gone;
+- **does a statement end in the same place?** — Go and JavaScript insert a
+  semicolon where the line ends, so `return x` and `return\nx` are not the
+  same program;
+- **does every line sit in the same block?** — Python reads a line's
+  indentation as the block it belongs to, and moving a statement from one
+  block to another is a change of behaviour.
+
+When the code is the same and the layout is not, the adapter **cannot
+confirm** that the change is only formatting, and it says so. The verdict is
+`uncertain`, the experiment runs, and a green suite accuses nothing.
+
+**The limits that remain:**
+
+- **The rules are not a grammar.** They say what a comment is, where a
+  statement ends, and how far each line is indented. They do not parse the
+  language, so they do not see a layout rule finer than those three — a
+  YAML mapping re-indented, a Makefile recipe, a heredoc's body. A file in
+  a language the adapter does not speak is not called cosmetic either: the
+  change is judged as a change, because the adapter cannot rule out that it
+  is more than a comment.
+- **Semicolon insertion is read approximately.** The rule asks "could a
+  statement end here?", and it answers yes after an identifier, a literal, a
+  closing bracket, and `++`/`--`. JavaScript's own rule is wider — it
+  inserts a semicolon wherever the next token could not continue the
+  expression — so a change shaped like `a\n+b` is read as a change that
+  moved a statement when JavaScript would have continued the expression.
+  That direction is the safe one: the tool asks a question it can be
+  wrong about in the loud direction, and says "I cannot tell".
+- **A file the reader cannot get through cannot be classified.** A quote or
+  a block comment that never closes leaves the reader unable to tell which
+  bytes are inside it. The tool says "could not tell" and runs the
+  experiment instead of concluding.
+
+★ **When the tool cannot classify a change, it says so, and a green suite
+does not become an accusation.** The verdict is `uncertain`: the experiment
+ran, everything passed, and the change might have been a reformat — so
+"no test watched this" is not a claim the tool is entitled to make. That is
+neither a gap nor a pass; it is an admission, and it is the honest one.
+
 ---
 
 ## 2. The verdict reference
@@ -208,6 +280,7 @@ NOT leave CI green.)
 | `suite-crash` | warn | A suite crashed before it could run a single case (a failed import, a throwing `beforeAll`). | Fix the suite. The report shows the crash text **and the project's own test command**, so you can see whether the tool ran the command the project runs. |
 | `skipped` | critical | The test was present but did not execute. It witnessed nothing. | Find out why it skips. If it skips on a file that is not committed, it will never run in CI. |
 | `pre-existing-failure` | warn | The counterfactual was red and the same suite is red with the fix in place. The red says nothing about this fix. | Get the suite green first. On a red suite, "the test guards the fix" has no basis. |
+| `uncertain` | info | The experiment ran, everything passed, and the tool **could not tell whether the change altered behaviour at all**. Some syntax the change touched is outside what the adapter's rules cover, so the change might have been a reformat. **A green suite does not accuse the tests of anything.** | If the change really did alter behaviour, it needs a test — the tool could not tell you that it does not have one. |
 | `contradictory` | critical | **The tool's own conclusion disagrees with the tool's own raw output.** The tool is broken. | Please report it — with the raw output. |
 | `not-applicable` | info | A merge, a root commit, a docs-only commit, or a test-only commit. Nothing to judge. | Nothing. |
 | `unsupported-source` | info | The commit changed code in a language this repository's runner cannot execute. | Cover that language another way, or tell the tool about it. |
@@ -273,7 +346,7 @@ different situations look the same:
 | **proven** | Behaviors shown to be guarded by a test that fails without the fix. |
 | **vacuous** | Behaviors whose test passed with or without the fix — they prove nothing. |
 | **no test watching** (`no_test`) | Behavior changes that landed with no test at all. This is an **answer**, not a shrug: "nobody wrote a test" is different from "we could not tell". |
-| **undecidable** (`inconclusive`) | Coupled, environment, suite-crash, skipped, pre-existing, unverified. **No answer.** |
+| **undecidable** (`inconclusive`) | Coupled, environment, suite-crash, skipped, pre-existing, unverified, uncertain. **No answer.** |
 | **not applicable** | Change windows with nothing to judge: merges, the repository's first commit, docs-only, test-only. |
 | **could not audit** | Change windows the tool could not audit at all. **A hole in the report**, and the reason the run exits 2. |
 | **silenced** | Change windows whose findings were suppressed by a `// vacuous:ignore` comment. Not a verdict — the change *was* judged, and the verdict stands. It is counted so that "one finding was suppressed on purpose" is visible next to an empty findings list. |
@@ -288,6 +361,12 @@ Two readings that look identical and are not:
   they just did not produce an answer. `M` is how many commits those windows
   covered. **A window is judged as one unit**, so a run over twenty commits
   produces one verdict for the range, not twenty verdicts for the commits.
+
+★ **And one more, because it is the newest:** a green suite and a green
+suite can mean different things. If the tool could not classify the change,
+the verdict is `uncertain` and the green suite says nothing — the change
+might have been a reformat. `uncertain` is counted with the undecidable
+ones, so it is visible in the counters.
 
 Every finding carries the raw output that backs it and a `Repro` section with
 the commands to reproduce it by hand. **You never have to take the tool's

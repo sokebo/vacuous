@@ -279,6 +279,24 @@ const (
 	// VerdictContradictory means the tool's conclusion and the tool's own
 	// raw output disagree. The tool refuses to conclude in that case.
 	VerdictContradictory Verdict = "contradictory"
+	// VerdictUncertain means the experiment ran, everything passed, and the
+	// tool cannot tell whether the change altered behaviour at all.
+	//
+	// It is its own verdict because the difference is the whole point. The
+	// tool asked the adapter whether the change was certainly nothing but
+	// formatting, and the adapter said it could not tell - some syntax the
+	// change touched is outside what the adapter's rules cover.
+	//
+	// So the experiment ran, and the suite stayed green, and that is not
+	// evidence that no test watches this change: the change might have
+	// been a reformat. "No test watched this" is a claim about the
+	// behaviour, and the tool has not established that there is a
+	// behaviour here at all.
+	//
+	// It is not a gap and not a pass. It is an admission, and the report
+	// has to say it out loud rather than let a green suite stand in for an
+	// answer.
+	VerdictUncertain Verdict = "uncertain"
 )
 
 // environmentFailurePatterns are build errors that mean "the checkout was
@@ -679,6 +697,12 @@ func (a *Auditor) auditRange(ctx context.Context, base, head string, res *Result
 	// A commit that renames a symbol and rewrites the comment around it
 	// is a real change and is judged below; this is only about changes
 	// that leave the code exactly as it was.
+	//
+	// ★ The question is the adapter's now, and the adapter can also say
+	// "I could not tell". That is not the same as "no", and it is not
+	// skipped either: the experiment runs, and a suite that stays green
+	// does not accuse anything, because the change might have been
+	// nothing but formatting.
 	change, err := a.sourceChangeRange(ctx, base, head, res.SourceFiles)
 	// How much the commit changed is what decides how loudly the report
 	// says things about it. It is recorded here, once, so that every path
@@ -690,19 +714,23 @@ func (a *Auditor) auditRange(ctx context.Context, base, head string, res *Result
 	// finding that says "the largest of them changed 0 lines" next to a
 	// behaviour change would be a number nobody earned.
 	res.SourceChange = change
-	if err == nil && change.cosmetic {
+	if err == nil && change.verdict == core.Cosmetic {
 		res.Verdict = VerdictNotApplicable
 		res.Findings = append(res.Findings, core.Finding{
 			Kind:     core.KindNoTestForFix,
 			Severity: core.SevInfo,
 			Summary:  "This change did not alter the behavior of the code — it needs no new test",
 			Detail: fmt.Sprintf(
-				"%s changed %d source files, but the changes are only comments and whitespace outside the string literals.\n"+
-					"A blind spot: where the layout is the syntax — the indentation of a Python or YAML block, the body of a heredoc — that whitespace is part of the value, and this reading does not see it.\n"+
+				"%s changed %d source files, and the adapter confirmed that the changes are nothing but formatting: the comments are gone, the whitespace outside the string literals is gone, and the indentation of every block and the place every statement ends are the same at both ends.\n"+
+					"A blind spot: where the layout is the syntax and the adapter does not read it — the body of a heredoc, a YAML mapping, a Makefile recipe — that whitespace is part of the value, and this reading does not see it.\n"+
 					"Apart from that, it did not change any behavior, so no test needs to come with it.",
 				res.subject(), len(res.SourceFiles)),
-			File:     firstPath(res.SourceFiles),
-			Evidence: "The files at both ends of the range reduce to the same text: the whitespace outside the string literals is removed, the string literals are kept as they are, a // comment is removed wherever it starts, and a # comment is removed only when it starts the line",
+			File: firstPath(res.SourceFiles),
+			// The evidence is what the adapter actually did. It used to be
+			// a fixed sentence describing a rule the engine no longer has,
+			// and that sentence was false for every language it was
+			// applied to.
+			Evidence: cosmeticReason(change.reason),
 			Hint:     "If this commit does change behavior, then it needs a test",
 		})
 		return res, nil
@@ -796,6 +824,10 @@ func (a *Auditor) auditRange(ctx context.Context, base, head string, res *Result
 	res.TestCommand = run.command
 	res.FailureOutput = run.failureTail
 	res.Witnesses = run.redTests
+
+	// Whether the adapter could classify this change at all travels with
+	// the run, because it changes what a green suite means.
+	run.cosmeticUncertain = change.verdict == core.CosmeticUnknown
 
 	res.Verdict = classify(run, a.isTest, changedPaths(res.Changed))
 
@@ -1173,6 +1205,19 @@ type runOutcome struct {
 	// test to watch, so "this test is vacuous" is not a finding about the
 	// test; it is a finding about nothing.
 	deduplicated bool
+	// cosmeticUncertain says the adapter could not tell whether the change
+	// altered behaviour at all.
+	//
+	// The adapter was asked whether the change was certainly nothing but
+	// formatting, and it said it could not tell - some syntax the change
+	// touched is outside what its rules cover.
+	//
+	// It matters only when the suite stays green. A suite that goes red
+	// says the change WAS a behaviour change, and the ordinary verdicts
+	// apply. A suite that stays green says nothing at all about a change
+	// whose nature is unknown, so it must not be read as "no test watched
+	// this".
+	cosmeticUncertain bool
 	// redTests are the tests the counterfactual turned red, and what the
 	// baseline said about each of them.
 	//
@@ -1849,6 +1894,14 @@ func verdictFrom(run *runOutcome, isTest func(string) bool, changed []string) Ve
 
 	// Everything passed with the fix removed: the test never depended on
 	// the fix, so it was not guarding it.
+	//
+	// ★ Unless the adapter could not tell whether the change altered
+	// behaviour at all. Then a green suite says nothing: the change might
+	// have been a reformat, and "no test watched this" is a claim about a
+	// behaviour the tool has not established exists.
+	if run.cosmeticUncertain {
+		return VerdictUncertain
+	}
 	return VerdictVacuous
 }
 
@@ -1891,7 +1944,11 @@ func checkConsistency(run *runOutcome, verdict Verdict) string {
 		if !mentionsFailure {
 			return "the verdict says a test went red, but the runner's own output contains no failure"
 		}
-	case VerdictVacuous:
+	case VerdictVacuous, VerdictUncertain:
+		// The uncertain verdict is the vacuous one with a footnote: the
+		// suite stayed green either way, and the difference is only
+		// whether the change might have been a reformat. A runner's
+		// output that mentions a failure contradicts both.
 		if mentionsFailure {
 			return "the verdict says every test passed, but the runner's own output contains a failure — the parse is probably wrong"
 		}
@@ -2079,6 +2136,39 @@ func verdictFindings(res *Result, run *runOutcome) []core.Finding {
 			Repro:    reproFor(res, run),
 			Hint: "If the test skips itself while the fix is in place, the skip condition is doing the guarding rather than the assertions.\n" +
 				"A test that only runs in the broken state cannot witness the fix — let it run in both states, and let it pass in both.",
+		})
+
+	case VerdictUncertain:
+		// The experiment ran and everything passed - and the tool cannot
+		// tell whether the change altered behaviour at all.
+		//
+		// The adapter was asked whether the change was certainly nothing
+		// but formatting, and it said it could not tell. Some syntax the
+		// change touched is outside what its rules cover, so the tool ran
+		// the experiment rather than skipping it.
+		//
+		// A green suite is not evidence here. The change might have been a
+		// reformat, in which case "no test watched this" accuses a commit
+		// that did nothing but rearrange itself. The tool will not make
+		// that accusation on the strength of a change it cannot classify.
+		//
+		// It is also not a pass. The honest answer is that there is no
+		// answer, and the report says so.
+		out = append(out, core.Finding{
+			Kind:     core.KindUncertain,
+			Severity: core.SevInfo,
+			Summary:  "Cannot be judged: this change may be nothing but formatting, so a green suite does not accuse the tests of anything",
+			Detail: fmt.Sprintf(
+				"%s changed %d source files, and the experiment ran: with the fix taken away, %d tests all passed.\n"+
+					"★ But the tool could not tell whether the change altered behavior at all — some syntax it touched is outside what the adapter's rules cover.\n"+
+					"So this is neither a finding nor a pass. The change might have been a reformat, and on a reformat a green suite says nothing about the tests.\n"+
+					"What is known: %s",
+				res.subject(), len(res.SourceFiles), countPass(run),
+				cosmeticReason(res.SourceChange.reason)),
+			File:     firstPath(res.SourceFiles),
+			Evidence: evidenceFor(run),
+			Repro:    reproFor(res, run),
+			Hint:     "If this change really did alter behavior, then it needs a test — and the tool could not tell you that it does not have one.",
 		})
 
 	case VerdictVacuous:
@@ -2488,8 +2578,7 @@ func (a *Auditor) removedCodeStillExists(ctx context.Context, base, head string,
 	// Only a deletion counts. A commit that both removes and adds code
 	// did something else too, and the caller must not use this to quiet
 	// a finding.
-	_, added, _, _ := splitPatch(patch)
-	if added != "" {
+	if goCodeAdded(patch) {
 		return false
 	}
 	changed := map[string]bool{}
