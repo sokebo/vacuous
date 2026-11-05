@@ -563,9 +563,11 @@ For a change window `(B, H]` — the commits after `B` up to and including
    touch documentation, and windows that only added tests, have nothing to
    judge either. Cosmetic changes (only comments, and whitespace outside the
    string literals) are detected by reducing the files at both ends of the
-   range: the comments go (a `//` comment wherever it starts, a `#` comment
-   only when it starts the line), the whitespace outside the literals goes,
-   and the string literals stay as they are. That last clause is narrower
+   range, with the **language's own** rules — a `//` opens a comment in Go and
+   in JavaScript, a `#` opens one in Python, and `//` is floor division there,
+   not a comment. The whitespace outside the literals goes, except for the gap
+   between two words, which is kept: that gap is what keeps `not x` and `notx`
+   apart. The string literals stay as they are. That last clause is narrower
    than "whitespace is never the value" — where the layout is the syntax, as
    in Python or in a heredoc, the whitespace outside a literal is the value
    too, and this rule does not see it. A file that cannot be read to the end —

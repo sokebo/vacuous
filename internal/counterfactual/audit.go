@@ -721,7 +721,7 @@ func (a *Auditor) auditRange(ctx context.Context, base, head string, res *Result
 			Severity: core.SevInfo,
 			Summary:  "This change did not alter the behavior of the code — it needs no new test",
 			Detail: fmt.Sprintf(
-				"%s changed %d source files, and the adapter confirmed that the changes are nothing but formatting: the comments are gone, the whitespace outside the string literals is gone, and the indentation of every block and the place every statement ends are the same at both ends.\n"+
+				"%s changed %d source files, and the adapter confirmed that the changes are nothing but formatting: the comments are gone, the whitespace outside the string literals is gone apart from the gap between two words, and the indentation of every block and the place every statement ends are the same at both ends.\n"+
 					"A blind spot: where the layout is the syntax and the adapter does not read it — the body of a heredoc, a YAML mapping, a Makefile recipe — that whitespace is part of the value, and this reading does not see it.\n"+
 					"Apart from that, it did not change any behavior, so no test needs to come with it.",
 				res.subject(), len(res.SourceFiles)),

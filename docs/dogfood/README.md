@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **113 bugs the tool had in itself** that dogfooding uncovered.
+the **114 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -75,6 +75,7 @@ in the tables below are the record of that run.
 | [24-round-2026-11-01.md](./24-round-2026-11-01.md) | The 2026-11-01 acceptance round on `admin-service` — a real TDD-shaped change judged end to end, the suite made green first, and a `contradictory` verdict that turned out to be the consistency check reading the test names |
 | [25-round-2026-11-02.md](./25-round-2026-11-02.md) | The 2026-11-02 round — a `//` was a comment in every language, so a change to a Python floor division and a change to a Go build constraint were both reported as changes that altered nothing |
 | [26-bugs-3.113.md](./26-bugs-3.113.md) | Tool bug 3.113 — the failure flag was a word search: a passing subtest named ".../FAILED" called a green suite a contradiction, and the half of the check that catches an invented failure was off on exactly those repositories |
+| [27-bugs-3.114.md](./27-bugs-3.114.md) | Tool bug 3.114 — the gap between two words was thrown away with the rest of the whitespace, so "not x" and "notx" were the same text, and a fix that a test genuinely watches was reported as a change that altered nothing |
 
 ---
 
@@ -108,7 +109,7 @@ history is public anyway.
 
 ## The catalog
 
-113 entries. The number in front is a stable identifier: it is referenced from
+114 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
 The log was written over many rounds, and its numbers were used twice more
@@ -240,6 +241,7 @@ kept it — it is the one the 2026-11-02 round is about.
 | **3.111** | The layout was thrown away with the whitespace — but Python's indentation is the block structure, and Go and JavaScript end a statement at the end of a line, so a behaviour change was reported as a change that altered nothing | Cosmetic detection |
 | **3.112** | The diff was read by prefix alone — a content line that starts with `--- ` was taken for a file header, so the size of a change was undercounted | Sizing |
 | **3.113** | The consistency check decided "the runner reported a failure" by searching the output for the word "FAIL" — so a passing subtest named ".../FAILED" called a green suite a contradiction, and the half of the check that catches an invented failure was off on exactly those repositories | Consistency check |
+| **3.114** | The gap between two words was thrown away with the rest of the whitespace — so "not x" and "notx" reduced to the same text, and a fix that a test genuinely watches was reported as a change that altered nothing | Cosmetic detection |
 
 ---
 
