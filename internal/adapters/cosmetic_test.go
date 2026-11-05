@@ -493,3 +493,124 @@ func TestAQuoteThatDoesNotCloseDoesNotSwallowTheFile(t *testing.T) {
 		t.Errorf("verdict = %v, want NotCosmetic: the change after the stray quote is still a change", got.Verdict)
 	}
 }
+
+// The gap between two words.
+//
+// ★ The reduction used to throw every piece of whitespace away, and a gap
+// between two words is what keeps two words apart. "not x" and "notx" are
+// different programs, and the reduction read them as the same text - so the
+// change that turned one into the other was reported as "this change did not
+// alter the behavior of the code", and the experiment never ran.
+//
+// The cost of that bug is the tool's own subject matter: the commit ships a
+// fix that a test genuinely watches, and the tool said there was nothing to
+// watch.
+
+// TestPythonSpaceBetweenTwoWordsIsAChange is the regression guard.
+//
+// "notx" is a name; "not x" is an operator applied to a name. The fix below
+// turns the first into the second, and the test in the tree watches exactly
+// that.
+func TestPythonSpaceBetweenTwoWordsIsAChange(t *testing.T) {
+	got := confirm(t, pythonSourceRules, pythonSourceExts,
+		"def f():\n    notx = 5\n    x = 5\n    return notx\n",
+		"def f():\n    notx = 5\n    x = 5\n    return not x\n")
+
+	if got.Verdict != core.NotCosmetic {
+		t.Errorf("verdict = %v, want NotCosmetic: \"notx\" is a name and \"not x\" is an operator", got.Verdict)
+	}
+	if got.ChangedLines == 0 {
+		t.Errorf("changed lines = 0, want a real count: the change is real")
+	}
+}
+
+// TestGoSpaceBetweenTwoWordsIsAChange is the same rule in Go.
+//
+// Go has no operator that sits between two words, so the shape that hides
+// here is the one that breaks the build: "defer close()" is a deferred
+// call, and "deferclose()" is a call to a function that does not exist.
+//
+// The reduction used to read the two as the same text, so the tool said the
+// change altered nothing - and the build error was never seen, because the
+// experiment never ran.
+func TestGoSpaceBetweenTwoWordsIsAChange(t *testing.T) {
+	got := confirm(t, goSourceRules, goSourceExts,
+		"package p\n\nfunc f() {\n\tdefer close()\n}\n",
+		"package p\n\nfunc f() {\n\tdeferclose()\n}\n")
+
+	if got.Verdict != core.NotCosmetic {
+		t.Errorf("verdict = %v, want NotCosmetic: the other side does not even compile", got.Verdict)
+	}
+}
+
+// TestTheReductionKeepsTheGapBetweenTwoWords is the white-box half.
+//
+// It shows where the difference is kept: the reduction leaves a mark where
+// the gap separated two words, and the mark is not a byte that any source
+// file can hold.
+func TestTheReductionKeepsTheGapBetweenTwoWords(t *testing.T) {
+	before := reduceSource("return notx\n", pythonSourceRules)
+	after := reduceSource("return not x\n", pythonSourceRules)
+
+	if before.whole == after.whole {
+		t.Fatalf("the two sides reduce to the same text %q, and they are not the same program", before.whole)
+	}
+	if !strings.Contains(before.whole+after.whole, "\x1f") {
+		t.Errorf("no mark was left behind: %q and %q", before.whole, after.whole)
+	}
+}
+
+// TestTheSpaceBetweenTwoWordsIsStillAReformatting is the control.
+//
+// How much space there was between two words says nothing about what the
+// program does. A rule that treated the gap itself as the change would call
+// every reformat a change, and a rule that calls everything a change is a
+// rule nobody reads.
+func TestTheSpaceBetweenTwoWordsIsStillAReformatting(t *testing.T) {
+	got := confirm(t, pythonSourceRules, pythonSourceExts,
+		"def f():\n    return not x\n",
+		"def f():\n    return not  x\n")
+
+	if got.Verdict != core.Cosmetic {
+		t.Errorf("verdict = %v, want Cosmetic: how much space there was says nothing", got.Verdict)
+	}
+	if got.ChangedLines != 0 {
+		t.Errorf("changed lines = %d, want 0", got.ChangedLines)
+	}
+}
+
+// TestABlankLineAndACommentLineAreStillAReformatting is the control for the
+// other half of the rule.
+//
+// A blank line and a comment line are the same gap as no gap at all, and
+// adding one must not look like a change. This is where a mark per piece of
+// the gap - rather than one mark per gap - would go wrong.
+func TestABlankLineAndACommentLineAreStillAReformatting(t *testing.T) {
+	got := confirm(t, goSourceRules, goSourceExts,
+		"package p\n\nfunc f() int {\n\tx := 1\n\ty := 2\n\treturn x + y\n}\n",
+		"package p\n\nfunc f() int {\n\tx := 1\n\n\t// a note\n\ty := 2\n\treturn x + y\n}\n")
+
+	if got.Verdict != core.Cosmetic {
+		t.Errorf("verdict = %v, want Cosmetic: a blank line and a comment line are layout", got.Verdict)
+	}
+	if got.ChangedLines != 0 {
+		t.Errorf("changed lines = %d, want 0", got.ChangedLines)
+	}
+}
+
+// TestALineBreakBetweenTwoWordsIsNotAReformatting is the other side of the
+// rule, in Go.
+//
+// "return x" and "return\nx" are not the same program: Go inserts a
+// semicolon where the line ends, and the second one returns nothing at all.
+// The gap is the same on both sides, so the reduction has to leave them
+// equal and let the statement reading decide - which is what it does.
+func TestALineBreakBetweenTwoWordsIsNotAReformatting(t *testing.T) {
+	got := confirm(t, goSourceRules, goSourceExts,
+		"func f() int { return x }\n",
+		"func f() int { return\nx }\n")
+
+	if got.Verdict != core.CosmeticUnknown {
+		t.Errorf("verdict = %v, want CosmeticUnknown: a line break ends a statement in Go", got.Verdict)
+	}
+}

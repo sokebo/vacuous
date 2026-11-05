@@ -19,9 +19,10 @@ import (
 //
 // The test is deliberately conservative. A change is called cosmetic only
 // when the code it leaves behind is the same once the comments are gone and
-// the whitespace outside the string literals is gone too. Anything else
-// counts as a real change, because missing a real finding is far worse than
-// reporting a cosmetic one.
+// the whitespace outside the string literals is gone too - apart from the gap
+// between two words, which is kept, because that gap is what keeps "not x"
+// and "notx" apart. Anything else counts as a real change, because missing a
+// real finding is far worse than reporting a cosmetic one.
 //
 // ★ The question is no longer answered here.
 //

@@ -176,3 +176,141 @@ func TestThePythonEvidenceSaysWhatPythonDoes(t *testing.T) {
 		t.Errorf("the reason is the sentence the old rule printed, and it was false: %q", reason)
 	}
 }
+
+// pythonWordGapFixture builds a repository whose fix is guarded by a test,
+// and whose fix is one space between two words.
+//
+// "notx" is a name. "not x" is an operator applied to a name. The reduction
+// used to throw the space away, so the two ends of the change reduced to the
+// same text - and the tool answered "this change did not alter the behavior
+// of the code", and the experiment never ran.
+//
+// The test lands first and is red; the fix lands second and makes it green.
+// That is the ordinary TDD arrangement, and it is the arrangement the
+// counterfactual engine is built for.
+func pythonWordGapFixture(t *testing.T) (*testfixtures.Repo, string) {
+	t.Helper()
+
+	m := testfixtures.NewRepo(t)
+	m.Write(t, "pyproject.toml", "[tool.pytest.ini_options]\ntestpaths = [\".\"]\n")
+	m.Write(t, "calc.py", `notx = 5
+x = 5
+
+
+def f():
+    return notx
+`)
+	m.Write(t, "test_calc.py", `from calc import f
+
+
+def test_f():
+    assert f() is False
+`)
+	m.Init(t)
+
+	// The fix. The name becomes the operator applied to the name, and the
+	// whole difference between the two programs is one space.
+	m.Write(t, "calc.py", `notx = 5
+x = 5
+
+
+def f():
+    return not x
+`)
+	head := m.Commit(t, "fix: negate the value instead of returning it")
+
+	return m, head
+}
+
+// TestAuditRunsTheExperimentForASpaceBetweenTwoWords is the regression guard
+// for the gap between two words.
+//
+// The fix changes what the function returns, and the test in the tree
+// watches exactly that: it is red before the fix and green after it.
+//
+// The verdict must be "proven". It used to be "not applicable", with the
+// report saying the change altered nothing - and the experiment never ran,
+// so the test that was guarding the fix was never seen.
+func TestAuditRunsTheExperimentForASpaceBetweenTwoWords(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real pytest")
+	}
+	pythonRunnerIsAvailable(t)
+
+	m, head := pythonWordGapFixture(t)
+	a := newPythonAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), head)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict == VerdictNotApplicable {
+		t.Fatalf("the change was called cosmetic, so the experiment never ran\nfindings: %+v", res.Findings)
+	}
+	if res.Verdict != VerdictProven {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictProven, res.Verdict, res.Findings)
+	}
+	for _, f := range res.Findings {
+		if strings.Contains(f.Summary, "did not alter the behavior") {
+			t.Errorf("the tool said the change altered nothing, and it did: %+v", f)
+		}
+	}
+}
+
+// pythonReformatFixture builds a repository whose commit changes nothing but
+// the whitespace.
+//
+// It is the control for the rule above. A rule that kept every gap between
+// two words would call this commit a behaviour change, and the tool would
+// spend an experiment on a file that was reformatted.
+func pythonReformatFixture(t *testing.T) (*testfixtures.Repo, string) {
+	t.Helper()
+
+	m := testfixtures.NewRepo(t)
+	m.Write(t, "pyproject.toml", "[tool.pytest.ini_options]\ntestpaths = [\".\"]\n")
+	m.Write(t, "calc.py", `def f():
+    return 1
+`)
+	m.Write(t, "test_calc.py", `from calc import f
+
+
+def test_f():
+    assert f() == 1
+`)
+	m.Init(t)
+
+	// The reformat. The words moved apart; the program did not change.
+	m.Write(t, "calc.py", `def f():
+    return  1
+`)
+	head := m.Commit(t, "style: align the return value")
+
+	return m, head
+}
+
+// TestASpaceThatOnlyMovedIsStillCosmetic is the control.
+//
+// The commit below changes the whitespace and nothing else, so the tool has
+// to leave it alone: there is no behaviour to test, and an experiment on it
+// would be an experiment whose result nobody could act on.
+func TestASpaceThatOnlyMovedIsStillCosmetic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: runs a real pytest")
+	}
+	pythonRunnerIsAvailable(t)
+
+	m, head := pythonReformatFixture(t)
+	a := newPythonAuditor(t, m.Dir)
+
+	res, err := a.AuditCommit(context.Background(), head)
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+
+	if res.Verdict != VerdictNotApplicable {
+		t.Fatalf("expected verdict %q, got %q\nfindings: %+v",
+			VerdictNotApplicable, res.Verdict, res.Findings)
+	}
+}

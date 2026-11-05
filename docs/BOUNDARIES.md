@@ -225,7 +225,9 @@ So the adapter declares what the shape of the source means, and the reader
 answers three questions instead of one:
 
 - **is the code the same?** — the two ends, with the comments removed and
-  the whitespace outside the string literals gone;
+  the whitespace outside the string literals gone — apart from the gap between
+  two words, which is kept, because that gap is what keeps `not x` and `notx`
+  apart;
 - **does a statement end in the same place?** — Go and JavaScript insert a
   semicolon where the line ends, so `return x` and `return\nx` are not the
   same program;
@@ -246,6 +248,16 @@ confirm** that the change is only formatting, and it says so. The verdict is
   a language the adapter does not speak is not called cosmetic either: the
   change is judged as a change, because the adapter cannot rule out that it
   is more than a comment.
+- **The gap is read by its neighbours, not by a lexer.** The gap between two
+  words is kept, so `not x` and `notx` are two different programs and
+  `a := 1` and `a:=1` are the same one. What the reader cannot see is a gap
+  that changes a token without changing what stands on either side of it —
+  `a - -b` and `a--b` reduce to the same text, and in Go they are not the
+  same program (`a--b` does not even parse there). That hole is in the
+  direction that **misses** a finding, and it is still open: closing it needs
+  a real lexer per language, and the rule stops at the gap between two words
+  because that is where the change that hides behind the whitespace actually
+  lives.
 - **Semicolon insertion is read approximately.** The rule asks "could a
   statement end here?", and it answers yes after an identifier, a literal, a
   closing bracket, and `++`/`--`. JavaScript's own rule is wider — it

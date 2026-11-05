@@ -395,7 +395,8 @@ func sameIndents(a, b []string) bool {
 // whether a line sits in a different block.
 type reduction struct {
 	// whole is the code with every piece of whitespace outside a literal
-	// removed.
+	// removed, and a mark wherever two words were separated by something
+	// that was removed.
 	whole string
 	// breaks is the code with the line breaks that end a statement marked.
 	//
@@ -442,6 +443,17 @@ type reduction struct {
 // quote that never closes leaves the reader unable to tell which bytes are
 // inside a literal and which are outside it, and a reduction that guesses
 // is not a reading.
+//
+// ★ And the whitespace is not thrown away blindly. A gap between two words
+// is what keeps two words apart: "not x" and "notx" are different programs,
+// and a reduction that reads them as the same text loses the change - and
+// with it the experiment that would have found the test watching it.
+//
+// So a gap that separated two words leaves a mark behind, and a gap that
+// separated anything else leaves nothing. The mark is the same on both ends
+// of a change that only moved the whitespace around, so a reformat is still
+// a reformat; and it is different when the gap appeared or disappeared, so
+// a change that made two words into one is a change.
 func reduceSource(content string, rules SourceRules) reduction {
 	var whole, breaks, current, lineIndent strings.Builder
 	var pieces []string
@@ -481,6 +493,14 @@ func reduceSource(content string, rules SourceRules) reduction {
 	// tells "x++" (a token that can end a statement) from "x +" (one that
 	// cannot).
 	last, prev := byte(0), byte(0)
+	// gapMarked says whether the gap since the last token already left its
+	// mark.
+	//
+	// One gap leaves one mark, however many pieces the gap was made of: a
+	// blank line, a comment and a line break are all one gap between two
+	// tokens, and a reduction that counted them separately would call
+	// "x := 1\n\ny := 2" a different program from "x := 1\ny := 2".
+	gapMarked := false
 	complete := true
 
 	// write puts one significant byte into the readings.
@@ -499,6 +519,8 @@ func reduceSource(content string, rules SourceRules) reduction {
 		current.WriteByte(c)
 		prev, last = last, c
 		atLineStart = false
+		// A token ends the gap before it: the next gap starts here.
+		gapMarked = false
 		if !logicalHasContent {
 			// The first content of a logical line decides its
 			// indentation: that is the line the block structure is
@@ -506,6 +528,22 @@ func reduceSource(content string, rules SourceRules) reduction {
 			logicalIndent = lineIndent.String()
 			logicalHasContent = true
 		}
+	}
+
+	// markGap leaves the mark that says "two words were separated here".
+	//
+	// It does not touch the token state. The mark is not a token, and the
+	// reader's idea of "the last token" has to stay the last real one -
+	// otherwise a line that ends in the gap would stop looking like a line
+	// that ends a statement.
+	markGap := func() {
+		if gapMarked {
+			return
+		}
+		gapMarked = true
+		whole.WriteByte(separatorMark)
+		breaks.WriteByte(separatorMark)
+		current.WriteByte(separatorMark)
 	}
 
 	for i := 0; i < len(content); {
@@ -596,6 +634,15 @@ func reduceSource(content string, rules SourceRules) reduction {
 				// statement at the end of a line.
 				pendingBreak = true
 			}
+			// The gap the line break leaves behind. Two words that
+			// the break separated are still two words, and the mark
+			// is what says so - otherwise "return x" and "return\nx"
+			// would reduce to the same text, and the statement that
+			// ends in the middle of them would be lost with it.
+			if next, ok := rules.nextTokenByte(content, i+1); ok &&
+				isTokenByte(last) && isTokenByte(next) {
+				markGap()
+			}
 			lineIndent.Reset()
 			atLineStart = true
 			i++
@@ -606,9 +653,34 @@ func reduceSource(content string, rules SourceRules) reduction {
 				// The indentation of the line. It is the logical
 				// line's indentation only if the logical line
 				// starts here, and the reader decides that later.
-				lineIndent.WriteByte(c)
+				for i < len(content) && content[i] != '\n' && isSpace(content[i]) {
+					lineIndent.WriteByte(content[i])
+					i++
+				}
+				continue
 			}
-			i++
+			// The space between the tokens.
+			//
+			// ★ Throwing it away is only safe when the two
+			// tokens it separates cannot become one token
+			// without it. "not x" and "notx" are different
+			// programs, and a reduction that reads them as the
+			// same text loses the change - and with it the
+			// experiment that would have found the test watching
+			// it.
+			//
+			// So the space leaves a mark when it separated two
+			// words, and leaves nothing everywhere else: after an
+			// operator, after a comma, at the end of a line.
+			j := i
+			for j < len(content) && content[j] != '\n' && isSpace(content[j]) {
+				j++
+			}
+			if next, ok := rules.nextTokenByte(content, j); ok &&
+				isTokenByte(last) && isTokenByte(next) {
+				markGap()
+			}
+			i = j
 			continue
 		}
 
@@ -746,6 +818,71 @@ func isWordByte(c byte) bool {
 		return true
 	}
 	return false
+}
+
+// isTokenByte reports whether c can be part of a word.
+//
+// It is isWordByte plus every byte outside ASCII: an identifier may hold
+// letters from any alphabet, and a byte that is not ASCII cannot be an
+// operator either.
+func isTokenByte(c byte) bool {
+	return isWordByte(c) || c >= 0x80
+}
+
+// separatorMark is what a gap between two words reduces to.
+//
+// The gap is what keeps two words apart, so throwing it away has to leave
+// something behind - otherwise "not x" and "notx" reduce to the same text,
+// and the change that made one word into two is a change nobody sees.
+//
+// The mark is a byte that no source file can hold, so it can never be
+// confused with the code it stands for. The reduction is only ever compared,
+// never printed.
+const separatorMark = 0x1f
+
+// nextTokenByte returns the byte that follows the whitespace at i, when that
+// byte is a token on the same line, and whether there is one.
+//
+// A line break ends the search: the token after it is on another line, and a
+// line break is read apart from the code - as the indentation of a line, or
+// as the end of a statement.
+//
+// A comment is stepped over rather than ending the search, because a comment
+// is removed from the reduction: the token before it and the token after it
+// end up next to each other, and whether they can be one token is exactly
+// the question being asked.
+//
+// A line comment does end the search, because it runs to the end of the line
+// and the token after it is on the next one.
+func (r SourceRules) nextTokenByte(content string, i int) (byte, bool) {
+	for i < len(content) {
+		c := content[i]
+		switch {
+		case c == '\n':
+			// The next line is another line.
+			return 0, false
+		case isSpace(c):
+			i++
+		default:
+			if _, ok := r.lineCommentAt(content, i); ok {
+				return 0, false
+			}
+			if open, close, ok := r.blockCommentAt(content, i); ok {
+				rest := content[i+len(open):]
+				k := strings.Index(rest, close)
+				if k < 0 {
+					// The comment never closes, so the rest of
+					// the file cannot be read. The caller is
+					// told so.
+					return 0, false
+				}
+				i = i + len(open) + k + len(close)
+				continue
+			}
+			return c, true
+		}
+	}
+	return 0, false
 }
 
 // literalState is how a quote turned out.
