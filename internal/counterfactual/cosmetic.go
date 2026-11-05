@@ -2,7 +2,6 @@ package counterfactual
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,37 +23,48 @@ import (
 // counts as a real change, because missing a real finding is far worse than
 // reporting a cosmetic one.
 //
-// "The comments are gone" means what the rule does with comments, and the
-// rule is not thorough about it: a "//" comment is removed wherever it
-// starts, a "#" comment only when it starts the line. A trailing "#" comment
-// is left in place, so a change there looks bigger than it is.
+// ★ The question is no longer answered here.
 //
-// The whitespace rule is the sharp edge of that. Whitespace outside a string
-// literal is formatting in the languages this rule covers, and whitespace
-// inside one is data: "a b" and "ab" are different strings, and the
-// indentation inside a template is part of what the template produces. So
-// the reduction keeps the string literals exactly as they are, and it has to
-// read the file to do that - a line inside a literal that opened earlier
-// looks like ordinary code until you know the literal opened before it.
-// That is what measureFiles is for.
+// It used to be. The engine reduced both ends of the change on its own, with
+// one rule for every language: a "//" opens a comment, and a "#" opens a
+// comment when it starts the line. That rule was wrong in the expensive
+// direction, twice over.
 //
-// The rule is narrower than "whitespace is never the value". Where the layout
-// is the syntax - the indentation of a Python block, the body of a heredoc -
-// the whitespace outside a literal is the value too, and this rule does not
-// see it. That limit is named in the finding the rule produces, so the
-// reader is told what the sentence rests on.
+//   - In Python "//" is floor division. The rule read `count // batch` and
+//     `count // batch - 1` as the same text, so a change that altered the
+//     value of every batch was called cosmetic - and a commit whose test
+//     genuinely watched the fix was reported as "this change did not alter
+//     the behavior of the code".
+//   - In Go "//go:build" is not a comment. It is a build constraint, and it
+//     decides which platforms compile the file.
+//
+// The engine held no grammar, so it could not tell those apart. The adapter
+// holds one, so the engine asks it now: can this change be CONFIRMED to be
+// nothing but formatting and ordinary comments? An adapter that cannot be
+// sure says no, and the experiment runs - which is the direction this tool
+// errs in on purpose.
+//
+// The size of the change is measured the same way, and from the same place:
+// the adapter reads both ends of the file. A line read on its own cannot see
+// a literal that opened twenty lines earlier, so the file-level reading is
+// the authoritative one.
 
 // sourceChange summarises what a commit did to its source files.
 type sourceChange struct {
-	// cosmetic is true when the change touched nothing but comments and
-	// whitespace.
-	cosmetic bool
+	// verdict is what the adapter concluded about the change.
+	//
+	// It is three-valued, and the third value is the point: an adapter
+	// that could not tell is not an adapter that said no.
+	verdict core.CosmeticVerdict
 	// lines is the number of added and removed content lines.
 	lines int
 	// biggestFile is the number of changed lines in the file that changed
 	// most. It is the better size signal: a commit that touches four files
 	// by one line each is a rename, not a feature.
 	biggestFile int
+	// reason says what the adapter looked at, and it is what the report
+	// shows the reader as the evidence for the conclusion.
+	reason string
 }
 
 // sourceChange describes what a commit did to its source files.
@@ -88,103 +98,135 @@ func (a *Auditor) sourceChangeRange(ctx context.Context, base, head string, file
 	if err != nil {
 		return sourceChange{}, err
 	}
-	removed, added, lines, _ := splitPatch(patch)
-	biggest := 0
-	for _, n := range semanticChangePerFile(patch) {
-		if n > biggest {
-			biggest = n
-		}
-	}
-	change := sourceChange{
-		cosmetic:    removed == added,
-		lines:       lines,
-		biggestFile: biggest,
+
+	answer, err := a.askAboutChange(ctx, base, head, files, patch)
+	if err != nil {
+		// "Could not read the file" is not "the file did not change", and a
+		// report that says "the largest of them changed 0 lines" next to a
+		// behaviour change would be a number nobody earned.
+		return sourceChange{lines: patchLineCount(patch)}, err
 	}
 
-	// The diff says the two sides are the same code. That is a reading of
-	// the changed lines, and a reading of changed lines cannot see a
-	// literal that opened twenty lines earlier: every line of a raw string
-	// looks like ordinary code until you know the string opened before it.
+	// The size of the change, as the adapter measured it.
 	//
-	// So when the diff says "the same", the files themselves are asked.
-	// A template, an embedded query or a raw string is exactly where the
-	// two answers come apart, and the answer that decides the verdict has
-	// to be the exact one.
-	if change.cosmetic {
-		same, size, err := a.measureFiles(ctx, base, head, files)
-		if err != nil {
-			// "Could not tell" is not "the same". The caller treats an
-			// error as "no cosmetic claim", which is the only safe
-			// direction: a claim that no behaviour changed is a claim
-			// that there is nothing to test.
-			//
-			// The size the diff could see is kept. "We could not read
-			// the file" is not "the file did not change", and a report
-			// that says "the largest of them changed 0 lines" next to a
-			// behaviour change would be a number nobody earned.
-			change.cosmetic = false
-			return change, err
-		}
-		change.cosmetic = same
-		if size > change.biggestFile {
-			change.biggestFile = size
+	// ★ The adapter measures the files it can read, and a file it cannot
+	// read contributes nothing: the size the report quotes is the size of
+	// the biggest file that could actually be measured.
+	//
+	// And when it could measure none of them, the diff's own count is what
+	// the report stands on. "We could not read the file" is not "the file
+	// did not change", and a report that says "the largest of them changed
+	// 0 lines" next to a behaviour change would be a number nobody earned.
+	biggest := answer.ChangedLines
+	if answer.Verdict == core.CosmeticUnknown && biggest == 0 {
+		for _, n := range rawLinesPerFile(patch) {
+			if n > biggest {
+				biggest = n
+			}
 		}
 	}
-	return change, nil
+
+	return sourceChange{
+		verdict:     answer.Verdict,
+		lines:       patchLineCount(patch),
+		biggestFile: biggest,
+		reason:      answer.Reason,
+	}, nil
 }
 
-// measureFiles reads the changed files at both ends of the range and
-// reports whether they hold the same behaviour, and how many lines really
-// changed.
+// askAboutChange asks the adapter what the change did.
 //
-// The answer comes from the files, not from the diff, because the diff
-// reads each changed line on its own. A line inside a literal is data
-// wherever it sits, and only the file knows where the literal began.
+// The engine reads the files and hands over their contents: the adapter has
+// no git access, and it should not need any. The question is about source
+// text, not about history.
 //
-// The size is the multiset difference of the two sides' normalized lines,
-// measured the same way the diff measures it - so a line that moved counts
-// zero, a line that was rewritten counts two, and a line that holds nothing
-// but a comment counts nothing at all, because the diff-level count skips
-// those too.
-func (a *Auditor) measureFiles(ctx context.Context, base, head string, files []core.FileChange) (bool, int, error) {
-	same := true
-	biggest := 0
+// An adapter that does not implement the capability gets the same answer
+// an adapter that says "I could not tell" gives: the experiment runs. That
+// is slower and noisier, and it is the safe direction - the alternative is
+// an engine that keeps its own grammar, and a grammar is a list to maintain.
+func (a *Auditor) askAboutChange(ctx context.Context, base, head string, files []core.FileChange, patch string) (core.CosmeticAnswer, error) {
+	raw := rawLinesPerFile(patch)
+	q := core.CosmeticQuestion{}
 	for _, f := range files {
 		before, err := a.repo.FileAt(ctx, base, pathBefore(f))
 		if err != nil {
-			return false, 0, err
+			return core.CosmeticAnswer{}, err
 		}
 		after, err := a.repo.FileAt(ctx, head, f.Path)
 		if err != nil {
-			return false, 0, err
+			return core.CosmeticAnswer{}, err
 		}
-		beforeWhole, beforeLines, beforeComplete := normalizeFile(before)
-		if !beforeComplete {
-			return false, 0, unreadableSource(pathBefore(f))
-		}
-		afterWhole, afterLines, afterComplete := normalizeFile(after)
-		if !afterComplete {
-			return false, 0, unreadableSource(f.Path)
-		}
-		if beforeWhole != afterWhole {
-			same = false
-		}
-		if n := multisetDifference(beforeLines, afterLines) + multisetDifference(afterLines, beforeLines); n > biggest {
-			biggest = n
-		}
+		q.Files = append(q.Files, core.FileVersion{
+			Path:     f.Path,
+			Before:   before,
+			After:    after,
+			RawLines: raw[f.Path],
+		})
 	}
-	return same, biggest, nil
+
+	confirmer, ok := a.adapter.(core.CosmeticConfirmer)
+	if !ok {
+		return core.CosmeticAnswer{
+			Verdict: core.CosmeticUnknown,
+			Reason: "this repository's adapter does not say whether a change of this shape altered behaviour, " +
+				"so the experiment was run instead of the change being skipped",
+		}, nil
+	}
+	return confirmer.ConfirmsCosmetic(ctx, q), nil
 }
 
-// unreadableSource says that a file could not be read to the end.
+// rawLinesPerFile counts the diff content lines each file contributes.
 //
-// The file holds a quote that never closes, so the reader cannot tell which
-// bytes are inside a string literal and which are outside it. That is not a
-// difference between the two sides of the range - it is the absence of an
-// answer, and it is reported as an error so that the caller refuses to
-// conclude rather than concluding from a reading that never happened.
-func unreadableSource(path string) error {
-	return fmt.Errorf("could not read %s: the file holds a quote that never closes", path)
+// It is the size the report falls back to for a file the adapter does not
+// speak the language of: the adapter cannot measure that file's comments,
+// and a size of zero next to a behaviour change is a number nobody earned.
+//
+// ★ The path comes from the diff's own headers, and a deleted file's "+++"
+// header is "/dev/null" - so the "---" header is the one that names it.
+// Keying the count on the "+" side alone filed every deleted file's lines
+// under "/dev/null", and the file's own count came out as zero.
+func rawLinesPerFile(patch string) map[string]int {
+	out := map[string]int{}
+	from, to := "", ""
+	inHunk := false
+	for _, line := range strings.Split(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			// A new file's block starts. Everything after it is a
+			// header until the first hunk.
+			inHunk = false
+			from, to = "", ""
+		case strings.HasPrefix(line, "@@"):
+			// Everything after this is content, until the next block.
+			inHunk = true
+		case !inHunk && strings.HasPrefix(line, "--- "):
+			from = patchPath(line[4:])
+			to = ""
+		case !inHunk && strings.HasPrefix(line, "+++ "):
+			to = patchPath(line[4:])
+		case inHunk && strings.HasPrefix(line, "-"), inHunk && strings.HasPrefix(line, "+"):
+			name := to
+			if name == "" {
+				name = from
+			}
+			out[name]++
+		}
+	}
+	return out
+}
+
+// patchPath reads the path out of a diff header.
+//
+// "/dev/null" is not a path: it stands for "this side of the diff does not
+// exist", which is what an added or a deleted file looks like on one side.
+func patchPath(header string) string {
+	s := strings.TrimSpace(header)
+	if s == "" || s == "/dev/null" {
+		return ""
+	}
+	s = strings.TrimPrefix(s, "a/")
+	s = strings.TrimPrefix(s, "b/")
+	return s
 }
 
 // pathBefore is where a file lived before the change. A rename has two.
@@ -195,119 +237,26 @@ func pathBefore(f core.FileChange) string {
 	return f.Path
 }
 
-// semanticChangePerFile counts, for each file in a unified diff, how many
-// lines really changed.
+// patchLineCount counts the content lines a unified diff touches.
 //
-// "Really changed" means the line is not the same code before and after,
-// with comments and whitespace ignored. A file that only had its struct
-// fields re-aligned by gofmt has zero: the code is character-for-character
-// the same once the alignment is taken out.
-//
-// Counting raw diff lines would say that file changed 30 lines, and the
-// severity of the finding would follow that number. So a commit that adds
-// one field and lets gofmt re-align the block around it would look like a
-// 30-line change, and it would be reported as loudly as a 30-line feature.
-// That is the wrong way round: the number has to describe the behaviour
-// change, not the formatting.
-//
-// The count is the size of the symmetric difference of the two sides'
-// multisets of normalized lines. A line that was removed and a line that
-// was added count once each; a line that moved (removed on one side, added
-// on the other, identical after normalizing) counts zero.
-//
-// A line that holds nothing but a comment does not enter the multisets at
-// all. A comment that was added is not a behaviour change, and counting it
-// would inflate a two-line change into a three-line one.
-func semanticChangePerFile(patch string) map[string]int {
-	removed := map[string][]string{}
-	added := map[string][]string{}
-	file := ""
-
+// It counts the lines the diff shows, not the lines that really changed.
+// The size the report quotes is the adapter's; this one is the raw shape of
+// the change, and it is what the report says about a commit whose files
+// could not be read.
+func patchLineCount(patch string) int {
+	n := 0
+	inHunk := false
 	for _, line := range strings.Split(patch, "\n") {
 		switch {
-		case strings.HasPrefix(line, "---"), strings.HasPrefix(line, "+++"):
-			if strings.HasPrefix(line, "+++ ") {
-				file = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
-			}
-			continue
-		case strings.HasPrefix(line, "-"):
-			if code := normalizeLine(line[1:]); code != "" {
-				removed[file] = append(removed[file], code)
-			}
-		case strings.HasPrefix(line, "+"):
-			if code := normalizeLine(line[1:]); code != "" {
-				added[file] = append(added[file], code)
-			}
+		case strings.HasPrefix(line, "diff --git "):
+			inHunk = false
+		case strings.HasPrefix(line, "@@"):
+			inHunk = true
+		case inHunk && strings.HasPrefix(line, "-"), inHunk && strings.HasPrefix(line, "+"):
+			n++
 		}
-	}
-
-	out := map[string]int{}
-	for f := range removed {
-		out[f] += multisetDifference(removed[f], added[f])
-	}
-	for f := range added {
-		out[f] += multisetDifference(added[f], removed[f])
-	}
-	return out
-}
-
-// multisetDifference counts the elements of a that are not accounted for by
-// b: |a - b|, as multisets.
-func multisetDifference(a, b []string) int {
-	pool := map[string]int{}
-	for _, s := range b {
-		pool[s]++
-	}
-	n := 0
-	for _, s := range a {
-		if pool[s] > 0 {
-			pool[s]--
-			continue
-		}
-		n++
 	}
 	return n
-}
-
-// patchIsCosmetic reports whether a unified diff changes anything other than
-// comments and whitespace.
-func patchIsCosmetic(patch string) bool {
-	removed, added, _, _ := splitPatch(patch)
-	return removed == added
-}
-
-// splitPatch reduces a unified diff to the code it removes, the code it
-// adds, the number of content lines it touches, and the number it touches
-// in each file.
-//
-// The removed and added code are normalized: no comments, no whitespace. Two
-// halves that are equal mean the change was cosmetic.
-func splitPatch(patch string) (removed, added string, lines int, perFile map[string]int) {
-	var r, a strings.Builder
-	perFile = map[string]int{}
-	file := ""
-
-	for _, line := range strings.Split(patch, "\n") {
-		switch {
-		case strings.HasPrefix(line, "---"), strings.HasPrefix(line, "+++"):
-			// File headers, not content. The "+++" line names the file
-			// the hunk that follows belongs to.
-			if strings.HasPrefix(line, "+++ ") {
-				file = strings.TrimPrefix(strings.TrimPrefix(line, "+++ "), "b/")
-			}
-			continue
-		case strings.HasPrefix(line, "-"):
-			r.WriteString(normalizeLine(line[1:]))
-			lines++
-			perFile[file]++
-		case strings.HasPrefix(line, "+"):
-			a.WriteString(normalizeLine(line[1:]))
-			lines++
-			perFile[file]++
-		}
-	}
-
-	return r.String(), a.String(), lines, perFile
 }
 
 // removedFuncNames lists the functions a patch removes.
@@ -334,6 +283,31 @@ func removedFuncNames(patch string) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// goCodeAdded reports whether the patch added any Go code.
+//
+// The deduplication rule asks a narrower question than "did the commit
+// change anything": it asks whether the commit only REMOVED code. A commit
+// that both removes and adds did something else too, and the rule must not
+// quiet a finding about it.
+//
+// The test is Go's own: a line that is not blank and does not start with
+// "//" is code. The rule this replaces counted the same lines after
+// stripping comments out of every language, which is the same question
+// asked with a rule that was wrong for most of them.
+func goCodeAdded(patch string) bool {
+	for _, line := range strings.Split(patch, "\n") {
+		if !strings.HasPrefix(line, "+") || strings.HasPrefix(line, "+++") {
+			continue
+		}
+		code := strings.TrimSpace(strings.TrimPrefix(line, "+"))
+		if code == "" || strings.HasPrefix(code, "//") {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // funcDeclName extracts the function's name from a declaration.
@@ -465,4 +439,17 @@ func funcExistsOutside(tree, name string, changedFiles map[string]bool) bool {
 		return nil
 	})
 	return found
+}
+
+// cosmeticReason is the sentence the report shows as the evidence for a
+// cosmetic conclusion.
+//
+// It used to be a fixed sentence describing a rule the engine no longer
+// has. It is now what the adapter actually did, which is the only thing an
+// evidence line is allowed to be.
+func cosmeticReason(reason string) string {
+	if reason == "" {
+		return "The adapter did not say what it checked."
+	}
+	return reason
 }

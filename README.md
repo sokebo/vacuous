@@ -329,6 +329,7 @@ is itself a finding.
 | `suite-crash` | warn | A suite crashed before it could run a single case. |
 | `skipped` | critical | The test was present but did not execute. It witnessed nothing. |
 | `pre-existing-failure` | warn | The counterfactual was red and the same suite is red with the fix in place. The red says nothing about this fix. |
+| `uncertain` | info | The experiment ran, everything passed, and the tool **could not tell whether the change altered behavior at all** — some syntax it touched is outside what the adapter's rules cover. **A green suite does not accuse the tests of anything.** |
 | `contradictory` | critical | **The tool's own conclusion disagrees with the tool's own raw output.** The tool is broken — please report it. |
 | `not-applicable` | info | A merge, a root commit, a docs-only commit, or a test-only commit. Nothing to judge. |
 | `unsupported-source` | info | The commit changed code in a language this repository's runner cannot execute. |
@@ -490,7 +491,7 @@ the code first.
 
 ## Results on real repositories
 
-The full record — every run, every finding, and the **108 bugs dogfooding found
+The full record — every run, every finding, and the **112 bugs dogfooding found
 in the tool itself** — is in [`docs/dogfood/`](./docs/dogfood/), with the
 repository names and paths sanitized.
 
@@ -539,6 +540,18 @@ repos that depend on a shared sibling library were audited together.
   not as thickly as Go".
 - **When a fix introduces a new API**, the test does not compile without it →
   verdict `coupled`, and no answer.
+- **What counts as "this change did not alter the behavior"** is asked of the
+  language's adapter, because a `//` is a comment in Go and floor division in
+  Python, and a `//go:build` is a build constraint in neither sense. The rules
+  are per language now, and the report's evidence says which language's rules
+  were applied. The **layout** is read too, because in some languages the
+  layout is the syntax: a Python statement's indentation says which block it
+  belongs to, and Go and JavaScript end a statement at the end of a line. A
+  change to either of those cannot be *confirmed* to be formatting — the
+  verdict is `uncertain`, the experiment runs, and a green suite accuses
+  nothing. What is still not covered is a layout rule finer than "where does
+  a statement end" and "how far is this line indented": a YAML mapping
+  re-indented, a Makefile recipe, a heredoc's body.
 - **The unit of judgement is the change window, not the commit.** The commits
   you ask about are judged together, so a fix and the test that lands one
   commit later are one change with one test. A window that changes two
@@ -568,7 +581,7 @@ The full list, with the reasoning behind each edge, is in
 |---|---|
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | How the tool is put together, and the contracts it holds to |
 | [`docs/BOUNDARIES.md`](./docs/BOUNDARIES.md) | What the method cannot do, and what every finding kind means |
-| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 108 bugs dogfooding found in the tool itself |
+| [`docs/dogfood/`](./docs/dogfood/) | The evidence: every run on a real repository, and the 112 bugs dogfooding found in the tool itself |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md) | How to build, test, and contribute — and the six rules the design holds to |
 | [`SECURITY.md`](./SECURITY.md) | What this tool does to your repository, and how to audit a repository you do not trust |
 | [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) | The behavior expected from everyone taking part |
