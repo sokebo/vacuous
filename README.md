@@ -411,7 +411,7 @@ not finish.
 ### As a GitHub Action
 
 ```yaml
-- uses: sokebo/vacuous@v0.1.6
+- uses: sokebo/vacuous@v0.2.0
   with:
     mode: all
     fail-on: high
