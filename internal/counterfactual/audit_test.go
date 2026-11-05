@@ -555,12 +555,15 @@ func TestAuditKeepsTheSizeTheDiffMeasuredWhenAFileCannotBeRead(t *testing.T) {
 // TestAuditSaysWhatItsReadingActuallyRemoves pins the wording of the
 // cosmetic finding.
 //
-// The finding is a claim about a reduction, and the reduction has limits: a
-// trailing "#" comment is not removed, and the whitespace outside a string
-// literal is only formatting in the languages whose layout is not the
-// syntax. A finding that says "the comments are removed" describes a
-// reduction this rule does not perform, and a reader who checks it finds the
-// difference.
+// The finding is a claim about a reduction, and the reduction has limits: the
+// whitespace outside a string literal is only formatting in the languages
+// whose layout is not the syntax, and the rules that remove comments are
+// the language's own. A finding that says "the comments are removed"
+// describes a reduction that no rule performs, and a reader who checks it
+// finds the difference.
+//
+// ★ The evidence is now what the adapter actually did, because the engine
+// no longer reduces anything on its own.
 //
 // So the wording has to say what the rule does - and what it does not see.
 func TestAuditSaysWhatItsReadingActuallyRemoves(t *testing.T) {
@@ -593,13 +596,23 @@ func TestAuditSaysWhatItsReadingActuallyRemoves(t *testing.T) {
 	if !strings.Contains(found.Detail, "heredoc") {
 		t.Errorf("the finding must name the whitespace this reading cannot see: %q", found.Detail)
 	}
-	// The evidence has to be checkable: "the comments are removed" is not
-	// true of a trailing "#" comment, and this rule does not remove it.
+	// The evidence has to be checkable, and it has to describe the rule
+	// that was actually applied. That rule is the language's, so the
+	// evidence has to name the language and say what the rules keep as
+	// more than a comment.
+	//
+	// ★ The evidence used to be a fixed sentence, and it used to be false
+	// for every language it was applied to: it said "a // comment is
+	// removed wherever it starts", and in Python "//" is not a comment at
+	// all.
 	if strings.Contains(found.Evidence, "the comments are removed") {
 		t.Errorf("the evidence claims a reduction this rule does not perform: %q", found.Evidence)
 	}
-	if !strings.Contains(found.Evidence, "# comment is removed only when it starts the line") {
-		t.Errorf("the evidence must say how the '#' rule works: %q", found.Evidence)
+	if !strings.Contains(found.Evidence, "Go:") {
+		t.Errorf("the evidence must say whose rules were applied: %q", found.Evidence)
+	}
+	if !strings.Contains(found.Evidence, "build directive") {
+		t.Errorf("the evidence must say what the rules keep as more than a comment: %q", found.Evidence)
 	}
 }
 

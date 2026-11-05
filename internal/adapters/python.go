@@ -55,6 +55,25 @@ func NewPython() *Python { return &Python{} }
 // Name identifies the adapter.
 func (p *Python) Name() string { return "python" }
 
+// ConfirmsCosmetic implements core.CosmeticConfirmer.
+//
+// It answers for Python files, and it is the layer that knows what a
+// comment is in Python: "#" opens one, and "//" opens nothing at all - it
+// is floor division.
+//
+// That last fact is the whole of one bug. The rule this replaces read a
+// "//" as a comment in every language, so `count // batch` and
+// `count // batch - 1` reduced to the same text, and a change that
+// altered the value of every batch was reported as a change that altered
+// nothing. Here "//" is not a comment, so it stays in the text, so the
+// change is a change.
+//
+// A file of another language is not Python's to answer for, and the
+// adapter says so rather than guessing.
+func (p *Python) ConfirmsCosmetic(ctx context.Context, q core.CosmeticQuestion) core.CosmeticAnswer {
+	return ConfirmCosmetic(ctx, pythonSourceRules, pythonSourceExts, q)
+}
+
 // Detect reports whether root looks like a Python project this tool can
 // drive.
 //

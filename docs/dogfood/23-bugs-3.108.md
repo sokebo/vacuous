@@ -782,6 +782,11 @@ branch, and the measurement is what says which way it fails.
   cosmetic, and it did so before this entry too. "Which comments are
   directives?" is a different question, it is language-specific, and it
   belongs in its own entry.
+  ★ **That entry exists now**: the 2026-11-02 round moved the question to
+  the adapter, and a build constraint is kept rather than removed — dogfood
+  bug 3.110, in [25-round-2026-11-02.md](./25-round-2026-11-02.md). The
+  "which comments are directives" question is answered per language now,
+  and the answer reaches the report as the evidence for the conclusion.
 - **The Rust lifetime** — `fn f<'a, 'b>(x: T)`. The `'` is read as the start
   of a string, so the whitespace between two lifetimes is kept as data.
   Measured: `fn f<'a, 'b>(x: T)` and `fn f<'a,'b>(x: T)` reduce to two

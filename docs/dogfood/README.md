@@ -4,7 +4,7 @@ The evidence base.
 
 `vacuous` runs on real repositories, and every finding it makes is checked by
 hand against git. This directory is the record of that work: the runs, and
-the **109 bugs the tool had in itself** that dogfooding uncovered.
+the **113 bugs the tool had in itself** that dogfooding uncovered.
 
 A tool that only says it is accurate is worth nothing. Every entry here was
 either independently verified by a means outside the tool, or it says the
@@ -73,7 +73,8 @@ in the tables below are the record of that run.
 | [22-bugs-3.107.md](./22-bugs-3.107.md) | Tool bug 3.107 — the rule read the wording of an error, and the wording is the platform's: on Windows the audit produced no witness for any narrowed commit in a repository with nested Go modules |
 | [23-bugs-3.108.md](./23-bugs-3.108.md) | Tool bug 3.108 — the rule stripped the whitespace out of the string literals, and whitespace inside a literal is the value: a change to a template was reported as a change that altered nothing |
 | [24-round-2026-11-01.md](./24-round-2026-11-01.md) | The 2026-11-01 acceptance round on `admin-service` — a real TDD-shaped change judged end to end, the suite made green first, and a `contradictory` verdict that turned out to be the consistency check reading the test names |
-| [25-bugs-3.109.md](./25-bugs-3.109.md) | Tool bug 3.109 — the failure flag was a word search: a passing subtest named ".../FAILED" called a green suite a contradiction, and the half of the check that catches an invented failure was off on exactly those repositories |
+| [25-round-2026-11-02.md](./25-round-2026-11-02.md) | The 2026-11-02 round — a `//` was a comment in every language, so a change to a Python floor division and a change to a Go build constraint were both reported as changes that altered nothing |
+| [26-bugs-3.113.md](./26-bugs-3.113.md) | Tool bug 3.113 — the failure flag was a word search: a passing subtest named ".../FAILED" called a green suite a contradiction, and the half of the check that catches an invented failure was off on exactly those repositories |
 
 ---
 
@@ -107,15 +108,22 @@ history is public anyway.
 
 ## The catalog
 
-109 entries. The number in front is a stable identifier: it is referenced from
+113 entries. The number in front is a stable identifier: it is referenced from
 the source code, from the commit history, and from the volumes.
 
-The log was written over many rounds, and three of its numbers were used
-twice. **3.88 was originally numbered 3.44**, and **3.89 was originally
+The log was written over many rounds, and its numbers were used twice more
+than once. **3.88 was originally numbered 3.44**, and **3.89 was originally
 numbered 3.45**; a third duplicate, a verification note that had been given a
 number it should not have had, lost its number altogether and is now an
 unnumbered subsection. The original number is noted inside 3.88 and 3.89
 themselves.
+
+And **3.113 was originally numbered 3.109**: two branches were developed in
+parallel from the same commit, and each numbered its first new bug 3.109
+without either one knowing about the other. When the two branches met, the
+consistency-check bug took the higher number and the file that carries it
+became `26-bugs-3.113.md`. The cosmetic bug that was already called 3.109
+kept it — it is the one the 2026-11-02 round is about.
 
 | # | Symptom | Area |
 |---|---|---|
@@ -227,7 +235,11 @@ themselves.
 | **3.106** | The gate kept its own copy of two rules the checker had already changed — on Windows it was blind to a native guard | Gate / static detection |
 | **3.107** | The rule read the wording of an error — on Windows the audit produced no witness for any narrowed commit in a repository with nested modules | Go adapter |
 | **3.108** | The rule stripped the whitespace out of the string literals — and whitespace inside a literal is the value, so a change to a template was reported as a change that altered nothing | Cosmetic detection |
-| **3.109** | The consistency check decided "the runner reported a failure" by searching the output for the word "FAIL" — so a passing subtest named ".../FAILED" called a green suite a contradiction, and the half of the check that catches an invented failure was off on exactly those repositories | Consistency check |
+| **3.109** | A `//` was a comment in every language — and in Python it is floor division, so a change to it was reported as a change that altered nothing | Cosmetic detection |
+| **3.110** | A `//go:build` line was a comment — and it is a build constraint, so a change to it was reported as a change that altered nothing | Cosmetic detection |
+| **3.111** | The layout was thrown away with the whitespace — but Python's indentation is the block structure, and Go and JavaScript end a statement at the end of a line, so a behaviour change was reported as a change that altered nothing | Cosmetic detection |
+| **3.112** | The diff was read by prefix alone — a content line that starts with `--- ` was taken for a file header, so the size of a change was undercounted | Sizing |
+| **3.113** | The consistency check decided "the runner reported a failure" by searching the output for the word "FAIL" — so a passing subtest named ".../FAILED" called a green suite a contradiction, and the half of the check that catches an invented failure was off on exactly those repositories | Consistency check |
 
 ---
 
@@ -251,9 +263,23 @@ distributed. They cluster in three places:
   error, and the wording belongs to the platform. 3.108 is the same shape at
   its smallest: the rule that decides whether a change altered anything
   assumed that whitespace is always formatting, and whitespace inside a
-  string literal is the value.
+  string literal is the value. 3.109 and 3.110 are the same shape once more,
+  and they are the two that mattered most: the rule that decides whether a
+  change altered anything assumed that a `//` is a comment, and in Python
+  it is floor division while in Go it is sometimes a build constraint. The
+  rule was in the engine, and the engine held no grammar — so the question
+  moved to the layer that does. 3.111 is the same shape one layer further
+  out: the rule threw away every piece of whitespace outside a string
+  literal, and whitespace is not one thing — the space between the tokens is
+  layout, the indentation of a line is the block structure in Python, and the
+  break at the end of a line ends a statement in Go and in JavaScript. 3.112
+  is the shape at its smallest: the rule that counts the size of a change
+  read a diff by its prefixes, and a line of a SQL file that begins with
+  `-- ` comes out of a diff as `--- ` — which is what a file header looks
+  like.
 - **Places where "I could not tell" was dressed up as an answer** — 3.1, 3.13,
-  3.33, 3.41, 3.43, 3.55, 3.60, 3.81, 3.98, 3.100, 3.103, 3.104, 3.106, 3.107. This is the cluster that matters
+  3.33, 3.41, 3.43, 3.55, 3.60, 3.81, 3.98, 3.100, 3.103, 3.104, 3.106, 3.107,
+  3.109, 3.110, 3.111. This is the cluster that matters
   most, because those are the bugs that produce confident, specific, wrong
   accusations. 3.98 belongs here in its own way: an empty report's sentinel
   severity was read as a finding, and the run accused the repository of
