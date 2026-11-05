@@ -684,14 +684,25 @@ func pythonInterpreter(t *testing.T) string {
 }
 
 // TestPythonAdapterSeesAClassErrorThatRanNoTest is the adapter-level
-// negative control for the exit code 5.
+// negative control for a run that did not succeed.
 //
-// A class-level error stops the suite before the first test runs, so
-// unittest exits 5 - the code it uses for "no tests ran" - and puts the
-// error in the report's failures section. The parse files that as a failed
-// outcome, so the failure flag has to say the same thing, or the engine
-// compares "a test went red" with "no test went red" and calls the tool
-// broken.
+// A class-level error stops the suite before the first test runs, so no test
+// ever executed - and the run did not succeed, so the runner says so in its
+// exit code. It puts the error in the report's failures section, and the
+// failure flag has to say the same thing, or the engine compares "a test
+// went red" with "no test went red" and calls the tool broken.
+//
+// The number the runner uses is not the same on every interpreter. Measured
+// on the ones at hand: a class-level error exits 1 on 3.9.6, 3.14.3 and
+// 3.15.2, and exits 5 on the 3.12.3 that the CI runner has - 3.12 carried
+// the "no tests ran" code for a while, and it was reverted and came back
+// later. The code 5 is also what an interpreter exits with when the
+// discovery collected no test at all and nothing failed.
+//
+// So the test does not pin the number. It pins that the tool reports the
+// runner's own verdict, whatever the interpreter's version makes that
+// verdict - which is the thing that is the tool's business. The number
+// itself is measured by running the same command directly.
 //
 // The fixture is a real project, and the interpreter is the machine's own.
 func TestPythonAdapterSeesAClassErrorThatRanNoTest(t *testing.T) {
@@ -712,18 +723,58 @@ func TestPythonAdapterSeesAClassErrorThatRanNoTest(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 
-	if res.ExitCode != 5 {
-		t.Errorf("ExitCode = %d, want 5: unittest exits 5 when it ran no test", res.ExitCode)
+	want := runFixtureExitCode(t, prog, plan)
+	if want == 0 {
+		t.Fatal("the fixture ran green, so it is not the fixture this test is about")
 	}
-	if got, ok := outcomeFor(res, "setUpClass"); !ok {
-		t.Errorf("the class-level error is missing from the outcomes: %+v", res.Outcomes)
-	} else if got.Status != core.StatusFail {
-		t.Errorf("setUpClass = %s, want %s", got.Status, core.StatusFail)
+	if res.ExitCode != want {
+		t.Errorf("ExitCode = %d, want %d: the tool has to report the runner's own "+
+			"verdict, and the runner's verdict is the interpreter's to give",
+			res.ExitCode, want)
 	}
+	// The class-level error is a failure, and the failure flag has to say
+	// so. This is the part that does not depend on the interpreter.
 	if !res.RawFailed {
 		t.Error("RawFailed = false, want true: the runner reported a class-level " +
-			"error, and the parse filed it as a failed outcome")
+			"error, and the failures section says so")
 	}
+	// The suite that ran no test is reported as such.
+	if len(res.SuiteErrors) == 0 {
+		t.Error("the suite that ran no test is missing from the suite errors")
+	}
+	// The error itself is not lost. Which part of the report carries it
+	// depends on the interpreter: 3.11 and later name the class in the
+	// result line, so the parse files it as an outcome, and older ones
+	// print a bare "ERROR" and keep the detail in the failures section.
+	if got, ok := outcomeFor(res, "setUpClass"); ok {
+		if got.Status != core.StatusFail {
+			t.Errorf("setUpClass = %s, want %s", got.Status, core.StatusFail)
+		}
+	} else if !strings.Contains(res.RawOutput, "setUpClass") {
+		t.Error("the class-level error is missing from the report")
+	}
+}
+
+// runFixtureExitCode runs the plan's commands the way the adapter runs them,
+// and returns the exit code the interpreter gave.
+//
+// The adapter's own result carries that number, so this is the same run
+// measured a second time, outside the tool. The merge is the adapter's
+// merge: the last non-zero code wins.
+func runFixtureExitCode(t *testing.T, prog string, plan core.Plan) int {
+	t.Helper()
+	exit := 0
+	for _, suite := range unittestSuitesFromEnv(plan.Env) {
+		for _, args := range unittestRuns(plan.Dir, suite) {
+			cmd := exec.Command(prog, args[1:]...)
+			cmd.Dir = plan.Dir
+			cmd.Env = append(os.Environ(), plan.Env...)
+			if code := exitCodeOf(cmd.Run()); code != 0 {
+				exit = code
+			}
+		}
+	}
+	return exit
 }
 
 // TestPythonAdapterDoesNotCallAGreenSuiteRedThatPrintsAFailureSection is the

@@ -56,17 +56,28 @@ func GoTestFailed(stream string) bool {
 	return false
 }
 
-// unittestNoTestsExitCode is the code unittest exits with when it ran no test
-// at all.
+// unittestNoTestsExitCode is the code unittest exits with when it collected
+// no test at all.
 //
 // It is not a usage error. `unittest/main.py` names it
-// `_NO_TESTS_EXITCODE`, and it is what a class-level error produces when the
-// error happens before the first test runs: `setUpClass` and `setUpModule`
-// raise, no test ever executes, and the runner exits 5.
+// `_NO_TESTS_EXITCODE`, and an interpreter that has it exits with it when
+// the discovery found nothing to run and nothing failed.
 //
-// That run did fail. The parser files it as a failed outcome, so a criterion
-// that reads 5 as "the command could not be run" ends up calling the tool's
-// own report a contradiction.
+// Not every interpreter has it: it arrived in Python 3.12, was reverted
+// there, and came back in 3.14. An interpreter without it exits 0 for the
+// same run. So the tool cannot lean on the number - it has to read the
+// report.
+//
+// A class-level error is a different shape, and the code it produces
+// depends on the interpreter as well. `setUpClass` and `setUpModule`
+// raising means the run did not succeed, so the code for that is 1 -
+// except on the 3.12 releases that carried the "no tests ran" code, where
+// it is 5. Measured on 3.9.6, 3.12.3, 3.14.3 and 3.15.2.
+//
+// Either way the report decides. A run that exited 1 or 5 carries a
+// failures section, and the header in it says whether a test went red or a
+// module could not be imported. A criterion that reads 5 as "the command
+// could not be run" ends up calling the tool's own report a contradiction.
 const unittestNoTestsExitCode = 5
 
 // UnittestFailed reports whether a unittest report says that a test went red.
@@ -87,9 +98,10 @@ const unittestNoTestsExitCode = 5
 // no matter what its tests printed - and a test's own output is exactly the
 // kind of thing that used to fool this check.
 //
-// Code 5 is the one that cannot be settled on its own. It says no test ran,
-// and that is what a class-level error looks like when it happens before the
-// first test does. So codes 1 and 5 both go to the report.
+// Code 5 is the one that cannot be settled on its own. It says no test was
+// collected, and the report says why - a discovery that found nothing, or a
+// class-level error that stopped the suite before the first test. So codes
+// 1 and 5 both go to the report.
 //
 // The report then says which of the two "a test did not pass" cases it was:
 // a test that went red, or a module that could not be imported. The second
