@@ -29,6 +29,17 @@ func NewNode() *Node { return &Node{} }
 // Name identifies the adapter.
 func (n *Node) Name() string { return "node" }
 
+// ConfirmsCosmetic implements core.CosmeticConfirmer.
+//
+// It answers for JavaScript and TypeScript files, and it is the layer that
+// knows what a comment is in them: "//" opens one and "/* */" opens one.
+//
+// A file of another language is not this adapter's to answer for, and the
+// adapter says so rather than guessing.
+func (n *Node) ConfirmsCosmetic(ctx context.Context, q core.CosmeticQuestion) core.CosmeticAnswer {
+	return ConfirmCosmetic(ctx, nodeSourceRules, nodeSourceExts, q)
+}
+
 // Detect reports whether root holds a package.json with a test script.
 //
 // The package.json has to be inside the scope: it is what says this

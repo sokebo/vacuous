@@ -111,6 +111,19 @@ func NewGo() *Go { return &Go{} }
 // Name identifies the adapter.
 func (g *Go) Name() string { return "go" }
 
+// ConfirmsCosmetic implements core.CosmeticConfirmer.
+//
+// It answers for Go files, and it is the layer that knows what a comment
+// is in Go: "//" opens one, "/* */" opens one, and "//go:build" opens
+// neither - it is a build constraint, and it decides which platforms
+// compile the file.
+//
+// A file of another language is not Go's to answer for, and the adapter
+// says so rather than guessing.
+func (g *Go) ConfirmsCosmetic(ctx context.Context, q core.CosmeticQuestion) core.CosmeticAnswer {
+	return ConfirmCosmetic(ctx, goSourceRules, goSourceExts, q)
+}
+
 // Detect reports whether root holds a Go module or workspace.
 //
 // The go.mod (or go.work) has to be inside the scope. An untracked one

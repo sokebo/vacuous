@@ -1,4 +1,4 @@
-# Dogfood: Tool Bug 3.109
+# Dogfood: Tool Bug 3.113
 
 The bug volume 24 recorded and did not fix. Volume 24 §10.6 found it in the
 2026-11-01 acceptance round: the consistency check decided "the runner
@@ -18,7 +18,7 @@ scratch clone volume 24 used, with the sibling checkout of
 
 ---
 
-### 3.109 The failure flag was a word search — and a passing subtest named ".../FAILED" called a green suite red
+### 3.113 The failure flag was a word search — and a passing subtest named ".../FAILED" called a green suite red
 
 **Symptom**
 
@@ -775,8 +775,8 @@ garbage where this volume sees JSON. Read them with a BOM-aware reader.
 The reports of the runs before and after the fix:
 
 ```
-%TEMP%\row8-before-3.109.json   row 8, built from cd8a719: contradictory / critical
-%TEMP%\row8-after-3.109.json    row 8, built from 2c3d6a3: no-test / high
-%TEMP%\row6-after-3.109.json    row 6, built from 2c3d6a3: proven, 2 witnesses
-%TEMP%\row11-after-3.109.json   row 11, built from 2c3d6a3: vacuous
+%TEMP%\row8-before-3.113.json   row 8, built from cd8a719: contradictory / critical
+%TEMP%\row8-after-3.113.json    row 8, built from 2c3d6a3: no-test / high
+%TEMP%\row6-after-3.113.json    row 6, built from 2c3d6a3: proven, 2 witnesses
+%TEMP%\row11-after-3.113.json   row 11, built from 2c3d6a3: vacuous
 ```

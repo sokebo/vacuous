@@ -178,6 +178,19 @@ const (
 	// hole in a report is worse than a finding, because a finding says
 	// "go look here" while a hole says "nothing was learned here".
 	KindAuditFailed Kind = "audit-failed"
+	// KindUncertain means the experiment ran, everything passed, and the
+	// tool cannot tell whether the change altered behaviour at all.
+	//
+	// It happens when the language's rules do not cover some syntax the
+	// change touched - a change the tool cannot classify may have been
+	// nothing but formatting, and "no test watched this" is not a fact
+	// the tool is entitled to.
+	//
+	// It is not a gap and it is not a pass. It is an admission, and it is
+	// the honest one: the two mistakes this tool can make here cost
+	// different amounts, and a green suite proves nothing about a change
+	// whose nature is unknown.
+	KindUncertain Kind = "uncertain"
 )
 
 // Finding is one observation. Every detector in vacuous emits these and
